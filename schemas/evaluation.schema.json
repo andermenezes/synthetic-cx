@@ -1,0 +1,200 @@
+{
+  "$defs": {
+    "Criterion": {
+      "additionalProperties": false,
+      "properties": {
+        "evaluator_type": {
+          "enum": [
+            "turn_count",
+            "journey_timeout",
+            "repeated_information",
+            "semantic_goal_completion"
+          ],
+          "title": "Evaluator Type",
+          "type": "string"
+        },
+        "evidence_policy": {
+          "enum": [
+            "required",
+            "optional",
+            "none"
+          ],
+          "title": "Evidence Policy",
+          "type": "string"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "parameters": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Parameters",
+          "type": "object"
+        },
+        "required": {
+          "default": true,
+          "title": "Required",
+          "type": "boolean"
+        },
+        "result_kind": {
+          "enum": [
+            "scored",
+            "boolean"
+          ],
+          "title": "Result Kind",
+          "type": "string"
+        },
+        "threshold": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Threshold"
+        }
+      },
+      "required": [
+        "id",
+        "evaluator_type",
+        "result_kind",
+        "evidence_policy"
+      ],
+      "title": "Criterion",
+      "type": "object"
+    },
+    "EvaluationResult": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confidence"
+        },
+        "criterion_id": {
+          "title": "Criterion Id",
+          "type": "string"
+        },
+        "evaluator_id": {
+          "title": "Evaluator Id",
+          "type": "string"
+        },
+        "evidence_event_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Event Ids",
+          "type": "array"
+        },
+        "evidence_message_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Message Ids",
+          "type": "array"
+        },
+        "explanation": {
+          "title": "Explanation",
+          "type": "string"
+        },
+        "metadata": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Metadata",
+          "type": "object"
+        },
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        },
+        "score": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Score"
+        },
+        "severity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Severity"
+        },
+        "status": {
+          "enum": [
+            "passed",
+            "failed",
+            "unavailable",
+            "error"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "evaluator_id",
+        "criterion_id",
+        "status",
+        "required",
+        "explanation"
+      ],
+      "title": "EvaluationResult",
+      "type": "object"
+    },
+    "JsonValue": {}
+  },
+  "additionalProperties": false,
+  "properties": {
+    "criteria": {
+      "items": {
+        "$ref": "#/$defs/Criterion"
+      },
+      "title": "Criteria",
+      "type": "array"
+    },
+    "results": {
+      "items": {
+        "$ref": "#/$defs/EvaluationResult"
+      },
+      "title": "Results",
+      "type": "array"
+    }
+  },
+  "required": [
+    "criteria",
+    "results"
+  ],
+  "title": "EvaluationArtifact",
+  "type": "object"
+}

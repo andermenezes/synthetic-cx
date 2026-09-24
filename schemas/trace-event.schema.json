@@ -1,0 +1,1048 @@
+{
+  "$defs": {
+    "ArtifactRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Content Hash"
+        },
+        "media_type": {
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "status": {
+          "enum": [
+            "captured",
+            "omitted",
+            "failed"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "media_type",
+        "status"
+      ],
+      "title": "ArtifactRecord",
+      "type": "object"
+    },
+    "ArtifactRecordedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/ArtifactRecord"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "artifact_recorded",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "timestamp",
+        "type",
+        "data"
+      ],
+      "title": "ArtifactRecordedEvent",
+      "type": "object"
+    },
+    "ConversationStarted": {
+      "additionalProperties": false,
+      "properties": {
+        "grace_seconds": {
+          "minimum": 0,
+          "title": "Grace Seconds",
+          "type": "number"
+        },
+        "greeting_message_ids": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Greeting Message Ids",
+          "type": "array"
+        },
+        "greeting_observed": {
+          "title": "Greeting Observed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "greeting_observed",
+        "grace_seconds"
+      ],
+      "title": "ConversationStarted",
+      "type": "object"
+    },
+    "ConversationStartedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/ConversationStarted"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "conversation_started",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "timestamp",
+        "type",
+        "data"
+      ],
+      "title": "ConversationStartedEvent",
+      "type": "object"
+    },
+    "Criterion": {
+      "additionalProperties": false,
+      "properties": {
+        "evaluator_type": {
+          "enum": [
+            "turn_count",
+            "journey_timeout",
+            "repeated_information",
+            "semantic_goal_completion"
+          ],
+          "title": "Evaluator Type",
+          "type": "string"
+        },
+        "evidence_policy": {
+          "enum": [
+            "required",
+            "optional",
+            "none"
+          ],
+          "title": "Evidence Policy",
+          "type": "string"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "parameters": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Parameters",
+          "type": "object"
+        },
+        "required": {
+          "default": true,
+          "title": "Required",
+          "type": "boolean"
+        },
+        "result_kind": {
+          "enum": [
+            "scored",
+            "boolean"
+          ],
+          "title": "Result Kind",
+          "type": "string"
+        },
+        "threshold": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Threshold"
+        }
+      },
+      "required": [
+        "id",
+        "evaluator_type",
+        "result_kind",
+        "evidence_policy"
+      ],
+      "title": "Criterion",
+      "type": "object"
+    },
+    "ErrorDetail": {
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "enum": [
+            "configuration",
+            "channel",
+            "model",
+            "evaluation",
+            "persistence",
+            "cancelled"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "causal_event_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Causal Event Id"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "operation": {
+          "minLength": 1,
+          "title": "Operation",
+          "type": "string"
+        },
+        "retryable": {
+          "default": false,
+          "title": "Retryable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "category",
+        "operation",
+        "message"
+      ],
+      "title": "ErrorDetail",
+      "type": "object"
+    },
+    "EvaluationCompleted": {
+      "additionalProperties": false,
+      "properties": {
+        "criterion": {
+          "$ref": "#/$defs/Criterion"
+        },
+        "result": {
+          "$ref": "#/$defs/EvaluationResult"
+        }
+      },
+      "required": [
+        "result",
+        "criterion"
+      ],
+      "title": "EvaluationCompleted",
+      "type": "object"
+    },
+    "EvaluationCompletedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/EvaluationCompleted"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "evaluation_completed",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "timestamp",
+        "type",
+        "data"
+      ],
+      "title": "EvaluationCompletedEvent",
+      "type": "object"
+    },
+    "EvaluationResult": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confidence"
+        },
+        "criterion_id": {
+          "title": "Criterion Id",
+          "type": "string"
+        },
+        "evaluator_id": {
+          "title": "Evaluator Id",
+          "type": "string"
+        },
+        "evidence_event_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Event Ids",
+          "type": "array"
+        },
+        "evidence_message_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Message Ids",
+          "type": "array"
+        },
+        "explanation": {
+          "title": "Explanation",
+          "type": "string"
+        },
+        "metadata": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Metadata",
+          "type": "object"
+        },
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        },
+        "score": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Score"
+        },
+        "severity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Severity"
+        },
+        "status": {
+          "enum": [
+            "passed",
+            "failed",
+            "unavailable",
+            "error"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "evaluator_id",
+        "criterion_id",
+        "status",
+        "required",
+        "explanation"
+      ],
+      "title": "EvaluationResult",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "Message": {
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "enum": [
+            "customer",
+            "assistant",
+            "system"
+          ],
+          "title": "Actor",
+          "type": "string"
+        },
+        "content": {
+          "title": "Content",
+          "type": "string"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "metadata": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Metadata",
+          "type": "object"
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "actor",
+        "content",
+        "observed_at"
+      ],
+      "title": "Message",
+      "type": "object"
+    },
+    "MessageObserved": {
+      "additionalProperties": false,
+      "properties": {
+        "identity_evidence": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Identity Evidence",
+          "type": "object"
+        },
+        "message": {
+          "$ref": "#/$defs/Message"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "title": "MessageObserved",
+      "type": "object"
+    },
+    "MessageObservedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/MessageObserved"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "message_observed",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "timestamp",
+        "type",
+        "data"
+      ],
+      "title": "MessageObservedEvent",
+      "type": "object"
+    },
+    "ModelIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "model": {
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "model_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Version"
+        },
+        "provider": {
+          "minLength": 1,
+          "title": "Provider",
+          "type": "string"
+        },
+        "requested_seed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Requested Seed"
+        },
+        "sampling_parameters": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Sampling Parameters",
+          "type": "object"
+        }
+      },
+      "required": [
+        "provider",
+        "model"
+      ],
+      "title": "ModelIdentity",
+      "type": "object"
+    },
+    "ModelInteraction": {
+      "additionalProperties": false,
+      "properties": {
+        "capture_omissions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Capture Omissions",
+          "type": "array"
+        },
+        "ended_at": {
+          "format": "date-time",
+          "title": "Ended At",
+          "type": "string"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "identity": {
+          "$ref": "#/$defs/ModelIdentity"
+        },
+        "input_event_ids": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Input Event Ids",
+          "type": "array"
+        },
+        "output_event_ids": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Output Event Ids",
+          "type": "array"
+        },
+        "started_at": {
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/TokenUsage"
+        }
+      },
+      "required": [
+        "id",
+        "identity",
+        "started_at",
+        "ended_at",
+        "usage"
+      ],
+      "title": "ModelInteraction",
+      "type": "object"
+    },
+    "ModelInteractionCompletedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/ModelInteraction"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "model_interaction_completed",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "timestamp",
+        "type",
+        "data"
+      ],
+      "title": "ModelInteractionCompletedEvent",
+      "type": "object"
+    },
+    "OperationFailedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/OperationFailure"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "operation_failed",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "timestamp",
+        "type",
+        "data"
+      ],
+      "title": "OperationFailedEvent",
+      "type": "object"
+    },
+    "OperationFailure": {
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "$ref": "#/$defs/ErrorDetail"
+        },
+        "related_event_ids": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Related Event Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "error"
+      ],
+      "title": "OperationFailure",
+      "type": "object"
+    },
+    "PersonaState": {
+      "additionalProperties": false,
+      "description": "Owned state copied from configuration for each run.",
+      "properties": {
+        "abandoned": {
+          "default": false,
+          "title": "Abandoned",
+          "type": "boolean"
+        },
+        "frustration": {
+          "default": 0,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Frustration",
+          "type": "number"
+        },
+        "turn_number": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Turn Number",
+          "type": "integer"
+        },
+        "willingness_to_continue": {
+          "default": 1,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Willingness To Continue",
+          "type": "number"
+        }
+      },
+      "title": "PersonaState",
+      "type": "object"
+    },
+    "PersonaStateChangedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/PersonaStateTransition"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "persona_state_changed",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "timestamp",
+        "type",
+        "data"
+      ],
+      "title": "PersonaStateChangedEvent",
+      "type": "object"
+    },
+    "PersonaStateTransition": {
+      "additionalProperties": false,
+      "properties": {
+        "after": {
+          "$ref": "#/$defs/PersonaState"
+        },
+        "applied_rule_ids": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Applied Rule Ids",
+          "type": "array"
+        },
+        "before": {
+          "$ref": "#/$defs/PersonaState"
+        },
+        "trigger_ids": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Trigger Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "trigger_ids",
+        "before",
+        "after",
+        "applied_rule_ids"
+      ],
+      "title": "PersonaStateTransition",
+      "type": "object"
+    },
+    "RunLifecycleChange": {
+      "additionalProperties": false,
+      "properties": {
+        "current": {
+          "enum": [
+            "in_progress",
+            "finalized",
+            "incomplete"
+          ],
+          "title": "Current",
+          "type": "string"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "enum": [
+                "passed",
+                "failed",
+                "error",
+                "cancelled"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Outcome"
+        },
+        "previous": {
+          "anyOf": [
+            {
+              "enum": [
+                "in_progress",
+                "finalized",
+                "incomplete"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Previous"
+        },
+        "termination_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Termination Reason"
+        }
+      },
+      "required": [
+        "current"
+      ],
+      "title": "RunLifecycleChange",
+      "type": "object"
+    },
+    "RunLifecycleEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/RunLifecycleChange"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "run_lifecycle_changed",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "timestamp",
+        "type",
+        "data"
+      ],
+      "title": "RunLifecycleEvent",
+      "type": "object"
+    },
+    "TokenUsage": {
+      "additionalProperties": false,
+      "properties": {
+        "input_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Tokens"
+        },
+        "output_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Tokens"
+        },
+        "unavailable_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unavailable Reason"
+        }
+      },
+      "title": "TokenUsage",
+      "type": "object"
+    }
+  },
+  "discriminator": {
+    "mapping": {
+      "artifact_recorded": "#/$defs/ArtifactRecordedEvent",
+      "conversation_started": "#/$defs/ConversationStartedEvent",
+      "evaluation_completed": "#/$defs/EvaluationCompletedEvent",
+      "message_observed": "#/$defs/MessageObservedEvent",
+      "model_interaction_completed": "#/$defs/ModelInteractionCompletedEvent",
+      "operation_failed": "#/$defs/OperationFailedEvent",
+      "persona_state_changed": "#/$defs/PersonaStateChangedEvent",
+      "run_lifecycle_changed": "#/$defs/RunLifecycleEvent"
+    },
+    "propertyName": "type"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/RunLifecycleEvent"
+    },
+    {
+      "$ref": "#/$defs/ConversationStartedEvent"
+    },
+    {
+      "$ref": "#/$defs/MessageObservedEvent"
+    },
+    {
+      "$ref": "#/$defs/PersonaStateChangedEvent"
+    },
+    {
+      "$ref": "#/$defs/ModelInteractionCompletedEvent"
+    },
+    {
+      "$ref": "#/$defs/EvaluationCompletedEvent"
+    },
+    {
+      "$ref": "#/$defs/OperationFailedEvent"
+    },
+    {
+      "$ref": "#/$defs/ArtifactRecordedEvent"
+    }
+  ]
+}

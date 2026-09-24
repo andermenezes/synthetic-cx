@@ -1,0 +1,908 @@
+{
+  "$defs": {
+    "BehaviorRule": {
+      "additionalProperties": false,
+      "properties": {
+        "abandonment_threshold": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Abandonment Threshold"
+        },
+        "event": {
+          "const": "repeated_information",
+          "title": "Event",
+          "type": "string"
+        },
+        "frustration_delta": {
+          "default": 0,
+          "maximum": 1,
+          "minimum": -1,
+          "title": "Frustration Delta",
+          "type": "number"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "priority": {
+          "title": "Priority",
+          "type": "integer"
+        },
+        "willingness_to_continue_delta": {
+          "default": 0,
+          "maximum": 1,
+          "minimum": -1,
+          "title": "Willingness To Continue Delta",
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "priority",
+        "event"
+      ],
+      "title": "BehaviorRule",
+      "type": "object"
+    },
+    "ChannelConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "assistant_message_locator": {
+          "$ref": "#/$defs/LocatorConfig"
+        },
+        "customer_message_locator": {
+          "$ref": "#/$defs/LocatorConfig"
+        },
+        "frame_locator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocatorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "input_locator": {
+          "$ref": "#/$defs/LocatorConfig"
+        },
+        "message_identity": {
+          "$ref": "#/$defs/MessageIdentityConfig"
+        },
+        "open_locator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocatorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "response_completion": {
+          "$ref": "#/$defs/ResponseCompletionConfig"
+        },
+        "send_strategy": {
+          "$ref": "#/$defs/SendStrategyConfig"
+        },
+        "type": {
+          "const": "webchat_playwright",
+          "title": "Type",
+          "type": "string"
+        },
+        "url": {
+          "format": "uri",
+          "minLength": 1,
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "url",
+        "input_locator",
+        "customer_message_locator",
+        "assistant_message_locator",
+        "message_identity",
+        "send_strategy",
+        "response_completion"
+      ],
+      "title": "ChannelConfig",
+      "type": "object"
+    },
+    "CommunicationConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "clarification_probability": {
+          "default": 0,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Clarification Probability",
+          "type": "number"
+        },
+        "spelling_error_probability": {
+          "default": 0,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Spelling Error Probability",
+          "type": "number"
+        },
+        "style": {
+          "minLength": 1,
+          "title": "Style",
+          "type": "string"
+        },
+        "tone": {
+          "minLength": 1,
+          "title": "Tone",
+          "type": "string"
+        },
+        "typo_probability": {
+          "default": 0,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Typo Probability",
+          "type": "number"
+        }
+      },
+      "required": [
+        "tone",
+        "style"
+      ],
+      "title": "CommunicationConfig",
+      "type": "object"
+    },
+    "Criterion": {
+      "additionalProperties": false,
+      "properties": {
+        "evaluator_type": {
+          "enum": [
+            "turn_count",
+            "journey_timeout",
+            "repeated_information",
+            "semantic_goal_completion"
+          ],
+          "title": "Evaluator Type",
+          "type": "string"
+        },
+        "evidence_policy": {
+          "enum": [
+            "required",
+            "optional",
+            "none"
+          ],
+          "title": "Evidence Policy",
+          "type": "string"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "parameters": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Parameters",
+          "type": "object"
+        },
+        "required": {
+          "default": true,
+          "title": "Required",
+          "type": "boolean"
+        },
+        "result_kind": {
+          "enum": [
+            "scored",
+            "boolean"
+          ],
+          "title": "Result Kind",
+          "type": "string"
+        },
+        "threshold": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Threshold"
+        }
+      },
+      "required": [
+        "id",
+        "evaluator_type",
+        "result_kind",
+        "evidence_policy"
+      ],
+      "title": "Criterion",
+      "type": "object"
+    },
+    "ExecutionLimits": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_action_timeout_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Browser Action Timeout Seconds",
+          "type": "number"
+        },
+        "close_timeout_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Close Timeout Seconds",
+          "type": "number"
+        },
+        "evaluator_timeout_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Evaluator Timeout Seconds",
+          "type": "number"
+        },
+        "greeting_grace_seconds": {
+          "minimum": 0,
+          "title": "Greeting Grace Seconds",
+          "type": "number"
+        },
+        "journey_timeout_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Journey Timeout Seconds",
+          "type": "number"
+        },
+        "max_turns": {
+          "exclusiveMinimum": 0,
+          "title": "Max Turns",
+          "type": "integer"
+        },
+        "model_timeout_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Model Timeout Seconds",
+          "type": "number"
+        },
+        "persistence_timeout_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Persistence Timeout Seconds",
+          "type": "number"
+        },
+        "response_timeout_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Response Timeout Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "max_turns",
+        "journey_timeout_seconds",
+        "greeting_grace_seconds",
+        "browser_action_timeout_seconds",
+        "response_timeout_seconds",
+        "model_timeout_seconds",
+        "evaluator_timeout_seconds",
+        "persistence_timeout_seconds",
+        "close_timeout_seconds"
+      ],
+      "title": "ExecutionLimits",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "LocatorConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "strategy": {
+          "enum": [
+            "role",
+            "label",
+            "placeholder",
+            "text",
+            "test_id",
+            "css"
+          ],
+          "title": "Strategy",
+          "type": "string"
+        },
+        "value": {
+          "minLength": 1,
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "strategy",
+        "value"
+      ],
+      "title": "LocatorConfig",
+      "type": "object"
+    },
+    "MessageIdentityConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "attribute_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Attribute Name"
+        },
+        "strategy": {
+          "enum": [
+            "attribute",
+            "actor_sequence_content_hash"
+          ],
+          "title": "Strategy",
+          "type": "string"
+        }
+      },
+      "required": [
+        "strategy"
+      ],
+      "title": "MessageIdentityConfig",
+      "type": "object"
+    },
+    "OpenAICompatibleModelConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "base_url": {
+          "format": "uri",
+          "minLength": 1,
+          "title": "Base Url",
+          "type": "string"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/ProviderCapabilities"
+        },
+        "credential_environment_variable": {
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "title": "Credential Environment Variable",
+          "type": "string"
+        },
+        "model": {
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "provider": {
+          "const": "openai_compatible",
+          "title": "Provider",
+          "type": "string"
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Seed"
+        },
+        "temperature": {
+          "default": 0,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Temperature",
+          "type": "number"
+        }
+      },
+      "required": [
+        "provider",
+        "model",
+        "base_url",
+        "credential_environment_variable",
+        "capabilities"
+      ],
+      "title": "OpenAICompatibleModelConfig",
+      "type": "object"
+    },
+    "OpenAIModelConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "credential_environment_variable": {
+          "default": "OPENAI_API_KEY",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "title": "Credential Environment Variable",
+          "type": "string"
+        },
+        "model": {
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "provider": {
+          "const": "openai",
+          "title": "Provider",
+          "type": "string"
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Seed"
+        },
+        "temperature": {
+          "default": 0,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Temperature",
+          "type": "number"
+        }
+      },
+      "required": [
+        "provider",
+        "model"
+      ],
+      "title": "OpenAIModelConfig",
+      "type": "object"
+    },
+    "PersonaConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "behavioral_rules": {
+          "items": {
+            "$ref": "#/$defs/BehaviorRule"
+          },
+          "title": "Behavioral Rules",
+          "type": "array"
+        },
+        "communication": {
+          "$ref": "#/$defs/CommunicationConfig"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "initial_state": {
+          "$ref": "#/$defs/PersonaStateConfig"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "traits": {
+          "additionalProperties": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": "number"
+          },
+          "title": "Traits",
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "communication",
+        "initial_state"
+      ],
+      "title": "PersonaConfig",
+      "type": "object"
+    },
+    "PersonaStateConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "abandoned": {
+          "default": false,
+          "title": "Abandoned",
+          "type": "boolean"
+        },
+        "frustration": {
+          "default": 0,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Frustration",
+          "type": "number"
+        },
+        "turn_number": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Turn Number",
+          "type": "integer"
+        },
+        "willingness_to_continue": {
+          "default": 1,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Willingness To Continue",
+          "type": "number"
+        }
+      },
+      "title": "PersonaStateConfig",
+      "type": "object"
+    },
+    "PrivacyConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "allow_screenshots": {
+          "default": false,
+          "title": "Allow Screenshots",
+          "type": "boolean"
+        },
+        "allow_video": {
+          "default": false,
+          "title": "Allow Video",
+          "type": "boolean"
+        },
+        "capture_prompts": {
+          "default": false,
+          "title": "Capture Prompts",
+          "type": "boolean"
+        },
+        "redaction_keys": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Redaction Keys",
+          "type": "array"
+        },
+        "synthetic_id_patterns": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Synthetic Id Patterns",
+          "type": "array"
+        }
+      },
+      "title": "PrivacyConfig",
+      "type": "object"
+    },
+    "ProviderCapabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "chat_completions": {
+          "title": "Chat Completions",
+          "type": "boolean"
+        },
+        "embeddings": {
+          "title": "Embeddings",
+          "type": "boolean"
+        },
+        "model_version": {
+          "title": "Model Version",
+          "type": "boolean"
+        },
+        "structured_output": {
+          "title": "Structured Output",
+          "type": "boolean"
+        },
+        "token_usage": {
+          "title": "Token Usage",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "chat_completions",
+        "structured_output",
+        "embeddings",
+        "token_usage",
+        "model_version"
+      ],
+      "title": "ProviderCapabilities",
+      "type": "object"
+    },
+    "ResponseCompletionConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "locator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocatorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "quiet_interval_seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quiet Interval Seconds"
+        },
+        "strategy": {
+          "enum": [
+            "quiet_interval",
+            "streaming_indicator_disappears",
+            "completion_locator"
+          ],
+          "title": "Strategy",
+          "type": "string"
+        }
+      },
+      "required": [
+        "strategy"
+      ],
+      "title": "ResponseCompletionConfig",
+      "type": "object"
+    },
+    "ScenarioConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "goal": {
+          "minLength": 1,
+          "title": "Goal",
+          "type": "string"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "knowledge": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Knowledge",
+          "type": "object"
+        },
+        "starting_context": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Starting Context",
+          "type": "object"
+        },
+        "success_criteria": {
+          "items": {
+            "$ref": "#/$defs/Criterion"
+          },
+          "minItems": 1,
+          "title": "Success Criteria",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "description",
+        "goal",
+        "success_criteria"
+      ],
+      "title": "ScenarioConfig",
+      "type": "object"
+    },
+    "SendStrategyConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "locator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocatorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "type": {
+          "enum": [
+            "press_enter",
+            "click"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "SendStrategyConfig",
+      "type": "object"
+    },
+    "StorageConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "flush_each_event": {
+          "const": true,
+          "default": true,
+          "title": "Flush Each Event",
+          "type": "boolean"
+        },
+        "materialize_conversation": {
+          "default": true,
+          "title": "Materialize Conversation",
+          "type": "boolean"
+        },
+        "materialize_evaluation": {
+          "default": true,
+          "title": "Materialize Evaluation",
+          "type": "boolean"
+        },
+        "materialize_report": {
+          "default": true,
+          "title": "Materialize Report",
+          "type": "boolean"
+        },
+        "run_root": {
+          "default": ".runs",
+          "title": "Run Root",
+          "type": "string"
+        },
+        "store_screenshots": {
+          "default": false,
+          "title": "Store Screenshots",
+          "type": "boolean"
+        },
+        "store_video": {
+          "default": false,
+          "title": "Store Video",
+          "type": "boolean"
+        }
+      },
+      "title": "StorageConfig",
+      "type": "object"
+    },
+    "TelemetryConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "otlp_endpoint": {
+          "anyOf": [
+            {
+              "format": "uri",
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Otlp Endpoint"
+        },
+        "remote_export": {
+          "default": false,
+          "title": "Remote Export",
+          "type": "boolean"
+        }
+      },
+      "title": "TelemetryConfig",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "channel": {
+      "$ref": "#/$defs/ChannelConfig"
+    },
+    "evaluation_model": {
+      "anyOf": [
+        {
+          "discriminator": {
+            "mapping": {
+              "openai": "#/$defs/OpenAIModelConfig",
+              "openai_compatible": "#/$defs/OpenAICompatibleModelConfig"
+            },
+            "propertyName": "provider"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/OpenAIModelConfig"
+            },
+            {
+              "$ref": "#/$defs/OpenAICompatibleModelConfig"
+            }
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Evaluation Model"
+    },
+    "execution": {
+      "$ref": "#/$defs/ExecutionLimits"
+    },
+    "model": {
+      "discriminator": {
+        "mapping": {
+          "openai": "#/$defs/OpenAIModelConfig",
+          "openai_compatible": "#/$defs/OpenAICompatibleModelConfig"
+        },
+        "propertyName": "provider"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/OpenAIModelConfig"
+        },
+        {
+          "$ref": "#/$defs/OpenAICompatibleModelConfig"
+        }
+      ],
+      "title": "Model"
+    },
+    "persona": {
+      "$ref": "#/$defs/PersonaConfig"
+    },
+    "privacy": {
+      "$ref": "#/$defs/PrivacyConfig"
+    },
+    "scenario": {
+      "$ref": "#/$defs/ScenarioConfig"
+    },
+    "storage": {
+      "$ref": "#/$defs/StorageConfig"
+    },
+    "telemetry": {
+      "$ref": "#/$defs/TelemetryConfig"
+    },
+    "version": {
+      "const": "1",
+      "title": "Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "version",
+    "scenario",
+    "persona",
+    "channel",
+    "execution",
+    "model"
+  ],
+  "title": "ProjectConfig",
+  "type": "object"
+}

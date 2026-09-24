@@ -1,0 +1,27 @@
+{
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": false,
+  "description": "Redacted evidence snapshot; redacted values are not replayable configuration.",
+  "properties": {
+    "effective_config": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Effective Config",
+      "type": "object"
+    },
+    "source_content_hash": {
+      "minLength": 1,
+      "title": "Source Content Hash",
+      "type": "string"
+    }
+  },
+  "required": [
+    "source_content_hash",
+    "effective_config"
+  ],
+  "title": "ConfigArtifact",
+  "type": "object"
+}
