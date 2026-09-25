@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, cast
 
@@ -13,15 +15,29 @@ from syntheticcx.config.models import ProjectConfig
 from syntheticcx.errors import ConfigurationError
 
 
-def load_config(path: Path) -> ProjectConfig:
-    """Load one YAML mapping into a project configuration."""
+@dataclass(frozen=True)
+class LoadedConfig:
+    """Validated configuration and original source identity, without source retention."""
+
+    config: ProjectConfig
+    source_content_hash: str
+
+
+def load_config_with_source_hash(path: Path) -> LoadedConfig:
+    """Read once, hashing exact bytes before UTF-8 decoding or YAML normalization."""
     try:
-        source = path.read_text(encoding="utf-8")
+        source = path.read_bytes()
+        text = source.decode("utf-8")
     except (OSError, UnicodeError):
         raise ConfigurationError(
             "read configuration", "could not read configuration file"
         ) from None
-    return load_config_text(source)
+    return LoadedConfig(load_config_text(text), sha256(source).hexdigest())
+
+
+def load_config(path: Path) -> ProjectConfig:
+    """Load one YAML mapping into a project configuration."""
+    return load_config_with_source_hash(path).config
 
 
 def load_config_text(source: str) -> ProjectConfig:

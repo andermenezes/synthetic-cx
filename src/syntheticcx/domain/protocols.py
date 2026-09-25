@@ -6,7 +6,7 @@ from collections.abc import Awaitable
 from datetime import datetime
 from typing import Protocol, TypeVar
 
-from syntheticcx.domain.artifacts import EvaluationContext, Run
+from syntheticcx.domain.artifacts import ConfigArtifact, EvaluationContext, Run
 from syntheticcx.domain.events import TypedTraceEvent
 from syntheticcx.domain.models import (
     CompletedResponse,
@@ -45,7 +45,7 @@ class Evaluator(Protocol):
 
 
 class StorageBackend(Protocol):
-    async def create_run(self, run: Run) -> None: ...
+    async def create_run(self, run: Run, config_artifact: ConfigArtifact) -> None: ...
     async def append_event(self, run_id: str, event: TypedTraceEvent) -> None: ...
     async def finalize_run(self, run: Run) -> None: ...
 

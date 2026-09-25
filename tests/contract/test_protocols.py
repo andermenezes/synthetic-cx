@@ -5,8 +5,9 @@ from collections.abc import Awaitable
 from datetime import UTC, datetime
 from typing import TypeVar, get_args, get_type_hints
 
+from syntheticcx.adapters.storage.filesystem import FilesystemStorage
 from syntheticcx.domain import protocols
-from syntheticcx.domain.artifacts import EvaluationContext, Run
+from syntheticcx.domain.artifacts import ConfigArtifact, EvaluationContext, Run
 from syntheticcx.domain.events import TypedTraceEvent
 from syntheticcx.domain.models import (
     CompletedResponse,
@@ -55,7 +56,7 @@ class FakeAdapters:
     async def generate(self, request: LLMRequest) -> LLMResponse:
         raise NotImplementedError
 
-    async def create_run(self, run: Run) -> None:
+    async def create_run(self, run: Run, config_artifact: ConfigArtifact) -> None:
         return None
 
     async def append_event(self, run_id: str, event: TypedTraceEvent) -> None:
@@ -76,6 +77,7 @@ persona: protocols.PersonaSimulator = FakeAdapters()
 evaluator: protocols.Evaluator = FakeAdapters()
 provider: protocols.LLMProvider = FakeAdapters()
 storage: protocols.StorageBackend = FakeAdapters()
+filesystem_type: type[protocols.StorageBackend] = FilesystemStorage
 clock: protocols.Clock = FakeAdapters()
 wait: protocols.WaitController = FakeAdapters()
 
