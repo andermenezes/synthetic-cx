@@ -16,6 +16,8 @@ from syntheticcx.domain.events import (
     MessageObserved,
     MessageObservedEvent,
     PersonaStateChangedEvent,
+    RepeatedInformationEvent,
+    RepeatedInformationObserved,
 )
 from syntheticcx.domain.models import (
     ArtifactRecord,
@@ -116,12 +118,27 @@ def make_transition(sequence: int, trigger: str) -> PersonaStateChangedEvent:
     )
 
 
+def make_repetition(sequence: int) -> RepeatedInformationEvent:
+    return RepeatedInformationEvent(
+        id=f"event-{sequence}",
+        sequence=sequence,
+        timestamp=NOW + timedelta(seconds=sequence),
+        type="repeated_information",
+        data=RepeatedInformationObserved(
+            information_id="account_number",
+            original_message_id="message-0",
+            request_message_id="message-1",
+        ),
+    )
+
+
 def test_projections_derive_report_from_committed_evidence() -> None:
     events = [
         make_event(0),
         make_event(1),
-        make_transition(2, "repeated_information"),
-        make_evaluation(3, "billing-explanation"),
+        make_repetition(2),
+        make_transition(3, "event-2"),
+        make_evaluation(4, "billing-explanation"),
     ]
     projections = build_projections(
         "run-1",
@@ -138,9 +155,22 @@ def test_projections_derive_report_from_committed_evidence() -> None:
     assert projections.report is not None
     assert projections.report.turn_count == 2
     assert projections.report.repetition_count == 1
-    assert projections.report.duration_seconds == 3.0
+    assert projections.report.duration_seconds == 4.0
     assert projections.report.goal_result is not None
     assert projections.report.omissions == []
+
+
+def test_transition_trigger_text_cannot_invent_repetition() -> None:
+    projections = build_projections(
+        "run-1",
+        [make_transition(0, "repeated_information")],
+        [],
+        materialize_conversation=False,
+        materialize_evaluation=False,
+        materialize_report=True,
+    )
+    assert projections.report is not None
+    assert projections.report.repetition_count == 0
 
 
 def test_projections_preserve_criterion_contract_and_goal_type() -> None:

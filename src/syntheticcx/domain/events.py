@@ -38,6 +38,12 @@ class MessageObserved(DomainModel):
     identity_evidence: JsonObject = Field(default_factory=dict)
 
 
+class RepeatedInformationObserved(DomainModel):
+    information_id: Identifier
+    original_message_id: Identifier
+    request_message_id: Identifier
+
+
 class EvaluationCompleted(DomainModel):
     result: EvaluationResult
     criterion: Criterion
@@ -74,6 +80,11 @@ class PersonaStateChangedEvent(EventEnvelope):
     data: PersonaStateTransition
 
 
+class RepeatedInformationEvent(EventEnvelope):
+    type: Literal["repeated_information"]
+    data: RepeatedInformationObserved
+
+
 class ModelInteractionCompletedEvent(EventEnvelope):
     type: Literal["model_interaction_completed"]
     data: ModelInteraction
@@ -99,6 +110,7 @@ TypedTraceEvent = Annotated[
     | ConversationStartedEvent
     | MessageObservedEvent
     | PersonaStateChangedEvent
+    | RepeatedInformationEvent
     | ModelInteractionCompletedEvent
     | EvaluationCompletedEvent
     | OperationFailedEvent

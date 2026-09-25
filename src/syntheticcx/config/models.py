@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import unicodedata
 from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import (
@@ -73,17 +74,46 @@ class Criterion(StrictModel):
         return self
 
 
+class ScenarioInformation(StrictModel):
+    """Information identifiable through configured phrases in a conversation."""
+
+    id: str = Field(min_length=1)
+    aliases: list[str] = Field(min_length=1)
+
+    @field_validator("id")
+    @classmethod
+    def require_meaningful_id(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("information ID must contain non-whitespace characters")
+        return value
+
+    @field_validator("aliases")
+    @classmethod
+    def require_meaningful_aliases(cls, value: list[str]) -> list[str]:
+        if any(
+            not any(
+                not char.isspace() and not unicodedata.category(char).startswith("P")
+                for char in alias
+            )
+            for alias in value
+        ):
+            raise ValueError("aliases must contain a word, not only punctuation or whitespace")
+        return value
+
+
 class ScenarioConfig(StrictModel):
     id: str = Field(min_length=1)
     description: str = Field(min_length=1)
     goal: str = Field(min_length=1)
     starting_context: JsonObject = Field(default_factory=dict)
     knowledge: JsonObject = Field(default_factory=dict)
+    information: list[ScenarioInformation] = Field(default_factory=list)
     success_criteria: list[Criterion] = Field(min_length=1)
 
     @model_validator(mode="after")
     def require_unique_criteria(self) -> ScenarioConfig:
         _require_unique_ids(self.success_criteria, "success_criteria")
+        _require_unique_ids(self.information, "information")
         return self
 
 

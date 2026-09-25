@@ -17,7 +17,7 @@ from syntheticcx.domain.artifacts import ConversationArtifact, EvaluationArtifac
 from syntheticcx.domain.events import (
     EvaluationCompletedEvent,
     MessageObservedEvent,
-    PersonaStateChangedEvent,
+    RepeatedInformationEvent,
     TypedTraceEvent,
 )
 from syntheticcx.domain.models import (
@@ -80,9 +80,8 @@ def build_projections(
             messages.append(message.model_copy(deep=True))
             if message.actor == "customer":
                 turn_count += 1
-        elif isinstance(event, PersonaStateChangedEvent):
-            if any("repeated_information" in trigger_id for trigger_id in event.data.trigger_ids):
-                repetition_count += 1
+        elif isinstance(event, RepeatedInformationEvent):
+            repetition_count += 1
         elif isinstance(event, EvaluationCompletedEvent):
             result = event.data.result.model_copy(deep=True)
             _validate_references(result, event_ids, message_ids)

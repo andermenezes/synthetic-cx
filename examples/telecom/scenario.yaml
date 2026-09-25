@@ -8,6 +8,11 @@ scenario:
     previous_invoice: 100.00
   knowledge:
     account_number: SYNTHETIC-001
+  information:
+    - id: account_number
+      aliases:
+        - account number
+        - account ID
   success_criteria:
     - id: billing-explanation
       evaluator_type: semantic_goal_completion

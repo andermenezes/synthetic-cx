@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import Callable
 from typing import cast
 from uuid import uuid4
@@ -14,11 +15,12 @@ from syntheticcx.domain.events import (
     EvaluationCompleted,
     MessageObserved,
     OperationFailure,
+    RepeatedInformationObserved,
     RunLifecycleChange,
     TypedTraceEvent,
 )
 from syntheticcx.domain.models import ArtifactRecord, ModelInteraction, PersonaStateTransition
-from syntheticcx.domain.protocols import Clock, StorageBackend
+from syntheticcx.domain.protocols import Clock, StorageBackend, WaitController
 from syntheticcx.errors import PersistenceError
 from syntheticcx.privacy import Redactor
 
@@ -27,6 +29,7 @@ EventData = (
     | ConversationStarted
     | MessageObserved
     | PersonaStateTransition
+    | RepeatedInformationObserved
     | ModelInteraction
     | EvaluationCompleted
     | OperationFailure
@@ -37,6 +40,7 @@ _EVENT_TYPES = {
     ConversationStarted: "conversation_started",
     MessageObserved: "message_observed",
     PersonaStateTransition: "persona_state_changed",
+    RepeatedInformationObserved: "repeated_information",
     ModelInteraction: "model_interaction_completed",
     EvaluationCompleted: "evaluation_completed",
     OperationFailure: "operation_failed",
@@ -64,6 +68,17 @@ class RunJournal:
         self._events: list[TypedTraceEvent] = []
         self._lock = asyncio.Lock()
         self._failed = False
+        self._wait: WaitController | None = None
+        self._persistence_timeout: float | None = None
+
+    def configure_persistence(self, wait: WaitController, timeout: float) -> None:
+        """Bound each subsequent append before any run evidence is written."""
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("persistence timeout must be finite and positive")
+        if self._events or self._wait is not None:
+            raise ValueError("journal persistence boundary must be configured once, before appends")
+        self._wait = wait
+        self._persistence_timeout = timeout
 
     @property
     def committed_events(self) -> tuple[TypedTraceEvent, ...]:
@@ -94,7 +109,11 @@ class RunJournal:
                 event = safe_event
                 if any(previous.id == event.id for previous in self._events):
                     raise ValueError("duplicate generated event ID")
-                await self._storage.append_event(self._run_id, event.model_copy(deep=True))
+                operation = self._storage.append_event(self._run_id, event.model_copy(deep=True))
+                if self._wait is not None and self._persistence_timeout is not None:
+                    await self._wait.run(operation, self._persistence_timeout)
+                else:
+                    await operation
                 if self._failed:
                     raise PersistenceError("append journal", "journal is unavailable")
                 self._events.append(event)

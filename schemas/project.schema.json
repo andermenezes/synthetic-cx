@@ -686,6 +686,13 @@
           "title": "Id",
           "type": "string"
         },
+        "information": {
+          "items": {
+            "$ref": "#/$defs/ScenarioInformation"
+          },
+          "title": "Information",
+          "type": "array"
+        },
         "knowledge": {
           "additionalProperties": {
             "$ref": "#/$defs/JsonValue"
@@ -716,6 +723,31 @@
         "success_criteria"
       ],
       "title": "ScenarioConfig",
+      "type": "object"
+    },
+    "ScenarioInformation": {
+      "additionalProperties": false,
+      "description": "Information identifiable through configured phrases in a conversation.",
+      "properties": {
+        "aliases": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Aliases",
+          "type": "array"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "aliases"
+      ],
+      "title": "ScenarioInformation",
       "type": "object"
     },
     "SendStrategyConfig": {

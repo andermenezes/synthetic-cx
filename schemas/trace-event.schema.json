@@ -857,6 +857,70 @@
       "title": "PersonaStateTransition",
       "type": "object"
     },
+    "RepeatedInformationEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/RepeatedInformationObserved"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "repeated_information",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "timestamp",
+        "type",
+        "data"
+      ],
+      "title": "RepeatedInformationEvent",
+      "type": "object"
+    },
+    "RepeatedInformationObserved": {
+      "additionalProperties": false,
+      "properties": {
+        "information_id": {
+          "minLength": 1,
+          "title": "Information Id",
+          "type": "string"
+        },
+        "original_message_id": {
+          "minLength": 1,
+          "title": "Original Message Id",
+          "type": "string"
+        },
+        "request_message_id": {
+          "minLength": 1,
+          "title": "Request Message Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "information_id",
+        "original_message_id",
+        "request_message_id"
+      ],
+      "title": "RepeatedInformationObserved",
+      "type": "object"
+    },
     "RunLifecycleChange": {
       "additionalProperties": false,
       "properties": {
@@ -1015,6 +1079,7 @@
       "model_interaction_completed": "#/$defs/ModelInteractionCompletedEvent",
       "operation_failed": "#/$defs/OperationFailedEvent",
       "persona_state_changed": "#/$defs/PersonaStateChangedEvent",
+      "repeated_information": "#/$defs/RepeatedInformationEvent",
       "run_lifecycle_changed": "#/$defs/RunLifecycleEvent"
     },
     "propertyName": "type"
@@ -1031,6 +1096,9 @@
     },
     {
       "$ref": "#/$defs/PersonaStateChangedEvent"
+    },
+    {
+      "$ref": "#/$defs/RepeatedInformationEvent"
     },
     {
       "$ref": "#/$defs/ModelInteractionCompletedEvent"
