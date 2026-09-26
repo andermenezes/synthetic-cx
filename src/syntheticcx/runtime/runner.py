@@ -7,10 +7,10 @@ from collections.abc import Awaitable
 from datetime import timedelta
 from typing import Protocol, TypeVar, cast, runtime_checkable
 
-from syntheticcx.config.models import ExecutionLimits
+from syntheticcx.config.models import ExecutionLimits, ProjectConfig
 from syntheticcx.domain.artifacts import ConfigArtifact, Run
 from syntheticcx.domain.events import OperationFailure, RunLifecycleChange
-from syntheticcx.domain.models import ErrorDetail, PersonaDefinition, Scenario
+from syntheticcx.domain.models import ArtifactRecord, ErrorDetail, PersonaDefinition, Scenario
 from syntheticcx.domain.protocols import (
     ChannelAdapter,
     Clock,
@@ -19,6 +19,11 @@ from syntheticcx.domain.protocols import (
     WaitController,
 )
 from syntheticcx.errors import ErrorCategory, SyntheticCXError
+from syntheticcx.runtime.capture import (
+    FailureScreenshotSource,
+    ScreenshotArtifactWriter,
+    ScreenshotPolicy,
+)
 from syntheticcx.runtime.graph import build_graph
 from syntheticcx.runtime.journal import RunJournal
 from syntheticcx.runtime.result import RuntimeResult, TerminationReason
@@ -84,6 +89,7 @@ async def run_conversation(
     clock: Clock,
     wait: WaitController,
     limits: ExecutionLimits,
+    project_config: ProjectConfig | None = None,
 ) -> RuntimeResult:
     """Execute once and return committed evidence without finalizing the run.
 
@@ -99,6 +105,7 @@ async def run_conversation(
     stage = "storage.create_run"
     deadline = clock.now() + timedelta(seconds=limits.journey_timeout_seconds)
     secondary_errors: list[ErrorDetail] = []
+    screenshot_policy = ScreenshotPolicy.from_config(project_config) if project_config else None
 
     journal.configure_persistence(wait, limits.persistence_timeout_seconds)
 
@@ -130,6 +137,54 @@ async def run_conversation(
         except Exception:
             # A poisoned journal cannot safely record another failure.
             if reason is None or reason not in {"persistence_error", "cancelled"}:
+                reason = "persistence_error"
+                error = _error("persistence", "journal.append")
+
+    async def record_failure_screenshot() -> None:
+        """Record a truthful omission/failure or acknowledged artifact before close."""
+        nonlocal reason, error
+        policy = screenshot_policy or ScreenshotPolicy()
+        record = ArtifactRecord(
+            media_type="image/png", status="omitted", reason="screenshots_disabled"
+        )
+        if policy.enabled:
+            record = ArtifactRecord(
+                media_type="image/png", status="failed", reason="capture_unavailable"
+            )
+            if isinstance(channel, FailureScreenshotSource) and isinstance(
+                storage, ScreenshotArtifactWriter
+            ):
+                try:
+                    image = await finish_cleanup(
+                        wait.run(
+                            channel.capture_failure_screenshot(),
+                            limits.browser_action_timeout_seconds,
+                        )
+                    )
+                except (Exception, asyncio.CancelledError):
+                    record = ArtifactRecord(
+                        media_type="image/png", status="failed", reason="capture_failed"
+                    )
+                else:
+                    try:
+                        record = await finish_cleanup(
+                            wait.run(
+                                storage.write_screenshot(
+                                    run.id, "artifacts/screenshots/channel-failure.png", image
+                                ),
+                                limits.persistence_timeout_seconds,
+                            )
+                        )
+                    except (Exception, asyncio.CancelledError):
+                        record = ArtifactRecord(
+                            media_type="image/png", status="failed", reason="storage_failed"
+                        )
+                    finally:
+                        image = b""
+        try:
+            await finish_cleanup(journal.append(record))
+        except (Exception, asyncio.CancelledError):
+            if reason != "persistence_error":
                 reason = "persistence_error"
                 error = _error("persistence", "journal.append")
 
@@ -188,6 +243,8 @@ async def run_conversation(
         reason, error = _failure(exc, stage)
     finally:
         try:
+            if channel_attempted and reason in {"channel_error", "journey_timeout"}:
+                await record_failure_screenshot()
             if channel_attempted:
                 try:
                     await finish_cleanup(wait.run(channel.close(), limits.close_timeout_seconds))

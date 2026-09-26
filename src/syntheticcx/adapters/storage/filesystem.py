@@ -15,14 +15,15 @@ import re
 import tempfile
 from collections.abc import Callable
 from concurrent.futures import Future
-from pathlib import Path
+from hashlib import sha256
+from pathlib import Path, PurePosixPath
 from queue import Queue
 from threading import Thread
 
 import yaml
 from pydantic import BaseModel
 
-from syntheticcx.config.models import Criterion
+from syntheticcx.config.models import Criterion, ProjectConfig
 from syntheticcx.domain.artifacts import ConfigArtifact, MetadataArtifact, Run
 from syntheticcx.domain.events import TypedTraceEvent
 from syntheticcx.domain.models import ArtifactRecord
@@ -31,7 +32,9 @@ from syntheticcx.privacy import Redactor
 from syntheticcx.reporting.materialize import (
     build_projections,
     committed_events_from_lines,
+    reconcile_artifacts,
 )
+from syntheticcx.runtime.capture import ScreenshotPolicy
 
 
 def canonical_bytes(model: BaseModel) -> bytes:
@@ -95,6 +98,7 @@ class FilesystemStorage:
         materialize_conversation: bool = True,
         materialize_evaluation: bool = True,
         materialize_report: bool = True,
+        project_config: ProjectConfig | None = None,
     ) -> None:
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError("persistence timeout must be finite and positive")
@@ -110,6 +114,9 @@ class FilesystemStorage:
         self._materialize_conversation = materialize_conversation
         self._materialize_evaluation = materialize_evaluation
         self._materialize_report = materialize_report
+        self._screenshot_policy = (
+            ScreenshotPolicy.from_config(project_config) if project_config else ScreenshotPolicy()
+        )
         self._lock = asyncio.Lock()
         self._worker: _Worker | None = None
         self._failed = False
@@ -240,6 +247,52 @@ class FilesystemStorage:
 
         await self._perform("append event", append)
 
+    async def write_screenshot(
+        self, run_id: str, relative_path: str, content: bytes
+    ) -> ArtifactRecord:
+        """Acknowledge an owned, size-bounded PNG before exposing its artifact record."""
+        if not self._screenshot_policy.enabled:
+            raise PersistenceError("write screenshot", "screenshot storage is disabled")
+        path = PurePosixPath(relative_path)
+        if (
+            str(path) != relative_path
+            or path.is_absolute()
+            or ".." in path.parts
+            or "." in path.parts
+            or path.parts[:2] != ("artifacts", "screenshots")
+            or len(path.parts) != 3
+            or not re.fullmatch(r"[a-z0-9_-]{1,64}\.png", path.name)
+            or len(content) > 5 * 1024 * 1024
+            or not content.startswith(b"\x89PNG\r\n\x1a\n")
+        ):
+            raise PersistenceError("write screenshot", "invalid screenshot artifact")
+        if self._run_id is None or self._run_id != run_id:
+            raise PersistenceError("write screenshot", "run is not owned by this writer")
+
+        def write() -> None:
+            run_directory = self._root / run_id
+            if run_directory.is_symlink() or not run_directory.is_dir():
+                raise ValueError("invalid run directory")
+            artifacts = run_directory / "artifacts"
+            screenshots = artifacts / "screenshots"
+            if artifacts.is_symlink() or screenshots.is_symlink():
+                raise ValueError("screenshot directory is not owned")
+            self._ensure_directory(screenshots)
+            if not screenshots.resolve().is_relative_to(run_directory.resolve()):
+                raise ValueError("screenshot path escapes run")
+            destination = screenshots / path.name
+            if destination.exists() or destination.is_symlink():
+                raise ValueError("screenshot already exists")
+            self._atomic_write(destination, content)
+
+        await self._perform("write screenshot", write)
+        return ArtifactRecord(
+            path=relative_path,
+            media_type="image/png",
+            content_hash=sha256(content).hexdigest(),
+            status="captured",
+        )
+
     async def finalize_run(self, run: Run) -> None:
         """Atomically publish enabled projections, then final metadata last.
 
@@ -284,7 +337,7 @@ class FilesystemStorage:
                     media_type="application/json", status="omitted", reason="disabled"
                 ),
             ]
-            records.extend(record.model_copy(deep=True) for record in run.artifacts)
+            records = reconcile_artifacts(events, records + run.artifacts)
             safe_records = [self._redactor.redact_model(record) for record in records]
             projections = build_projections(
                 run.id,
@@ -301,8 +354,24 @@ class FilesystemStorage:
             )
             if metadata.lifecycle_status != "finalized":
                 raise ValueError("finalization requires a finalized metadata artifact")
+            omissions = [
+                f"screenshot:{record.reason or record.status}"
+                for record in safe_records
+                if record.media_type == "image/png" and record.status != "captured"
+            ]
             safe_metadata = self._redactor.redact_model(
-                metadata.model_copy(update={"artifacts": safe_records})
+                metadata.model_copy(
+                    update={
+                        "artifacts": safe_records,
+                        "metadata": metadata.metadata.model_copy(
+                            update={
+                                "capture_omissions": list(
+                                    dict.fromkeys(metadata.metadata.capture_omissions + omissions)
+                                )
+                            }
+                        ),
+                    }
+                )
             )
             if safe_metadata.id != run.id:
                 raise ValueError("redaction changed run identity")

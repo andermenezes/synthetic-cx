@@ -6,6 +6,7 @@ import ipaddress
 import re
 import unicodedata
 from typing import Annotated, Any, Literal, TypeAlias
+from urllib.parse import parse_qs, urlsplit
 
 from pydantic import (
     AnyHttpUrl,
@@ -136,6 +137,12 @@ class LocatorConfig(StrictModel):
     value: str = Field(min_length=1)
     name: str | None = None
 
+    @model_validator(mode="after")
+    def forbid_xpath_fallback(self) -> LocatorConfig:
+        if self.strategy == "css" and self.value.lstrip().startswith(("//", "xpath=")):
+            raise ValueError("CSS locator fallback does not support XPath")
+        return self
+
 
 class MessageIdentityConfig(StrictModel):
     strategy: Literal["attribute", "actor_sequence_content_hash"]
@@ -190,12 +197,40 @@ class ChannelConfig(StrictModel):
     send_strategy: SendStrategyConfig
     response_completion: ResponseCompletionConfig
 
+    @model_validator(mode="after")
+    def restrict_content_hash_fallback(self) -> ChannelConfig:
+        if self.message_identity.strategy != "actor_sequence_content_hash":
+            return self
+        target = urlsplit(str(self.url))
+        host = (target.hostname or "").strip("[]")
+        try:
+            loopback = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            loopback = host == "localhost"
+        variants = parse_qs(target.query).get("variant", [])
+        if (
+            not loopback
+            or target.path not in {"", "/"}
+            or len(variants) != 1
+            or variants[0]
+            not in {
+                "success",
+                "repeated_question",
+                "streamed_response",
+                "missing_control",
+                "silent_response",
+            }
+        ):
+            raise ValueError("content-hash identity fallback requires a controlled fixture URL")
+        return self
+
 
 class ExecutionLimits(StrictModel):
     max_turns: int = Field(gt=0)
     journey_timeout_seconds: PositiveSeconds
     greeting_grace_seconds: float = Field(ge=0)
     browser_action_timeout_seconds: PositiveSeconds
+    echo_observation_seconds: PositiveSeconds = 0.25
     response_timeout_seconds: PositiveSeconds
     model_timeout_seconds: PositiveSeconds
     evaluator_timeout_seconds: PositiveSeconds
@@ -276,6 +311,7 @@ class PrivacyConfig(StrictModel):
     synthetic_id_patterns: list[str] = Field(default_factory=list)
     capture_prompts: bool = False
     allow_screenshots: bool = False
+    confirm_screenshot_target_safe: bool = False
     allow_video: bool = False
 
     @field_validator("synthetic_id_patterns")
@@ -307,6 +343,8 @@ class ProjectConfig(StrictModel):
     def validate_capture_policy(self) -> ProjectConfig:
         if self.storage.store_screenshots and not self.privacy.allow_screenshots:
             raise ValueError("storage cannot enable screenshots forbidden by privacy")
+        if self.storage.store_screenshots and not self.privacy.confirm_screenshot_target_safe:
+            raise ValueError("screenshot storage requires explicit safe-target affirmation")
         if self.storage.store_video and not self.privacy.allow_video:
             raise ValueError("storage cannot enable video forbidden by privacy")
         return self

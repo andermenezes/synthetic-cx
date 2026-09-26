@@ -15,6 +15,7 @@ from pydantic import TypeAdapter
 from syntheticcx.config.models import Criterion
 from syntheticcx.domain.artifacts import ConversationArtifact, EvaluationArtifact
 from syntheticcx.domain.events import (
+    ArtifactRecordedEvent,
     EvaluationCompletedEvent,
     MessageObservedEvent,
     RepeatedInformationEvent,
@@ -103,6 +104,7 @@ def build_projections(
         if materialize_evaluation
         else None
     )
+    reconciled_artifacts = reconcile_artifacts(events, artifacts or [])
     report = _build_report(
         run_id,
         events,
@@ -114,9 +116,26 @@ def build_projections(
         materialize_evaluation,
         snapshots,
         artifact_location or f".runs/{run_id}",
-        artifacts or [],
+        reconciled_artifacts,
     )
     return Projections(conversation, evaluation, report)
+
+
+def reconcile_artifacts(
+    events: list[TypedTraceEvent], supplied: list[ArtifactRecord]
+) -> list[ArtifactRecord]:
+    """Make committed artifact events visible without duplicating caller projections."""
+    records: list[ArtifactRecord] = []
+    for record in supplied + [
+        event.data for event in events if isinstance(event, ArtifactRecordedEvent)
+    ]:
+        if record.path is not None and any(
+            existing.path == record.path and existing != record for existing in records
+        ):
+            raise PersistenceError("materialize evidence", "conflicting artifact records")
+        if record not in records:
+            records.append(record.model_copy(deep=True))
+    return records
 
 
 def _validate_references(
@@ -192,6 +211,11 @@ def _build_report(
         omissions.append("conversation")
     if not materialize_evaluation:
         omissions.append("evaluation")
+    omissions.extend(
+        f"screenshot:{artifact.reason or artifact.status}"
+        for artifact in artifacts
+        if artifact.media_type == "image/png" and artifact.status != "captured"
+    )
     return Report(
         run_id=run_id,
         outcome=None,

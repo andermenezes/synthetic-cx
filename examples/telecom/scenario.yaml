@@ -68,6 +68,7 @@ execution:
   journey_timeout_seconds: 120
   greeting_grace_seconds: 2
   browser_action_timeout_seconds: 10
+  echo_observation_seconds: 0.25
   response_timeout_seconds: 20
   model_timeout_seconds: 30
   evaluator_timeout_seconds: 30
@@ -86,4 +87,5 @@ privacy:
     - account_number
   capture_prompts: false
   allow_screenshots: false
+  confirm_screenshot_target_safe: false
   allow_video: false

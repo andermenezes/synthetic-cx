@@ -8,10 +8,11 @@ import pytest
 from pydantic import ValidationError
 
 from syntheticcx.config.loader import load_config
-from syntheticcx.config.models import PrivacyConfig
+from syntheticcx.config.models import PrivacyConfig, ProjectConfig
 from syntheticcx.domain.artifacts import ConfigArtifact, Run
 from syntheticcx.domain.events import TypedTraceEvent
 from syntheticcx.domain.models import (
+    ArtifactRecord,
     CompletedResponse,
     ConversationObservation,
     CustomerScenarioContext,
@@ -29,6 +30,14 @@ from syntheticcx.runtime.result import RuntimeResult
 from syntheticcx.runtime.runner import run_conversation
 
 NOW = datetime(2026, 9, 24, tzinfo=UTC)
+PNG = b"\x89PNG\r\n\x1a\nsynthetic-fixture-bytes"
+
+
+def capture_config() -> ProjectConfig:
+    source = load_config(Path("examples/telecom/scenario.yaml")).model_dump(mode="json")
+    source["privacy"].update(allow_screenshots=True, confirm_screenshot_target_safe=True)
+    source["storage"]["store_screenshots"] = True
+    return ProjectConfig.model_validate(source)
 
 
 def run() -> Run:
@@ -194,6 +203,7 @@ async def exercise(
     timeout: float = 20,
     greeting_grace: float = 0,
     definition: PersonaDefinition | None = None,
+    project_config: ProjectConfig | None = None,
 ) -> RuntimeResult:
     config = load_config(Path("examples/telecom/scenario.yaml"))
     logical_clock = clock or ManualClock(NOW)
@@ -216,6 +226,7 @@ async def exercise(
                 "journey_timeout_seconds": timeout,
             }
         ),
+        project_config=project_config or config,
     )
     assert storage.finalized == 0
     assert storage.closed == 1
@@ -272,6 +283,213 @@ def test_channel_and_model_failures_are_sanitized_and_closed() -> None:
                 "operation_failed",
                 "run_lifecycle_changed",
             ]
+
+    asyncio.run(scenario())
+
+
+def test_screenshot_capture_requires_policy_and_is_acknowledged_before_event() -> None:
+    class CapturingChannel(Channel):
+        captured = 0
+
+        async def capture_failure_screenshot(self) -> bytes:
+            assert self.closed == 0
+            self.captured += 1
+            return PNG
+
+    class ScreenshotStorage(Storage):
+        saved = 0
+
+        async def write_screenshot(
+            self, run_id: str, relative_path: str, content: bytes
+        ) -> ArtifactRecord:
+            assert self.created == 1 and run_id == "run-1"
+            assert relative_path == "artifacts/screenshots/channel-failure.png"
+            assert content == PNG
+            self.saved += 1
+            return ArtifactRecord(
+                path=relative_path,
+                media_type="image/png",
+                content_hash="ack-hash",
+                status="captured",
+            )
+
+        async def append_event(self, run_id: str, event: TypedTraceEvent) -> None:
+            if event.type == "artifact_recorded" and event.data.status == "captured":
+                assert self.saved == 1
+            await super().append_event(run_id, event)
+
+    async def scenario() -> None:
+        for enabled, status, captures, writes in [
+            (False, "omitted", 0, 0),
+            (True, "captured", 1, 1),
+        ]:
+            channel = CapturingChannel(failure="send")
+            storage = ScreenshotStorage()
+            result = await exercise(
+                channel,
+                Persona(),
+                storage,
+                project_config=capture_config() if enabled else None,
+            )
+            artifacts = [
+                event.data for event in result.committed_events if event.type == "artifact_recorded"
+            ]
+            assert len(artifacts) == 1 and artifacts[0].status == status
+            assert channel.captured == captures and storage.saved == writes
+            assert channel.closed == storage.closed == 1
+            assert b"synthetic-fixture-bytes" not in str(result.model_dump()).encode()
+            assert [event.type for event in result.committed_events][-3:] == [
+                "artifact_recorded",
+                "operation_failed",
+                "run_lifecycle_changed",
+            ]
+
+    asyncio.run(scenario())
+
+
+def test_model_failure_does_not_capture_browser_image() -> None:
+    class CapturingChannel(Channel):
+        async def capture_failure_screenshot(self) -> bytes:
+            raise AssertionError("model failures do not request browser screenshots")
+
+    async def scenario() -> None:
+        result = await exercise(
+            CapturingChannel(),
+            Persona(failure=True),
+            Storage(),
+            project_config=capture_config(),
+        )
+        assert result.termination_reason == "model_error"
+        assert not any(event.type == "artifact_recorded" for event in result.committed_events)
+
+    asyncio.run(scenario())
+
+
+def test_browser_journey_timeout_captures_before_close() -> None:
+    class HangingChannel(Channel):
+        async def capture_failure_screenshot(self) -> bytes:
+            assert self.closed == 0
+            return PNG
+
+    class ScreenshotStorage(Storage):
+        async def write_screenshot(
+            self, run_id: str, relative_path: str, content: bytes
+        ) -> ArtifactRecord:
+            assert content == PNG
+            return ArtifactRecord(
+                path=relative_path,
+                media_type="image/png",
+                content_hash="ack-hash",
+                status="captured",
+            )
+
+    async def scenario() -> None:
+        clock = ManualClock(NOW)
+        channel = HangingChannel(failure="hang")
+        task = asyncio.create_task(
+            exercise(
+                channel,
+                Persona(),
+                ScreenshotStorage(),
+                clock=clock,
+                timeout=2,
+                project_config=capture_config(),
+            )
+        )
+        await channel.receiving.wait()
+        await clock.advance(2)
+        result = await task
+        assert result.termination_reason == "journey_timeout"
+        assert channel.closed == 1
+        assert any(
+            event.type == "artifact_recorded" and event.data.status == "captured"
+            for event in result.committed_events
+        )
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("failure", ["capture", "write"])
+def test_failed_screenshot_capture_records_truthful_failure(failure: str) -> None:
+    class ChannelWithCapture(Channel):
+        async def capture_failure_screenshot(self) -> bytes:
+            if failure == "capture":
+                raise OSError("secret pixels")
+            return PNG
+
+    class StorageWithWriter(Storage):
+        async def write_screenshot(
+            self, run_id: str, relative_path: str, content: bytes
+        ) -> ArtifactRecord:
+            if failure == "write":
+                raise OSError("secret path")
+            raise AssertionError("write must not follow failed capture")
+
+    async def scenario() -> None:
+        channel = ChannelWithCapture(failure="send")
+        result = await exercise(
+            channel,
+            Persona(),
+            StorageWithWriter(),
+            project_config=capture_config(),
+        )
+        artifacts = [
+            event.data for event in result.committed_events if event.type == "artifact_recorded"
+        ]
+        assert len(artifacts) == 1
+        assert artifacts[0].status == "failed"
+        assert artifacts[0].reason == (
+            "capture_failed" if failure == "capture" else "storage_failed"
+        )
+        assert result.termination_reason == "channel_error"
+        assert "secret" not in str(result.model_dump())
+        assert channel.closed == 1
+
+    asyncio.run(scenario())
+
+
+def test_cancellation_during_failure_capture_finishes_bounded_cleanup() -> None:
+    class SlowCapture(Channel):
+        def __init__(self) -> None:
+            super().__init__(failure="send")
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def capture_failure_screenshot(self) -> bytes:
+            self.entered.set()
+            await self.release.wait()
+            return PNG
+
+    class ScreenshotStorage(Storage):
+        async def write_screenshot(
+            self, run_id: str, relative_path: str, content: bytes
+        ) -> ArtifactRecord:
+            return ArtifactRecord(
+                path=relative_path,
+                media_type="image/png",
+                content_hash="ack-hash",
+                status="captured",
+            )
+
+    async def scenario() -> None:
+        channel = SlowCapture()
+        result_task = asyncio.create_task(
+            exercise(
+                channel,
+                Persona(),
+                ScreenshotStorage(),
+                project_config=capture_config(),
+            )
+        )
+        await channel.entered.wait()
+        result_task.cancel()
+        channel.release.set()
+        result = await result_task
+        assert result.termination_reason == "cancelled"
+        assert result.cleanup_completed
+        assert channel.closed == 1
+        assert [event.type for event in result.committed_events][-1] == "run_lifecycle_changed"
+        assert any(event.type == "artifact_recorded" for event in result.committed_events)
 
     asyncio.run(scenario())
 

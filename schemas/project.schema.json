@@ -248,6 +248,12 @@
           "title": "Close Timeout Seconds",
           "type": "number"
         },
+        "echo_observation_seconds": {
+          "default": 0.25,
+          "exclusiveMinimum": 0,
+          "title": "Echo Observation Seconds",
+          "type": "number"
+        },
         "evaluator_timeout_seconds": {
           "exclusiveMinimum": 0,
           "title": "Evaluator Timeout Seconds",
@@ -571,6 +577,11 @@
         "capture_prompts": {
           "default": false,
           "title": "Capture Prompts",
+          "type": "boolean"
+        },
+        "confirm_screenshot_target_safe": {
+          "default": false,
+          "title": "Confirm Screenshot Target Safe",
           "type": "boolean"
         },
         "redaction_keys": {

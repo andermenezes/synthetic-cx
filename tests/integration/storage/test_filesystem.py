@@ -13,9 +13,14 @@ import yaml
 
 from syntheticcx.adapters.storage.filesystem import FilesystemStorage, canonical_bytes
 from syntheticcx.config.loader import load_config_with_source_hash
-from syntheticcx.config.models import PrivacyConfig
+from syntheticcx.config.models import PrivacyConfig, ProjectConfig
 from syntheticcx.domain.artifacts import ConfigArtifact, MetadataArtifact, Run
-from syntheticcx.domain.events import ConversationStarted, ConversationStartedEvent
+from syntheticcx.domain.events import (
+    ArtifactRecordedEvent,
+    ConversationStarted,
+    ConversationStartedEvent,
+)
+from syntheticcx.domain.models import ArtifactRecord, Report
 from syntheticcx.errors import PersistenceError
 from syntheticcx.privacy import Redactor
 from syntheticcx.runtime.journal import RunJournal
@@ -72,6 +77,124 @@ def storage(root: Path, timeout: float = 5) -> FilesystemStorage:
     return FilesystemStorage(
         root, Redactor(PrivacyConfig(), resolved_secrets=["api-key"]), timeout_seconds=timeout
     )
+
+
+def screenshot_storage(root: Path) -> FilesystemStorage:
+    source = load_config_with_source_hash(Path("examples/telecom/scenario.yaml")).config
+    config_data = source.model_dump(mode="json")
+    config_data["privacy"].update(allow_screenshots=True, confirm_screenshot_target_safe=True)
+    config_data["storage"]["store_screenshots"] = True
+    return FilesystemStorage(
+        root,
+        Redactor(PrivacyConfig(), resolved_secrets=["api-key"]),
+        timeout_seconds=5,
+        project_config=ProjectConfig.model_validate(config_data),
+    )
+
+
+def test_screenshot_writer_is_disabled_without_explicit_policy(tmp_path: Path) -> None:
+    async def exercise() -> None:
+        backend = storage(tmp_path)
+        await backend.create_run(run(), config())
+        with pytest.raises(PersistenceError, match="disabled"):
+            await backend.write_screenshot(
+                "run-1", "artifacts/screenshots/failure.png", b"\x89PNG\r\n\x1a\nfixture"
+            )
+        assert not (tmp_path / "run-1/artifacts").exists()
+        await backend.close()
+
+    asyncio.run(exercise())
+
+
+def test_screenshot_writer_owns_bounded_atomic_png(tmp_path: Path) -> None:
+    async def exercise() -> None:
+        backend = screenshot_storage(tmp_path)
+        await backend.create_run(run(), config())
+        png = b"\x89PNG\r\n\x1a\nfixture-image"
+        for path, content in [
+            ("../outside.png", png),
+            ("artifacts/screenshots/../outside.png", png),
+            ("artifacts/screenshots/unsafe.jpg", png),
+            ("artifacts/screenshots/failure.png", b"not an image"),
+            ("artifacts/screenshots/failure.png", png[:8] + b"0" * (5 * 1024 * 1024)),
+        ]:
+            with pytest.raises(PersistenceError):
+                await backend.write_screenshot("run-1", path, content)
+        with pytest.raises(PersistenceError):
+            await backend.write_screenshot("another-run", "artifacts/screenshots/failure.png", png)
+        record = await backend.write_screenshot("run-1", "artifacts/screenshots/failure.png", png)
+        assert record.path == "artifacts/screenshots/failure.png"
+        assert record.content_hash == sha256(png).hexdigest()
+        assert (tmp_path / "run-1" / record.path).read_bytes() == png
+        await backend.close()
+
+    asyncio.run(exercise())
+
+
+def test_screenshot_writer_rejects_symlink_directory(tmp_path: Path) -> None:
+    async def exercise() -> None:
+        backend = screenshot_storage(tmp_path)
+        await backend.create_run(run(), config())
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (tmp_path / "run-1/artifacts").symlink_to(outside, target_is_directory=True)
+        with pytest.raises(PersistenceError):
+            await backend.write_screenshot(
+                "run-1", "artifacts/screenshots/failure.png", b"\x89PNG\r\n\x1a\nfixture"
+            )
+        assert list(outside.iterdir()) == []
+        await backend.close()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("status", ["captured", "omitted", "failed"])
+def test_committed_screenshot_artifact_projects_to_metadata_and_report(
+    tmp_path: Path, status: str
+) -> None:
+    async def exercise() -> None:
+        backend = storage(tmp_path)
+        initial = run()
+        await backend.create_run(initial, config())
+        artifact = ArtifactRecord(
+            path="artifacts/screenshots/failure.png" if status == "captured" else None,
+            media_type="image/png",
+            content_hash="acknowledged-hash" if status == "captured" else None,
+            status=status,
+            reason={"omitted": "screenshots_disabled", "failed": "capture_failed"}.get(status),
+        )
+        await backend.append_event(
+            initial.id,
+            ArtifactRecordedEvent(
+                id="image-record",
+                sequence=0,
+                timestamp=NOW,
+                type="artifact_recorded",
+                data=artifact,
+            ),
+        )
+        final = initial.model_copy(
+            update={
+                "lifecycle_status": "finalized",
+                "outcome": "error",
+                "termination_reason": "channel_error",
+                "ended_at": NOW,
+            }
+        )
+        await backend.finalize_run(final)
+        metadata = MetadataArtifact.model_validate_json(
+            (tmp_path / "run-1/metadata.json").read_bytes()
+        )
+        report = Report.model_validate_json((tmp_path / "run-1/report.json").read_bytes())
+        assert metadata.artifacts.count(artifact) == 1
+        assert report.artifacts.count(artifact) == 1
+        if status != "captured":
+            omission = f"screenshot:{artifact.reason}"
+            assert omission in metadata.metadata.capture_omissions
+            assert omission in report.omissions
+        await backend.close()
+
+    asyncio.run(exercise())
 
 
 def test_create_append_retry_and_detached_committed_events(tmp_path: Path) -> None:
