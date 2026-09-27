@@ -192,6 +192,13 @@ def test_preflight_metadata_reports_only_observed_capabilities() -> None:
         assert "selected-secret" not in result.model_dump_json()
 
 
+def test_valid_false_boolean_still_proves_structured_output() -> None:
+    with serve() as endpoint:
+        endpoint.structured_content = '{"ok":false}'
+        result = run(project(endpoint))
+        assert result.verified_capabilities["persona"].structured_output
+
+
 def test_optional_capability_must_be_declared_as_well_as_observed() -> None:
     with serve() as endpoint:
         declared = {**_CAPABILITIES, "token_usage": False, "model_version": False}
@@ -215,7 +222,7 @@ def test_required_capability_failure_prevents_browser_activity(failure: str) -> 
         elif failure == "structured":
             endpoint.structured_status = 400
         elif failure == "wrong_shape":
-            endpoint.structured_content = '{"ok":false}'
+            endpoint.structured_content = '{"ok":"not a boolean"}'
         elif failure == "malformed":
             endpoint.structured_content = "{not-json"
         else:

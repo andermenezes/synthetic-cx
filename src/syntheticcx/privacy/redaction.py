@@ -6,6 +6,7 @@ secret or configured pattern. Capture permissions are enforced by callers.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Sequence
 from typing import TypeVar, cast
@@ -97,6 +98,27 @@ class Redactor:
         replacements = self._field_value_replacements(values)
         for value, replacement in sorted(
             replacements.items(), key=lambda item: len(item[0]), reverse=True
+        ):
+            text = text.replace(value, replacement)
+        return self.redact_text(text)
+
+    def redact_prompt_text(self, text: str, values: JsonValue) -> str:
+        """Redact raw and JSON-escaped values in nested, text-encoded prompts."""
+        replacements = {
+            **self._field_value_replacements(values),
+            **{secret: _SECRET for secret in self._secrets},
+        }
+        encoded: dict[str, str] = {}
+        for value, replacement in replacements.items():
+            encoded[value] = replacement
+            for ascii_mode in (False, True):
+                escaped = value
+                # TinyTroupe may embed a JSON document in another JSON message.
+                for _ in range(3):
+                    escaped = json.dumps(escaped, ensure_ascii=ascii_mode)[1:-1]
+                    encoded[escaped] = replacement
+        for value, replacement in sorted(
+            encoded.items(), key=lambda item: len(item[0]), reverse=True
         ):
             text = text.replace(value, replacement)
         return self.redact_text(text)

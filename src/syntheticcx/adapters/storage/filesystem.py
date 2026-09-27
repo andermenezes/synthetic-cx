@@ -64,6 +64,8 @@ class _Worker:
             operation, result = item
             try:
                 operation()
+            except PersistenceError as exc:
+                result.set_exception(exc)
             except Exception:
                 # Translate here so raw OS exceptions never cross the worker boundary.
                 result.set_exception(
@@ -164,11 +166,11 @@ class FilesystemStorage:
             self._failed = True
             await self.close()
             raise
-        except PersistenceError:
-            if self._finalizing:
-                raise PersistenceError(operation, "run is finalized") from None
+        except PersistenceError as exc:
             self._failed = True
             await self.close()
+            if exc.operation == "finalize run":
+                raise exc from None
             raise PersistenceError(operation, "operation failed; writer is unavailable") from None
         except Exception:
             self._failed = True
@@ -339,130 +341,133 @@ class FilesystemStorage:
             # Wait for an append already holding the writer lock, then make the
             # trace immutable before its projection snapshot is read.
             self._finalizing = True
-        try:
-            if self._run_id is None or run.id != self._run_id:
-                raise ValueError("unknown run")
-            if run.lifecycle_status != "finalized":
-                raise ValueError("finalization requires a finalized run")
-            lines = (self._root / run.id / "trace.jsonl").read_text(encoding="utf-8").splitlines()
-            events = committed_events_from_lines(lines)
-            final_events = [
-                event
-                for event in events
-                if isinstance(event, RunLifecycleEvent) and event.data.current == "finalized"
-            ]
-            if (
-                len(final_events) != 1
-                or events[-1] is not final_events[0]
-                or final_events[0].data.outcome != run.outcome
-                or final_events[0].data.termination_reason != run.termination_reason
-                or not final_events[0].data.termination_reason
-                or final_events[0].data.outcome is None
-            ):
-                raise ValueError("final lifecycle does not agree with metadata")
-            criteria = [criterion.model_copy(deep=True) for criterion in self._criteria]
-            records: list[ArtifactRecord] = [
-                ArtifactRecord(
-                    path="conversation.json", media_type="application/json", status="captured"
-                )
-                if self._materialize_conversation
-                else ArtifactRecord(
-                    media_type="application/json", status="omitted", reason="disabled"
-                ),
-                ArtifactRecord(
-                    path="evaluation.json", media_type="application/json", status="captured"
-                )
-                if self._materialize_evaluation
-                else ArtifactRecord(
-                    media_type="application/json", status="omitted", reason="disabled"
-                ),
-                ArtifactRecord(path="report.json", media_type="application/json", status="captured")
-                if self._materialize_report
-                else ArtifactRecord(
-                    media_type="application/json", status="omitted", reason="disabled"
-                ),
-            ]
-            records = reconcile_artifacts(events, records + run.artifacts)
-            safe_records = [self._redactor.redact_model(record) for record in records]
-            projections = build_projections(
-                run.id,
-                events,
-                criteria,
-                artifact_location=str(self._root / run.id),
-                artifacts=safe_records,
-                materialize_conversation=self._materialize_conversation,
-                materialize_evaluation=self._materialize_evaluation,
-                materialize_report=self._materialize_report,
-            )
-            metadata = MetadataArtifact.model_validate(
-                run.model_dump(exclude={"events", "messages", "evaluations"})
-            )
-            if metadata.lifecycle_status != "finalized":
-                raise ValueError("finalization requires a finalized metadata artifact")
-            if metadata.errors != committed_errors(events):
-                raise ValueError("metadata errors do not agree with the trace")
-            omissions = [
-                f"screenshot:{record.reason or record.status}"
-                for record in safe_records
-                if record.media_type == "image/png" and record.status != "captured"
-            ]
-            if self._prompt_capture_disabled:
-                omissions.append("prompts_not_captured")
-            safe_metadata = self._redactor.redact_model(
-                metadata.model_copy(
-                    update={
-                        "artifacts": safe_records,
-                        "metadata": metadata.metadata.model_copy(
-                            update={
-                                "capture_omissions": list(
-                                    dict.fromkeys(metadata.metadata.capture_omissions + omissions)
-                                )
-                            }
-                        ),
-                    }
-                )
-            )
-            if safe_metadata.id != run.id:
-                raise ValueError("redaction changed run identity")
-            metadata_bytes = canonical_bytes(safe_metadata)
-            conversation_bytes = (
-                canonical_bytes(projections.conversation)
-                if projections.conversation is not None
-                else None
-            )
-            evaluation_bytes = (
-                canonical_bytes(projections.evaluation)
-                if projections.evaluation is not None
-                else None
-            )
-            report_bytes = (
-                canonical_bytes(projections.report) if projections.report is not None else None
-            )
-            if self._finalized_metadata is not None and self._finalized_metadata != metadata_bytes:
-                raise ValueError("conflicting finalization retry")
-        except PersistenceError:
-            self._failed = True
-            await self.close()
-            raise
-        except Exception:
-            self._failed = True
-            await self.close()
-            raise PersistenceError("finalize run", "invalid finalization evidence") from None
-        run_id = run.id
 
         def finalize() -> None:
-            directory = self._root / run_id
-            # Projections first; final metadata is the commit marker and is
-            # replaced last so a crash never publishes finalized state without
-            # its views.
-            if conversation_bytes is not None:
-                self._atomic_write(directory / "conversation.json", conversation_bytes)
-            if evaluation_bytes is not None:
-                self._atomic_write(directory / "evaluation.json", evaluation_bytes)
-            if report_bytes is not None:
-                self._atomic_write(directory / "report.json", report_bytes)
-            self._atomic_write(directory / "metadata.json", metadata_bytes)
-            self._finalized_metadata = metadata_bytes
+            try:
+                if self._run_id is None or run.id != self._run_id:
+                    raise ValueError("unknown run")
+                if run.lifecycle_status != "finalized":
+                    raise ValueError("finalization requires a finalized run")
+                lines = (
+                    (self._root / run.id / "trace.jsonl").read_text(encoding="utf-8").splitlines()
+                )
+                events = committed_events_from_lines(lines)
+                final_events = [
+                    event
+                    for event in events
+                    if isinstance(event, RunLifecycleEvent) and event.data.current == "finalized"
+                ]
+                if (
+                    len(final_events) != 1
+                    or events[-1] is not final_events[0]
+                    or final_events[0].data.outcome != run.outcome
+                    or final_events[0].data.termination_reason != run.termination_reason
+                    or not final_events[0].data.termination_reason
+                    or final_events[0].data.outcome is None
+                ):
+                    raise ValueError("final lifecycle does not agree with metadata")
+                criteria = [criterion.model_copy(deep=True) for criterion in self._criteria]
+                records: list[ArtifactRecord] = [
+                    ArtifactRecord(
+                        path="conversation.json", media_type="application/json", status="captured"
+                    )
+                    if self._materialize_conversation
+                    else ArtifactRecord(
+                        media_type="application/json", status="omitted", reason="disabled"
+                    ),
+                    ArtifactRecord(
+                        path="evaluation.json", media_type="application/json", status="captured"
+                    )
+                    if self._materialize_evaluation
+                    else ArtifactRecord(
+                        media_type="application/json", status="omitted", reason="disabled"
+                    ),
+                    ArtifactRecord(
+                        path="report.json", media_type="application/json", status="captured"
+                    )
+                    if self._materialize_report
+                    else ArtifactRecord(
+                        media_type="application/json", status="omitted", reason="disabled"
+                    ),
+                ]
+                records = reconcile_artifacts(events, records + run.artifacts)
+                safe_records = [self._redactor.redact_model(record) for record in records]
+                projections = build_projections(
+                    run.id,
+                    events,
+                    criteria,
+                    artifact_location=str(self._root / run.id),
+                    artifacts=safe_records,
+                    materialize_conversation=self._materialize_conversation,
+                    materialize_evaluation=self._materialize_evaluation,
+                    materialize_report=self._materialize_report,
+                )
+                metadata = MetadataArtifact.model_validate(
+                    run.model_dump(exclude={"events", "messages", "evaluations"})
+                )
+                if metadata.lifecycle_status != "finalized":
+                    raise ValueError("finalization requires a finalized metadata artifact")
+                if metadata.errors != committed_errors(events):
+                    raise ValueError("metadata errors do not agree with the trace")
+                omissions = [
+                    f"screenshot:{record.reason or record.status}"
+                    for record in safe_records
+                    if record.media_type == "image/png" and record.status != "captured"
+                ]
+                if self._prompt_capture_disabled:
+                    omissions.append("prompts_not_captured")
+                safe_metadata = self._redactor.redact_model(
+                    metadata.model_copy(
+                        update={
+                            "artifacts": safe_records,
+                            "metadata": metadata.metadata.model_copy(
+                                update={
+                                    "capture_omissions": list(
+                                        dict.fromkeys(
+                                            metadata.metadata.capture_omissions + omissions
+                                        )
+                                    )
+                                }
+                            ),
+                        }
+                    )
+                )
+                if safe_metadata.id != run.id:
+                    raise ValueError("redaction changed run identity")
+                metadata_bytes = canonical_bytes(safe_metadata)
+                conversation_bytes = (
+                    canonical_bytes(projections.conversation)
+                    if projections.conversation is not None
+                    else None
+                )
+                evaluation_bytes = (
+                    canonical_bytes(projections.evaluation)
+                    if projections.evaluation is not None
+                    else None
+                )
+                report_bytes = (
+                    canonical_bytes(projections.report) if projections.report is not None else None
+                )
+                if (
+                    self._finalized_metadata is not None
+                    and self._finalized_metadata != metadata_bytes
+                ):
+                    raise ValueError("conflicting finalization retry")
+                directory = self._root / run.id
+                # Projections first; final metadata is the commit marker and is
+                # replaced last so a crash never publishes finalized state without
+                # its views.
+                if conversation_bytes is not None:
+                    self._atomic_write(directory / "conversation.json", conversation_bytes)
+                if evaluation_bytes is not None:
+                    self._atomic_write(directory / "evaluation.json", evaluation_bytes)
+                if report_bytes is not None:
+                    self._atomic_write(directory / "report.json", report_bytes)
+                self._atomic_write(directory / "metadata.json", metadata_bytes)
+                self._finalized_metadata = metadata_bytes
+
+            except Exception:
+                raise PersistenceError("finalize run", "invalid finalization evidence") from None
 
         await self._perform("finalize run", finalize, allow_finalizing=True)
 

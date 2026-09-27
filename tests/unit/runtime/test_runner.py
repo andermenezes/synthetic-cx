@@ -180,6 +180,60 @@ def test_owner_finalizes_consistent_filesystem_artifacts(tmp_path: Path) -> None
     asyncio.run(exercise())
 
 
+def test_cancellation_during_acknowledged_finalization_keeps_committed_outcome() -> None:
+    class GatedStorage(Storage):
+        def __init__(self) -> None:
+            super().__init__()
+            self.finalizing = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def finalize_run(self, run: Run) -> None:
+            self.finalizing.set()
+            await self.release.wait()
+            await super().finalize_run(run)
+
+    async def exercise() -> None:
+        config = load_config(Path("examples/telecom/scenario.yaml"))
+        backend = GatedStorage()
+        clock = ManualClock(NOW)
+        wait = ManualWaitController(clock)
+        redactor = Redactor(PrivacyConfig())
+        journal = RunJournal("run-1", backend, redactor, clock)
+        evaluation = EvaluationService(
+            journal=journal,
+            wait=wait,
+            evaluator_timeout_seconds=5,
+            redactor=redactor,
+            evaluators={"semantic_goal_completion": GoalEvaluator()},
+        )
+        task = asyncio.create_task(
+            run_evaluated(
+                run=run(),
+                config_artifact=ConfigArtifact(source_content_hash="hash", effective_config={}),
+                scenario=Scenario.model_validate(config.scenario.model_dump()),
+                persona=PersonaDefinition.model_validate(config.persona.model_dump()),
+                channel=Channel(),
+                simulator=Persona(),
+                storage=backend,
+                journal=journal,
+                clock=clock,
+                wait=wait,
+                limits=config.execution.model_copy(update={"greeting_grace_seconds": 0}),
+                evaluation=evaluation,
+                redactor=redactor,
+            )
+        )
+        await backend.finalizing.wait()
+        task.cancel()
+        backend.release.set()
+        result = await task
+        assert result.finalized and result.outcome == "passed" and result.exit_code == 0
+        assert backend.finalized == backend.closed == 1
+        assert backend.events[-1].data.outcome == "passed"
+
+    asyncio.run(exercise())
+
+
 @pytest.mark.parametrize(
     (
         "channel_failure",
@@ -531,7 +585,9 @@ def test_owner_semantic_provider_persists_usage_and_redacted_fact(tmp_path: Path
                 ),
                 interaction=ModelInteraction(
                     id="evaluation-call",
-                    identity=ModelIdentity(provider="openai", model="fake"),
+                    identity=ModelIdentity(
+                        provider="openai", model="fake", model_version="fake-v2"
+                    ),
                     started_at=NOW,
                     ended_at=NOW,
                     usage=TokenUsage(input_tokens=12, output_tokens=9),
@@ -594,6 +650,10 @@ def test_owner_semantic_provider_persists_usage_and_redacted_fact(tmp_path: Path
         interaction = next(item for item in trace if item["type"] == "model_interaction_completed")
         assert interaction["data"]["usage"]["input_tokens"] == 12
         assert interaction["data"]["usage"]["output_tokens"] == 9
+        metadata = json.loads((tmp_path / "run-1/metadata.json").read_text())
+        assert metadata["metadata"]["usage"]["input_tokens"] == 12
+        assert metadata["metadata"]["usage"]["output_tokens"] == 9
+        assert metadata["metadata"]["provider_model_version"] == "fake-v2"
         assert interaction["data"]["captured_prompt"] is not None
         assert "<redacted:account_number>" in interaction["data"]["captured_prompt"]
         assert "prompts_not_captured" not in interaction["data"]["capture_omissions"]

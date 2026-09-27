@@ -195,6 +195,20 @@ def test_prompt_capture_redacts_before_json_escaping() -> None:
     assert "quoted" not in saved
 
 
+def test_prompt_capture_redacts_values_escaped_inside_json_message() -> None:
+    project = load_config(Path("examples/telecom/scenario.yaml"))
+    account = 'quoted"account\\id'
+    credential = 'quoted"credential\\id'
+    scenario = project.scenario.model_copy(update={"knowledge": {"account_number": account}})
+    capture = PromptCapture(Redactor(project.privacy, resolved_secrets=[credential]), scenario)
+    content = json.dumps({"knowledge": scenario.knowledge, "conversation": [credential]})
+    saved = capture.sanitize([{"role": "user", "content": content}])
+    assert "quoted" not in saved
+    nested = json.loads(json.loads(saved)[0]["content"])
+    assert nested["knowledge"]["account_number"] == "<redacted:account_number>"
+    assert nested["conversation"] == ["<redacted:secret>"]
+
+
 @pytest.mark.parametrize("kind", ["openai", "openai_compatible"])
 def test_structured_request_and_absent_metadata(kind: str) -> None:
     def respond(http_request: httpx.Request) -> httpx.Response:

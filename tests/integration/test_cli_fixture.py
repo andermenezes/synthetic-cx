@@ -181,6 +181,8 @@ def test_cli_browser_fixture_produces_explained_schema_valid_runs(
     assert judge.closed and customer.closed
     directory = next((tmp_path / "runs").iterdir())
     metadata, report = validate_artifacts(directory)
+    conversation = json.loads((directory / "conversation.json").read_text())
+    assert [message["sequence"] for message in conversation] == list(range(len(conversation)))
     assert (
         metadata["outcome"] == report["outcome"] == ("passed" if expected_code == 0 else "failed")
     )

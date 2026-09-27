@@ -11,6 +11,7 @@ from syntheticcx.config.models import ExecutionLimits
 from syntheticcx.domain.events import (
     ConversationStarted,
     MessageObserved,
+    MessageObservedEvent,
     RepeatedInformationObserved,
     RunLifecycleChange,
 )
@@ -114,8 +115,12 @@ def build_graph(
             except Exception:
                 raise ChannelError("channel.greeting", "greeting observation failed") from None
         if response is not None:
+            messages: list[Message] = []
             for message in response.messages:
-                await journal.append(MessageObserved(message=message))
+                committed = await journal.append(MessageObserved(message=message))
+                assert isinstance(committed, MessageObservedEvent)
+                messages.append(committed.data.message)
+            response = response.model_copy(update={"messages": messages})
         await journal.append(
             ConversationStarted(
                 greeting_observed=response is not None,
@@ -263,8 +268,12 @@ def build_graph(
                 response = await wait.run(channel.receive(), limits.response_timeout_seconds)
         except Exception:
             raise ChannelError("channel.receive", "assistant receive failed") from None
+        messages: list[Message] = []
         for message in response.messages:
-            await journal.append(MessageObserved(message=message))
+            committed = await journal.append(MessageObserved(message=message))
+            assert isinstance(committed, MessageObservedEvent)
+            messages.append(committed.data.message)
+        response = response.model_copy(update={"messages": messages})
         return {
             "response": response,
             "observation": ConversationObservation(

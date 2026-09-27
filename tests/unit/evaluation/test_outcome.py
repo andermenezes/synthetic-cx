@@ -39,6 +39,7 @@ def finding(identifier: str, status: str, *, required: bool = True) -> Evaluatio
         ("unavailable", "passed", "abandonment", False, ("error", 3)),
         ("error", "passed", "max_turns", False, ("error", 3)),
         ("passed", "passed", "channel_error", False, ("error", 3)),
+        ("passed", "passed", "journey_timeout", False, ("error", 3)),
         ("failed", "passed", "max_turns", True, ("error", 3)),
         ("passed", "passed", "cancelled", False, ("cancelled", 130)),
         ("failed", "passed", "cancelled", True, ("cancelled", 130)),

@@ -91,6 +91,17 @@ class RunJournal:
             async with self._lock:
                 if self._failed:
                     raise PersistenceError("append journal", "journal is unavailable")
+                if isinstance(data, MessageObserved):
+                    # DOM ordinals and customer turns are actor-local. Persist a
+                    # single conversation-wide sequence in committed order.
+                    message_number = sum(
+                        isinstance(previous.data, MessageObserved) for previous in self._events
+                    )
+                    data = data.model_copy(
+                        update={
+                            "message": data.message.model_copy(update={"sequence": message_number})
+                        }
+                    )
                 event = TypeAdapter(TypedTraceEvent).validate_python(
                     {
                         "id": self._id_factory(),

@@ -24,7 +24,7 @@ class PromptCapture:
     def sanitize(self, messages: Any) -> str:
         def redact(value: JsonValue) -> JsonValue:
             if isinstance(value, str):
-                return self._redactor.redact_text_with_field_values(value, self._context)
+                return self._redactor.redact_prompt_text(value, self._context)
             if isinstance(value, list):
                 return [redact(item) for item in value]
             if isinstance(value, dict):

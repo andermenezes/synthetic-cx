@@ -8,7 +8,9 @@ from syntheticcx.config.models import Criterion
 from syntheticcx.domain.models import EvaluationResult, Outcome
 from syntheticcx.errors import EvaluationError
 
-_INFRASTRUCTURE_REASONS = frozenset({"channel_error", "model_error", "persistence_error"})
+_INFRASTRUCTURE_REASONS = frozenset(
+    {"channel_error", "model_error", "persistence_error", "journey_timeout"}
+)
 
 
 @dataclass(frozen=True)

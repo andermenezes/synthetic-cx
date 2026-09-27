@@ -164,6 +164,7 @@ def test_no_greeting_then_multipart_response_is_one_observation() -> None:
         "assistant_response",
     ]
     assert [message.id for message in persona.observations[1].messages] == ["a", "b"]
+    assert [message.sequence for message in persona.observations[1].messages] == [1, 2]
     assert [event.type for event in events] == [
         "run_lifecycle_changed",
         "conversation_started",

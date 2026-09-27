@@ -254,9 +254,11 @@ def test_cli_enabled_prompt_capture_is_redacted_in_committed_trace(
     path = scenario_file(tmp_path)
     source = yaml.safe_load(path.read_text())
     source["privacy"]["capture_prompts"] = True
-    source["scenario"]["knowledge"]["account_number"] = "private-account"
+    account = 'private-"account\\id'
+    credential = 'canary-"credential\\id'
+    source["scenario"]["knowledge"]["account_number"] = account
     path.write_text(yaml.safe_dump(source), encoding="utf-8")
-    monkeypatch.setenv("OPENAI_API_KEY", "canary-credential")
+    monkeypatch.setenv("OPENAI_API_KEY", credential)
 
     async def preflight(*_args: Any) -> CapabilityPreflight:
         return CapabilityPreflight()
@@ -279,7 +281,14 @@ def test_cli_enabled_prompt_capture_is_redacted_in_committed_trace(
                     ended_at=now,
                     usage=TokenUsage(unavailable_reason="offline fixture"),
                     captured_prompt=self.capture.sanitize(
-                        [{"role": "user", "content": "private-account canary-credential"}]
+                        [
+                            {
+                                "role": "user",
+                                "content": json.dumps(
+                                    {"knowledge": {"account_number": account}, "secret": credential}
+                                ),
+                            }
+                        ]
                     ),
                 )
             )
@@ -317,8 +326,8 @@ def test_cli_enabled_prompt_capture_is_redacted_in_committed_trace(
     assert len(prompts) == 2
     assert all("<redacted:account_number>" in prompt for prompt in prompts)
     assert all("<redacted:secret>" in prompt for prompt in prompts)
-    assert "private-account" not in (directory / "trace.jsonl").read_text()
-    assert "canary-credential" not in (directory / "trace.jsonl").read_text()
+    assert "private-" not in (directory / "trace.jsonl").read_text()
+    assert "canary-" not in (directory / "trace.jsonl").read_text()
     assert "prompts_not_captured" not in json.dumps(trace)
     metadata = json.loads((directory / "metadata.json").read_text())
     assert "prompts_not_captured" not in metadata["metadata"]["capture_omissions"]

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import time
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
@@ -84,6 +85,37 @@ def storage(root: Path, timeout: float = 5) -> FilesystemStorage:
     return FilesystemStorage(
         root, Redactor(PrivacyConfig(), resolved_secrets=["api-key"]), timeout_seconds=timeout
     )
+
+
+def test_finalization_trace_read_respects_async_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def exercise() -> None:
+        backend = storage(tmp_path, timeout=0.02)
+        await backend.create_run(run(), config())
+        finalized = run().model_copy(
+            update={
+                "lifecycle_status": "finalized",
+                "outcome": "passed",
+                "termination_reason": "max_turns",
+                "ended_at": NOW,
+            }
+        )
+        original = Path.read_text
+
+        def slow_trace(path: Path, *args: object, **kwargs: object) -> str:
+            if path.name == "trace.jsonl":
+                time.sleep(0.3)
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", slow_trace)
+        started = time.monotonic()
+        with pytest.raises(PersistenceError):
+            await backend.finalize_run(finalized)
+        assert time.monotonic() - started < 0.2
+        await backend.close()
+
+    asyncio.run(exercise())
 
 
 def screenshot_storage(root: Path) -> FilesystemStorage:

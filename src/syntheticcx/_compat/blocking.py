@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from concurrent.futures import Future
 from dataclasses import dataclass
+from threading import Thread
 from typing import Generic, TypeVar
 
 T = TypeVar("T")
@@ -30,7 +32,20 @@ async def run_blocking_bounded(
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
 
-    task = asyncio.create_task(asyncio.to_thread(operation))
+    # asyncio.run() joins its default executor during shutdown. A timed-out
+    # TinyTroupe call must not keep the CLI alive while its late work finishes.
+    result: Future[T] = Future()
+
+    def worker() -> None:
+        if not result.set_running_or_notify_cancel():
+            return
+        try:
+            result.set_result(operation())
+        except BaseException as exc:
+            result.set_exception(exc)
+
+    Thread(target=worker, name="syntheticcx-blocking", daemon=True).start()
+    task = asyncio.wrap_future(result)
     try:
         value = await asyncio.wait_for(asyncio.shield(task), timeout=timeout_seconds)
     except TimeoutError:
@@ -42,7 +57,7 @@ async def run_blocking_bounded(
     return BoundedResult(value=value, timed_out=False, cancelled=False)
 
 
-def _discard_late_result(task: asyncio.Task[object]) -> None:
+def _discard_late_result(task: asyncio.Future[T]) -> None:
     """Consume a late result or exception so it cannot escape as unhandled work."""
     if not task.cancelled():
         try:

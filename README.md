@@ -59,6 +59,10 @@ port `8000` is illustrative. The CLI validates before browser activity, probes
 selected model capabilities, prints an acknowledged run ID, and returns `0`
 for pass, `1` for evaluation failure, `2` for configuration/capability failure,
 `3` for infrastructure/evaluator error, or `130` for user interruption.
+An overall `journey_timeout` is an error (`3`), even if an available criterion
+passed before the deadline. If cancellation arrives while final metadata is
+being written and that write succeeds, the CLI retains the committed outcome
+and its exit code.
 
 Each invocation that reaches acknowledged run creation writes a separate
 `.runs/<run_id>/` directory. Configuration validation and model-capability
@@ -66,23 +70,32 @@ preflight failures occur earlier and leave no run artifacts. Inspect
 `metadata.json` for lifecycle and outcome, `report.json` for the final summary
 and findings, `conversation.json` for ordered messages, `evaluation.json` for
 criterion results, and `trace.jsonl` for committed event IDs referenced by
-findings. `config.yaml` is a redacted effective snapshot, not a replayable
-credential source. Enabled local telemetry writes supplemental
-`artifacts/telemetry/spans.jsonl` with run/trace correlation; `trace.jsonl`
-remains the authoritative evaluation record. Remote OTLP requires the optional
+findings. Message `sequence` values are zero-based across both customer and
+assistant messages in committed order; trace-event sequences are separate.
+Final metadata summarizes reported token usage from committed model interactions
+and records a model version when one unambiguous version was reported. If any
+committed call lacks usage, the aggregate is marked unavailable rather than
+reported as a misleading partial total. `config.yaml` is a redacted effective
+snapshot, not a replayable credential source. Enabled local telemetry writes
+supplemental `artifacts/telemetry/spans.jsonl` with run/trace correlation;
+`trace.jsonl` remains the authoritative evaluation record. Remote OTLP requires the optional
 `telemetry` extra and explicit `telemetry.remote_export`/`otlp_endpoint` values.
 Prompt capture and screenshots default off; recorded omissions explain missing
 captures. On an incomplete run, inspect available artifacts without assuming a
-final report exists. If a control is missing, check `channel.*_locator` and
-the fixture variant; if a response stalls, check `response_timeout_seconds`
-and the configured completion strategy. A capability failure before browser
-startup means the chosen endpoint did not satisfy the persona/evaluator path.
+final report exists. A timed-out persistence operation bounds the CLI's wait,
+but cannot forcibly interrupt a blocking filesystem call; partial evidence
+remains subject to the recovery rules. If a control is missing, check
+`channel.*_locator` and the fixture variant; if a response stalls, check
+`response_timeout_seconds` and the configured completion strategy. A capability
+failure before browser startup means the chosen endpoint did not satisfy the
+persona/evaluator path.
 
 Set `privacy.capture_prompts: true` only for a controlled synthetic scenario
 when prompt evidence is needed. Successful persona and semantic-evaluator calls
 then store redacted input messages as `captured_prompt` on model-interaction
 events in `trace.jsonl`. Configured sensitive scenario values and selected
-credentials are redacted before persistence; model output remains uncaptured.
+credentials are redacted before persistence, including values embedded in
+JSON-encoded prompt text; model output remains uncaptured.
 With prompt capture off, metadata records `prompts_not_captured`.
 
 The five variants are `success`, `repeated_question`, `streamed_response`,
@@ -147,6 +160,8 @@ output before constructing the persona, and checks typed owned results without
 asserting generated wording. The selected persona path does not use embeddings.
 Compatible endpoints require an explicit URL/credential and a successful
 chat/structured-output preflight; arbitrary endpoints are not assumed compatible.
+The structured probe validates a boolean `ok` field; either `true` or `false`
+demonstrates the required response shape.
 
 The separate [live-smoke workflow](.github/workflows/live-smoke.yml) runs
 manually through GitHub Actions and weekly on the default branch; it is not a

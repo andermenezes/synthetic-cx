@@ -28,6 +28,7 @@ from syntheticcx.errors import ConfigurationError, EvaluationError, PersistenceE
 from syntheticcx.evaluation.service import EvaluationService
 from syntheticcx.privacy import Redactor
 from syntheticcx.runtime.journal import RunJournal
+from syntheticcx.runtime.model_metadata import with_committed_interactions
 from syntheticcx.runtime.result import EvaluatedRunResult
 from syntheticcx.runtime.runner import AsyncCloseable, run_conversation
 from syntheticcx.telemetry.run import span
@@ -35,7 +36,7 @@ from syntheticcx.telemetry.run import span
 T = TypeVar("T")
 
 
-async def _finish(operation: Awaitable[T]) -> T:
+async def _finish(operation: Awaitable[T], *, committed_result_wins: bool = False) -> T:
     """Finish one bounded commit or close despite repeated task cancellation."""
     task = asyncio.ensure_future(operation)
     cancelled = False
@@ -45,7 +46,7 @@ async def _finish(operation: Awaitable[T]) -> T:
         except asyncio.CancelledError:
             cancelled = True
     result = await task
-    if cancelled:
+    if cancelled and not committed_result_wins:
         raise asyncio.CancelledError
     return result
 
@@ -193,6 +194,9 @@ async def run_evaluated(
                         "outcome": decision.outcome,
                         "termination_reason": reason,
                         "errors": committed_errors(journal.committed_events),
+                        "metadata": with_committed_interactions(
+                            run.metadata, journal.committed_events
+                        ),
                     }
                 ).model_dump()
             )
@@ -200,7 +204,8 @@ async def run_evaluated(
                 await _finish(
                     wait.run(
                         storage.finalize_run(finalized_run), limits.persistence_timeout_seconds
-                    )
+                    ),
+                    committed_result_wins=True,
                 )
             final = True
             outcome = decision.outcome

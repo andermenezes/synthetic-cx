@@ -59,8 +59,14 @@ async def _probe(
     )
     try:
         response = await provider.generate(request)
-        if structured and json.loads(response.content) != {"ok": True}:
-            raise ValueError("structured probe returned an unexpected shape")
+        if structured:
+            payload = json.loads(response.content)
+            if (
+                not isinstance(payload, dict)
+                or set(payload) != {"ok"}
+                or type(payload["ok"]) is not bool
+            ):
+                raise ValueError("structured probe returned an unexpected shape")
         return response
     except (ModelError, ValueError):
         capability = "structured_output" if structured else "chat_completions"
