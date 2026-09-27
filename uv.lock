@@ -5026,6 +5026,7 @@ telemetry = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "jsonschema" },
     { name = "mypy" },
     { name = "pre-commit" },
     { name = "pytest" },
@@ -5051,6 +5052,7 @@ provides-extras = ["telemetry"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "jsonschema", specifier = "==4.26.0" },
     { name = "mypy", specifier = "==2.3.1" },
     { name = "pre-commit", specifier = "==4.6.2" },
     { name = "pytest", specifier = "==9.1.1" },

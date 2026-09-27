@@ -101,6 +101,12 @@ configured as a quiet interval, streaming-indicator disappearance, or a new
 completion signal; these strategies are verified against the controlled
 fixture, not arbitrary external widgets.
 
+The passing and explained-failing browser/CLI artifact tests use deterministic
+persona and evaluator doubles. They validate the real Chromium fixture,
+schemas, trace citations and console/report agreement offline; they do not
+establish that a credentialed browser journey produces a particular verdict.
+The reference live-model smoke below verifies only the persona/model boundary.
+
 `echo=match` is the default. `echo=none` omits the customer DOM echo;
 `echo=normalized`, `echo=mismatch`, `echo=mutating`, and `echo=duplicate` cover
 identity and failure cases. A successful send makes the submitted customer
@@ -135,11 +141,39 @@ asserting generated wording. The selected persona path does not use embeddings.
 Compatible endpoints require an explicit URL/credential and a successful
 chat/structured-output preflight; arbitrary endpoints are not assumed compatible.
 
+The separate [live-smoke workflow](.github/workflows/live-smoke.yml) runs
+manually through GitHub Actions and weekly on the default branch; it is not a
+pull-request gate. Configure the repository's `OPENAI_API_KEY` secret before
+triggering it. With no secret, the workflow reports a **blocked credential
+prerequisite** and fails explicitly rather than treating the test's skip as a
+pass. It exercises the pinned TinyTroupe/OpenAI persona interaction, not the
+entire browser journey. For a separate manual live-fixture demonstration,
+follow both controlled telecom commands above with a selected credential and
+inspect the resulting reports, trace citations, and actual outcomes. Model
+wording and run verdicts are not fixed by the smoke test.
+
+The project license is [Apache-2.0](LICENSE); direct and material transitive
+dependency licenses and notice disposition are recorded in
+[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+
 ## Build and verify a distribution
 
+Run these commands from the repository checkout. The verifier builds temporary
+environments **outside** the checkout, checks the archive contents and Apache
+license, installs the exact wheel and a separately rebuilt sdist wheel with
+dependencies, and exercises both installed CLIs and module entry points. The
+TinyTroupe dependency is pinned to a Git commit, so the clean install needs
+Git and network access to that revision (or a populated dependency cache).
+
 ```bash
-uv build
-python3 -m venv /tmp/syntheticcx-wheel-check
-/tmp/syntheticcx-wheel-check/bin/pip install dist/*.whl
-/tmp/syntheticcx-wheel-check/bin/synthetic-cx --help
+uv build --clear
+uv run --no-sync python scripts/verify_distribution.py dist
 ```
+
+The verifier prints SHA-256 hashes for both built archives on success. CI runs
+the same verification on Linux with Python 3.11 and 3.13. A clean installed
+CLI still needs its matching Playwright Chromium browser binary before a real
+chat run; install it from that environment with `playwright install chromium`
+(on Linux, `playwright install --with-deps chromium`). The canonical telecom
+fixture, example YAML, and generated schemas are tracked repository files;
+they are not packaged as standalone wheel resources.

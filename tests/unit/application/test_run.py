@@ -214,6 +214,11 @@ def test_invalid_configuration_does_not_probe_or_create_a_run(
     monkeypatch.setattr(
         application, "preflight_models", lambda *_args: pytest.fail("unexpected provider probe")
     )
+    monkeypatch.setattr(
+        application,
+        "PlaywrightChannel",
+        lambda *_args: pytest.fail("unexpected browser construction"),
+    )
     output = CliRunner().invoke(app, ["run", str(path)])
     assert output.exit_code == 2
     assert "execution.max_turns" in output.output

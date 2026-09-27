@@ -212,7 +212,10 @@ def test_pinned_persona_uses_selected_sdk_transport_and_returns_owned_evidence(
             settings = ResolvedModelSettings(
                 provider=config.provider, model=config.model, credential=secret
             )
-            simulator = TinyTroupePersonaSimulator(config, settings, timeout_seconds=5)
+            # TinyTroupe imports and configures several global clients during construction.
+            # This contract is offline but can contend with other suite workers, so do not
+            # use a timing-sensitive budget intended for timeout behavior tests.
+            simulator = TinyTroupePersonaSimulator(config, settings, timeout_seconds=15)
             try:
                 state = await simulator.initialize(definition, context)
                 action = await simulator.respond(

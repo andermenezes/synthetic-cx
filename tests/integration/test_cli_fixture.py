@@ -184,11 +184,37 @@ def test_cli_browser_fixture_produces_explained_schema_valid_runs(
         metadata["outcome"] == report["outcome"] == ("passed" if expected_code == 0 else "failed")
     )
     assert metadata["termination_reason"] == report["termination_reason"] == expected_reason
-    assert f"Outcome: {report['outcome']}" in output.output
-    assert f"Termination: {expected_reason}" in output.output
+    goal = report["goal_result"]
+    expected_console = {
+        "Run ID": report["run_id"],
+        "Outcome": report["outcome"],
+        "Termination": report["termination_reason"],
+        "Goal": goal["status"] if goal else "unavailable",
+        "Turns": report["turn_count"],
+        "Duration (seconds)": report["duration_seconds"],
+        "Repetition findings": report["repetition_count"],
+        "Errors": ", ".join(
+            f"{error['category']} ({error['operation']}): {error['message']}"
+            for error in report["errors"]
+        )
+        or "none",
+        "Artifacts": report["artifact_location"],
+    }
+    for label, value in expected_console.items():
+        assert f"{label}: {value}\n" in output.output + "\n"
     assert "offline-test-secret" not in output.output
-    assert "offline-test-secret" not in (directory / "trace.jsonl").read_text()
+    for path in directory.rglob("*"):
+        if path.is_file() and path.suffix in {".json", ".jsonl", ".yaml", ".txt"}:
+            assert "offline-test-secret" not in path.read_text(), path
     assert report["goal_result"]["evidence_event_ids"]
+    evaluation = json.loads((directory / "evaluation.json").read_text())
+    assert all(finding["explanation"] for finding in evaluation["results"])
+    if expected_code == 0:
+        assert all(
+            finding["status"] == "passed"
+            for finding in evaluation["results"]
+            if finding["required"]
+        )
     if variant == "repeated_question":
         assert report["goal_result"]["status"] == "failed"
         assert report["repetition_count"] == 1

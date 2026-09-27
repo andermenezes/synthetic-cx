@@ -28,21 +28,37 @@ jobs:
       - name: Install matching Playwright Chromium and Linux dependencies
         run: uv run --no-sync playwright install --with-deps chromium
 
-      - name: Test (including real-browser fixture)
-        run: uv run --no-sync pytest
+      - name: Lint
+        run: uv run --no-sync ruff check .
 
-      - name: Lint and format
-        run: |
-          uv run --no-sync ruff check .
-          uv run --no-sync ruff format --check .
+      - name: Format
+        run: uv run --no-sync ruff format --check .
 
-      - name: Type-check and schema parity
-        run: |
-          uv run --no-sync mypy src
-          uv run --no-sync pytest tests/unit/config/test_validation.py::test_checked_in_schema_matches_generated_contract
+      - name: Type-check source and adapter contracts
+        run: uv run --no-sync mypy src tests/contract tests/smoke/test_live_tinytroupe.py
+
+      - name: Check all generated schemas and canonical example
+        run: >-
+          uv run --no-sync pytest
+          tests/unit/config/test_phase2a.py::test_loads_the_canonical_example
+          tests/unit/config/test_validation.py::test_checked_in_schema_matches_generated_contract
+          tests/unit/domain/test_contracts.py::test_artifact_schemas_match_generated_output
+
+      - name: Verify direct dependency license inventory
+        run: uv run --no-sync python scripts/license_inventory.py
+
+      - name: Test (including Chromium integration and offline CLI examples)
+        run: >-
+          uv run --no-sync pytest
+          --deselect=tests/unit/config/test_phase2a.py::test_loads_the_canonical_example
+          --deselect=tests/unit/config/test_validation.py::test_checked_in_schema_matches_generated_contract
+          --deselect=tests/unit/domain/test_contracts.py::test_artifact_schemas_match_generated_output
 
       - name: Build distributions
-        run: uv build
+        run: uv build --clear --out-dir "$RUNNER_TEMP/syntheticcx-dist"
+
+      - name: Inspect archives and clean-install wheel and sdist-derived wheel
+        run: uv run --no-sync python scripts/verify_distribution.py "$RUNNER_TEMP/syntheticcx-dist"
 
       - name: Remove test-generated logs
         if: always()

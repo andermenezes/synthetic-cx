@@ -177,6 +177,65 @@ def test_no_greeting_then_multipart_response_is_one_observation() -> None:
     assert result["persona_state"].turn_number == 1
 
 
+def test_hidden_evaluator_criteria_never_reach_persona_on_subsequent_turns() -> None:
+    marker = "EVALUATOR-ONLY-MARKER-9D"
+    config = load_config(Path("examples/telecom/scenario.yaml"))
+    scenario = Scenario.model_validate(config.scenario.model_dump())
+    criteria = [item.model_copy(deep=True) for item in scenario.success_criteria]
+    goal_index = next(
+        index
+        for index, item in enumerate(criteria)
+        if item.evaluator_type == "semantic_goal_completion"
+    )
+    goal = criteria[goal_index]
+    goal = goal.model_copy(update={"result_kind": "scored", "threshold": 0.73})
+    goal.parameters["expected_facts"] = [marker]
+    criteria[goal_index] = goal
+    scenario = scenario.model_copy(update={"success_criteria": criteria})
+    captured: list[str] = []
+
+    class CapturingPersona(Persona):
+        async def initialize(
+            self, definition: PersonaDefinition, context: CustomerScenarioContext
+        ) -> PersonaState:
+            captured.append(context.model_dump_json())
+            return await super().initialize(definition, context)
+
+        async def respond(
+            self, observation: ConversationObservation, state: PersonaState
+        ) -> PersonaAction:
+            captured.append(observation.model_dump_json() + state.model_dump_json())
+            return await super().respond(observation, state)
+
+    persona = CapturingPersona(["First question", "Second question", None])
+    storage = Storage()
+    journal = RunJournal("run-1", storage, Redactor(PrivacyConfig()), Clock())
+    channel = Channel([response(("a", "First answer")), response(("b", "Second answer"))])
+    definition = PersonaDefinition.model_validate(config.persona.model_dump())
+    graph = build_graph(
+        scenario=scenario,
+        persona=definition,
+        channel=channel,
+        simulator=persona,
+        journal=journal,
+        wait=RealWaitController(),
+        limits=config.execution.model_copy(update={"greeting_grace_seconds": 0}),
+    )
+    result = asyncio.run(graph.ainvoke(initial_state(definition)))
+    assert result["termination_reason"] == "goal_believed_complete"
+    assert len(persona.observations) == 3
+    assert len(captured) == 4
+    assert all(
+        marker not in item
+        and "expected_facts" not in item
+        and "threshold" not in item
+        and "0.73" not in item
+        for item in captured
+    )
+    assert marker in goal.model_dump_json()
+    assert goal.threshold == 0.73
+
+
 def test_greeting_is_committed_before_persona_and_terminal_action_never_sends() -> None:
     channel = Channel([response(("hello", "How can I help?"))])
     persona = Persona([None])
