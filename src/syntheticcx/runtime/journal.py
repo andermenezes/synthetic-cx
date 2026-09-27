@@ -23,6 +23,7 @@ from syntheticcx.domain.models import ArtifactRecord, ModelInteraction, PersonaS
 from syntheticcx.domain.protocols import Clock, StorageBackend, WaitController
 from syntheticcx.errors import PersistenceError
 from syntheticcx.privacy import Redactor
+from syntheticcx.telemetry.run import span
 
 EventData = (
     RunLifecycleChange
@@ -110,10 +111,11 @@ class RunJournal:
                 if any(previous.id == event.id for previous in self._events):
                     raise ValueError("duplicate generated event ID")
                 operation = self._storage.append_event(self._run_id, event.model_copy(deep=True))
-                if self._wait is not None and self._persistence_timeout is not None:
-                    await self._wait.run(operation, self._persistence_timeout)
-                else:
-                    await operation
+                with span("persistence.append"):
+                    if self._wait is not None and self._persistence_timeout is not None:
+                        await self._wait.run(operation, self._persistence_timeout)
+                    else:
+                        await operation
                 if self._failed:
                     raise PersistenceError("append journal", "journal is unavailable")
                 self._events.append(event)

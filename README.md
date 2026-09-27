@@ -23,20 +23,60 @@ normal pytest suite without credentials; the live-model smoke test is opt-in.
 
 ## Controlled telecom web chat
 
-Start the local fixture in another terminal:
+The canonical version-1 configuration is `examples/telecom/scenario.yaml`.
+The fixture chooses an ephemeral loopback port, so the example launcher starts
+it, writes a **temporary copy** of the YAML with the actual URL and selected
+persona, then runs the installed CLI. From the repository root, supply your
+explicitly selected model credential and run each journey separately:
+
+```bash
+export OPENAI_API_KEY='your-credential'
+uv run python examples/telecom/run_demo.py --variant success --persona standard
+uv run python examples/telecom/run_demo.py --variant repeated_question --persona impatient
+```
+
+The first command targets a sufficient billing explanation. The second uses
+the *same scenario* with an impatient persona and a repeated account-number
+request, which can trigger a recorded state transition and abandonment. Model
+behavior is nondeterministic: inspect actual outcomes rather than assuming a
+particular generated message or a fixed exit code. A selected OpenAI-compatible
+endpoint can be configured instead of OpenAI when its explicit credential and
+capabilities pass preflight; the reference demo uses `gpt-5-mini`. Persona and
+semantic evaluation model calls may transmit configured synthetic conversation
+content to the selected endpoint. They do not silently fall back to another
+credential source.
+
+For manual fixture diagnosis, start the server separately:
 
 ```bash
 uv run python examples/telecom/webchat_fixture/server.py
 ```
 
-It prints a URL such as `http://127.0.0.1:<port>/?variant=success` and stops
-on Ctrl-C. The port is selected by the OS. The port `8000` in
-`examples/telecom/scenario.yaml` is an example value; substitute the printed
-port when configuring this target. Integration tests start and stop their own
-ephemeral fixture servers. The CLI `run` command and full evaluation/reporting
-composition are planned for later phases; for now, use
-`uv run pytest tests/integration/channel` to exercise the browser channel
-against the fixture.
+It prints a URL such as `http://127.0.0.1:<port>/?variant=success` and stops on
+Ctrl-C. To run `synthetic-cx run <scenario.yaml>` directly, make a temporary YAML
+copy and substitute that port in `channel.url`; the committed canonical YAML's
+port `8000` is illustrative. The CLI validates before browser activity, probes
+selected model capabilities, prints an acknowledged run ID, and returns `0`
+for pass, `1` for evaluation failure, `2` for configuration/capability failure,
+`3` for infrastructure/evaluator error, or `130` for user interruption.
+
+Each invocation that reaches acknowledged run creation writes a separate
+`.runs/<run_id>/` directory. Configuration validation and model-capability
+preflight failures occur earlier and leave no run artifacts. Inspect
+`metadata.json` for lifecycle and outcome, `report.json` for the final summary
+and findings, `conversation.json` for ordered messages, `evaluation.json` for
+criterion results, and `trace.jsonl` for committed event IDs referenced by
+findings. `config.yaml` is a redacted effective snapshot, not a replayable
+credential source. Enabled local telemetry writes supplemental
+`artifacts/telemetry/spans.jsonl` with run/trace correlation; `trace.jsonl`
+remains the authoritative evaluation record. Remote OTLP requires the optional
+`telemetry` extra and explicit `telemetry.remote_export`/`otlp_endpoint` values.
+Prompt capture and screenshots default off; recorded omissions explain missing
+captures. On an incomplete run, inspect available artifacts without assuming a
+final report exists. If a control is missing, check `channel.*_locator` and
+the fixture variant; if a response stalls, check `response_timeout_seconds`
+and the configured completion strategy. A capability failure before browser
+startup means the chosen endpoint did not satisfy the persona/evaluator path.
 
 The five variants are `success`, `repeated_question`, `streamed_response`,
 `missing_control`, and `silent_response`. For example:

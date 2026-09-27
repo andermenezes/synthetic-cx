@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from typing import Protocol, TypeVar, cast, runtime_checkable
 
@@ -28,6 +28,7 @@ from syntheticcx.runtime.graph import build_graph
 from syntheticcx.runtime.journal import RunJournal
 from syntheticcx.runtime.result import RuntimeResult, TerminationReason
 from syntheticcx.runtime.state import RuntimeProgress, initial_state
+from syntheticcx.telemetry.run import span
 
 T = TypeVar("T")
 
@@ -92,6 +93,7 @@ async def run_conversation(
     limits: ExecutionLimits,
     project_config: ProjectConfig | None = None,
     retain_storage: bool = False,
+    on_created: Callable[[str], None] | None = None,
 ) -> RuntimeResult:
     """Execute once and return committed evidence without finalizing the run.
 
@@ -195,17 +197,25 @@ async def run_conversation(
     try:
         if remaining_time() <= 0:
             raise TimeoutError("journey deadline expired")
-        await wait.run(
-            storage.create_run(run, config_artifact),
-            min(limits.persistence_timeout_seconds, remaining_time()),
-        )
+        with span("persistence.create"):
+            await wait.run(
+                storage.create_run(run, config_artifact),
+                min(limits.persistence_timeout_seconds, remaining_time()),
+            )
+        if on_created is not None:
+            try:
+                on_created(run.id)
+            except Exception:
+                # Progress output cannot undo an acknowledged run or stop its cleanup.
+                pass
         stage = "channel.start"
         if remaining_time() <= 0:
             raise TimeoutError("journey deadline expired")
         channel_attempted = True
-        await wait.run(
-            channel.start(), min(limits.browser_action_timeout_seconds, remaining_time())
-        )
+        with span("browser.start"):
+            await wait.run(
+                channel.start(), min(limits.browser_action_timeout_seconds, remaining_time())
+            )
         stage = "graph"
         remaining = remaining_time()
         if remaining <= 0:
@@ -220,13 +230,14 @@ async def run_conversation(
             limits=limits,
             progress=progress,
         )
-        completed = await wait.run(
-            graph.ainvoke(
-                initial_state(persona),
-                config={"recursion_limit": 4 * limits.max_turns + 10},
-            ),
-            remaining,
-        )
+        with span("conversation.run"):
+            completed = await wait.run(
+                graph.ainvoke(
+                    initial_state(persona),
+                    config={"recursion_limit": 4 * limits.max_turns + 10},
+                ),
+                remaining,
+            )
         reason = cast(TerminationReason, completed["termination_reason"])
         progress.persona_state = completed["persona_state"]
         progress.turn_count = completed["turn_count"]
@@ -251,7 +262,10 @@ async def run_conversation(
                 await record_failure_screenshot()
             if channel_attempted:
                 try:
-                    await finish_cleanup(wait.run(channel.close(), limits.close_timeout_seconds))
+                    with span("resource.cleanup", operation="channel.close"):
+                        await finish_cleanup(
+                            wait.run(channel.close(), limits.close_timeout_seconds)
+                        )
                 except (Exception, asyncio.CancelledError):
                     cleanup_completed = False
                     secondary = _error("channel", "channel.close")
@@ -260,7 +274,10 @@ async def run_conversation(
                     secondary_errors.append(secondary)
             if isinstance(simulator, AsyncCloseable):
                 try:
-                    await finish_cleanup(wait.run(simulator.close(), limits.close_timeout_seconds))
+                    with span("resource.cleanup", operation="persona.close"):
+                        await finish_cleanup(
+                            wait.run(simulator.close(), limits.close_timeout_seconds)
+                        )
                 except (Exception, asyncio.CancelledError):
                     cleanup_completed = False
                     secondary = _error("model", "persona.close")

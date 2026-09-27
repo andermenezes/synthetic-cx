@@ -11,9 +11,9 @@ def test_version_is_available() -> None:
     assert result.stdout.strip() == __version__
 
 
-def test_help_does_not_advertise_unimplemented_run_command() -> None:
+def test_help_advertises_run_command() -> None:
     result = CliRunner().invoke(app, ["--help"])
 
     assert result.exit_code == 0
     assert "SyntheticCX" in result.stdout
-    assert "run" not in result.stdout.lower()
+    assert "run" in result.stdout.lower()

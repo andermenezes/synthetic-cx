@@ -30,6 +30,7 @@ from syntheticcx.runtime.behavior import apply_behavior
 from syntheticcx.runtime.journal import RunJournal
 from syntheticcx.runtime.repetition import RepetitionTracker
 from syntheticcx.runtime.state import RuntimeProgress, RuntimeState
+from syntheticcx.telemetry.run import span
 
 
 @runtime_checkable
@@ -82,10 +83,11 @@ def build_graph(
     async def initialize(state: RuntimeState) -> dict[str, object]:
         lifecycle = await journal.append(RunLifecycleChange(previous=None, current="in_progress"))
         try:
-            initialized = await wait.run(
-                simulator.initialize(persona, CustomerScenarioContext.from_scenario(scenario)),
-                limits.model_timeout_seconds,
-            )
+            with span("persona.initialize"), span("model.call", operation="persona.initialize"):
+                initialized = await wait.run(
+                    simulator.initialize(persona, CustomerScenarioContext.from_scenario(scenario)),
+                    limits.model_timeout_seconds,
+                )
         except Exception:
             raise ModelError("persona.initialize", "persona initialization failed") from None
         await commit_interactions([lifecycle.id])
@@ -142,17 +144,18 @@ def build_graph(
                         request_message_id=repetition.request_message_id,
                     )
                 )
-                transition = apply_behavior(
-                    current,
-                    persona.behavioral_rules,
-                    event="repeated_information",
-                    trigger_ids=[
-                        event.id,
-                        repetition.original_message_id,
-                        repetition.request_message_id,
-                    ],
-                )
-                await journal.append(transition)
+                with span("persona.update"):
+                    transition = apply_behavior(
+                        current,
+                        persona.behavioral_rules,
+                        event="repeated_information",
+                        trigger_ids=[
+                            event.id,
+                            repetition.original_message_id,
+                            repetition.request_message_id,
+                        ],
+                    )
+                    await journal.append(transition)
                 current = transition.after
                 if progress is not None:
                     progress.persona_state = current
@@ -171,9 +174,11 @@ def build_graph(
         observation = state["observation"]
         assert observation is not None
         try:
-            action = await wait.run(
-                simulator.respond(observation, state["persona_state"]), limits.model_timeout_seconds
-            )
+            with span("persona.respond"), span("model.call", operation="persona.respond"):
+                action = await wait.run(
+                    simulator.respond(observation, state["persona_state"]),
+                    limits.model_timeout_seconds,
+                )
         except Exception:
             raise ModelError("persona.respond", "persona response failed") from None
         observation_ids = {message.id for message in observation.messages}
@@ -235,14 +240,15 @@ def build_graph(
                 identity_evidence=receipt.evidence,
             )
         )
-        await journal.append(
-            PersonaStateTransition(
-                trigger_ids=[observed.id],
-                before=before,
-                after=after,
-                applied_rule_ids=[],
+        with span("persona.update"):
+            await journal.append(
+                PersonaStateTransition(
+                    trigger_ids=[observed.id],
+                    before=before,
+                    after=after,
+                    applied_rule_ids=[],
+                )
             )
-        )
         tracker.record_send(content, receipt)
         return {
             "receipt": receipt,
@@ -253,7 +259,8 @@ def build_graph(
 
     async def receive(state: RuntimeState) -> dict[str, object]:
         try:
-            response = await wait.run(channel.receive(), limits.response_timeout_seconds)
+            with span("conversation.turn", **{"turn.number": state["turn_count"]}):
+                response = await wait.run(channel.receive(), limits.response_timeout_seconds)
         except Exception:
             raise ChannelError("channel.receive", "assistant receive failed") from None
         for message in response.messages:

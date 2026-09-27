@@ -1,0 +1,348 @@
+"""Installed CLI composition through Chromium and the controlled fixture."""
+
+from __future__ import annotations
+
+import importlib
+import json
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+from uuid import uuid4
+
+import pytest
+import yaml
+from jsonschema import Draft202012Validator
+from typer.testing import CliRunner
+
+from syntheticcx.adapters.channel.playwright import PlaywrightChannel
+from syntheticcx.adapters.llm.preflight import CapabilityPreflight
+from syntheticcx.application import run as application
+from syntheticcx.cli import app
+from syntheticcx.domain.models import (
+    ConversationObservation,
+    CustomerScenarioContext,
+    LLMRequest,
+    LLMResponse,
+    ModelIdentity,
+    ModelInteraction,
+    PersonaAction,
+    PersonaDefinition,
+    PersonaState,
+    TokenUsage,
+)
+
+EXAMPLE = Path("examples/telecom").resolve()
+SCHEMAS = Path("schemas")
+
+
+class DeterministicPersona:
+    """Supply the configured identifier; stop after the first assistant turn."""
+
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        self.closed = False
+
+    async def initialize(
+        self, definition: PersonaDefinition, _context: CustomerScenarioContext
+    ) -> PersonaState:
+        return definition.fresh_state()
+
+    async def respond(
+        self, _observation: ConversationObservation, state: PersonaState
+    ) -> PersonaAction:
+        if state.turn_number:
+            return PersonaAction(state=state, signal="goal_believed_complete")
+        return PersonaAction(
+            message="My account number is SYNTHETIC-001. Why is this invoice higher?",
+            state=state,
+            signal="continue",
+        )
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class DeterministicJudge:
+    """Exercise the real semantic evaluator and evidence validation offline."""
+
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        self.closed = False
+
+    async def generate(self, request: LLMRequest) -> LLMResponse:
+        transcript = json.loads(request.messages[-1].content)["transcript"]
+        answers = [item for item in transcript if item["actor"] == "assistant"]
+        answer = answers[-1]
+        content = " ".join(item["content"] for item in answers)
+        passed = "plan changed" in content and "50 more" in content
+        now = application.RealClock().now()
+        return LLMResponse(
+            content=json.dumps(
+                {
+                    "passed": passed,
+                    "explanation": (
+                        "The assistant explained the plan change and 50-unit increase."
+                        if passed
+                        else (
+                            "The assistant repeated the account request without explaining "
+                            "the increase."
+                        )
+                    ),
+                    "evidence": [
+                        {"event_id": answer["event_id"], "message_id": answer["message_id"]}
+                    ],
+                }
+            ),
+            interaction=ModelInteraction(
+                id=str(uuid4()),
+                identity=ModelIdentity(provider="fake", model="deterministic-judge"),
+                started_at=now,
+                ended_at=now,
+                usage=TokenUsage(unavailable_reason="offline test provider"),
+            ),
+        )
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def validate_artifacts(directory: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    artifacts = {
+        "metadata": "metadata.json",
+        "config": "config.yaml",
+        "conversation": "conversation.json",
+        "evaluation": "evaluation.json",
+        "report": "report.json",
+    }
+    values: dict[str, Any] = {}
+    for kind, filename in artifacts.items():
+        path = directory / filename
+        value = (
+            yaml.safe_load(path.read_text()) if kind == "config" else json.loads(path.read_text())
+        )
+        schema = json.loads((SCHEMAS / f"{kind}.schema.json").read_text())
+        Draft202012Validator(schema).validate(value)
+        values[kind] = value
+    event_schema = Draft202012Validator(
+        json.loads((SCHEMAS / "trace-event.schema.json").read_text())
+    )
+    events = [json.loads(line) for line in (directory / "trace.jsonl").read_text().splitlines()]
+    for event in events:
+        event_schema.validate(event)
+    event_ids = {event["id"] for event in events}
+    message_ids = {message["id"] for message in values["conversation"]}
+    for finding in values["evaluation"]["results"]:
+        assert set(finding["evidence_event_ids"]) <= event_ids
+        assert set(finding["evidence_message_ids"]) <= message_ids
+    return values["metadata"], values["report"]
+
+
+@pytest.mark.parametrize(
+    ("variant", "persona", "expected_code", "expected_reason"),
+    [
+        ("success", "standard", 0, "goal_believed_complete"),
+        ("repeated_question", "standard", 1, "goal_believed_complete"),
+        ("repeated_question", "impatient", 1, "abandonment"),
+    ],
+)
+def test_cli_browser_fixture_produces_explained_schema_valid_runs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    variant: str,
+    persona: str,
+    expected_code: int,
+    expected_reason: str,
+) -> None:
+    monkeypatch.syspath_prepend(str(EXAMPLE))
+    demo = importlib.import_module("run_demo")
+    monkeypatch.setenv("OPENAI_API_KEY", "offline-test-secret")
+    judge = DeterministicJudge()
+    customer = DeterministicPersona()
+
+    async def preflight(*_args: Any) -> CapabilityPreflight:
+        return CapabilityPreflight()
+
+    monkeypatch.setattr(application, "preflight_models", preflight)
+    monkeypatch.setattr(
+        application, "TinyTroupePersonaSimulator", lambda *_args, **_kwargs: customer
+    )
+    monkeypatch.setattr(application, "OpenAIProvider", lambda *_args, **_kwargs: judge)
+    with demo.FixtureServer() as fixture:
+        configured = demo.configured_example(
+            fixture.base_url, variant=variant, persona=persona, run_root=tmp_path / "runs"
+        )
+        configured["execution"]["greeting_grace_seconds"] = 1
+        source = tmp_path / "generated.yaml"
+        source.write_text(yaml.safe_dump(configured), encoding="utf-8")
+        original = (EXAMPLE / "scenario.yaml").read_bytes()
+        output = CliRunner().invoke(app, ["run", str(source)])
+        assert (EXAMPLE / "scenario.yaml").read_bytes() == original
+    assert output.exit_code == expected_code, output.output
+    assert judge.closed and customer.closed
+    directory = next((tmp_path / "runs").iterdir())
+    metadata, report = validate_artifacts(directory)
+    assert (
+        metadata["outcome"] == report["outcome"] == ("passed" if expected_code == 0 else "failed")
+    )
+    assert metadata["termination_reason"] == report["termination_reason"] == expected_reason
+    assert f"Outcome: {report['outcome']}" in output.output
+    assert f"Termination: {expected_reason}" in output.output
+    assert "offline-test-secret" not in output.output
+    assert "offline-test-secret" not in (directory / "trace.jsonl").read_text()
+    assert report["goal_result"]["evidence_event_ids"]
+    if variant == "repeated_question":
+        assert report["goal_result"]["status"] == "failed"
+        assert report["repetition_count"] == 1
+        if persona == "impatient":
+            assert any(
+                event["data"].get("after", {}).get("abandoned")
+                for event in [
+                    json.loads(line)
+                    for line in (directory / "trace.jsonl").read_text().splitlines()
+                ]
+                if event["type"] == "persona_state_changed"
+            )
+
+
+def test_two_personas_keep_scenario_identical_and_runs_isolated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.syspath_prepend(str(EXAMPLE))
+    demo = importlib.import_module("run_demo")
+    monkeypatch.setenv("OPENAI_API_KEY", "offline-test-secret")
+
+    async def preflight(*_args: Any) -> CapabilityPreflight:
+        return CapabilityPreflight()
+
+    monkeypatch.setattr(application, "preflight_models", preflight)
+    monkeypatch.setattr(
+        application, "TinyTroupePersonaSimulator", lambda *_args, **_kwargs: DeterministicPersona()
+    )
+    monkeypatch.setattr(
+        application, "OpenAIProvider", lambda *_args, **_kwargs: DeterministicJudge()
+    )
+    canonical = yaml.safe_load((EXAMPLE / "scenario.yaml").read_text())["scenario"]
+    with demo.FixtureServer() as fixture:
+        for persona in ("standard", "impatient"):
+            document = demo.configured_example(
+                fixture.base_url,
+                variant="repeated_question",
+                persona=persona,
+                run_root=tmp_path / "runs",
+            )
+            assert document["scenario"] == canonical
+            document["execution"]["greeting_grace_seconds"] = 1
+            source = tmp_path / f"{persona}.yaml"
+            source.write_text(yaml.safe_dump(document), encoding="utf-8")
+            output = CliRunner().invoke(app, ["run", str(source)])
+            assert output.exit_code == 1, output.output
+    directories = list((tmp_path / "runs").iterdir())
+    assert len(directories) == len({directory.name for directory in directories}) == 2
+    by_persona = {
+        json.loads((directory / "metadata.json").read_text())["persona_id"]: directory
+        for directory in directories
+    }
+    assert set(by_persona) == {"standard-customer", "impatient-customer"}
+    assert (
+        json.loads((by_persona["standard-customer"] / "report.json").read_text())[
+            "termination_reason"
+        ]
+        == "goal_believed_complete"
+    )
+    assert (
+        json.loads((by_persona["impatient-customer"] / "report.json").read_text())[
+            "termination_reason"
+        ]
+        == "abandonment"
+    )
+
+
+def test_demo_launcher_uses_and_removes_temporary_yaml(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.syspath_prepend(str(EXAMPLE))
+    demo = importlib.import_module("run_demo")
+    source_path: Path | None = None
+
+    def run_command(args: list[str], *, check: bool) -> SimpleNamespace:
+        nonlocal source_path
+        assert args[:4] == [sys.executable, "-m", "syntheticcx", "run"]
+        assert not check
+        source_path = Path(args[4])
+        document = yaml.safe_load(source_path.read_text())
+        assert document["channel"]["url"].startswith("http://127.0.0.1:")
+        assert document["persona"]["id"] == "impatient-customer"
+        assert document["storage"]["run_root"] == str(tmp_path)
+        return SimpleNamespace(returncode=1)
+
+    monkeypatch.setattr(demo.subprocess, "run", run_command)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_demo.py",
+            "--variant",
+            "repeated_question",
+            "--persona",
+            "impatient",
+            "--run-root",
+            str(tmp_path),
+        ],
+    )
+    assert demo.main() == 1
+    assert source_path is not None and not source_path.exists()
+
+
+@pytest.mark.parametrize("variant", ["missing_control", "silent_response"])
+def test_cli_fixture_channel_failure_keeps_evidence_and_closes_browser(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, variant: str
+) -> None:
+    monkeypatch.syspath_prepend(str(EXAMPLE))
+    demo = importlib.import_module("run_demo")
+    monkeypatch.setenv("OPENAI_API_KEY", "offline-test-secret")
+
+    async def preflight(*_args: Any) -> CapabilityPreflight:
+        return CapabilityPreflight()
+
+    channels: list[PlaywrightChannel] = []
+
+    class ObservedChannel(PlaywrightChannel):
+        closed = 0
+
+        async def close(self) -> None:
+            self.closed += 1
+            await super().close()
+
+    def new_channel(*args: Any) -> ObservedChannel:
+        channel = ObservedChannel(*args)
+        channels.append(channel)
+        return channel
+
+    monkeypatch.setattr(application, "preflight_models", preflight)
+    monkeypatch.setattr(application, "PlaywrightChannel", new_channel)
+    monkeypatch.setattr(
+        application, "TinyTroupePersonaSimulator", lambda *_args, **_kwargs: DeterministicPersona()
+    )
+    monkeypatch.setattr(
+        application, "OpenAIProvider", lambda *_args, **_kwargs: DeterministicJudge()
+    )
+    with demo.FixtureServer() as fixture:
+        document = demo.configured_example(
+            fixture.base_url,
+            variant=variant,
+            persona="standard",
+            run_root=tmp_path / "runs",
+        )
+        document["execution"]["greeting_grace_seconds"] = 1
+        document["execution"]["browser_action_timeout_seconds"] = 1
+        document["execution"]["response_timeout_seconds"] = 0.5
+        source = tmp_path / f"{variant}.yaml"
+        source.write_text(yaml.safe_dump(document), encoding="utf-8")
+        output = CliRunner().invoke(app, ["run", str(source)])
+    assert output.exit_code == 3, output.output
+    assert len(channels) == 1 and channels[0].closed == 1
+    directory = next((tmp_path / "runs").iterdir())
+    metadata, report = validate_artifacts(directory)
+    assert metadata["outcome"] == report["outcome"] == "error"
+    assert report["errors"]
+    assert "channel" in json.dumps(report["errors"])
+    assert "offline-test-secret" not in output.output

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
 from syntheticcx.config.models import ExecutionLimits, ProjectConfig
@@ -30,6 +30,7 @@ from syntheticcx.privacy import Redactor
 from syntheticcx.runtime.journal import RunJournal
 from syntheticcx.runtime.result import EvaluatedRunResult
 from syntheticcx.runtime.runner import AsyncCloseable, run_conversation
+from syntheticcx.telemetry.run import span
 
 T = TypeVar("T")
 
@@ -66,6 +67,7 @@ async def run_evaluated(
     redactor: Redactor,
     evaluation_provider: AsyncCloseable | None = None,
     project_config: ProjectConfig | None = None,
+    on_created: Callable[[str], None] | None = None,
 ) -> EvaluatedRunResult:
     """Own conversation, evaluation, terminal trace, metadata commit and cleanup."""
     if project_config is not None and scenario.model_dump(
@@ -86,6 +88,7 @@ async def run_evaluated(
         limits=limits,
         project_config=project_config,
         retain_storage=True,
+        on_created=on_created,
     )
     results: tuple[EvaluationResult, ...] = ()
     infra = not conversation.cleanup_completed
@@ -107,7 +110,8 @@ async def run_evaluated(
                 pass
         if reason != "persistence_error" and reason != "cancelled":
             try:
-                results = await evaluation.evaluate(scenario)
+                with span("evaluation.run"):
+                    results = await evaluation.evaluate(scenario)
             except asyncio.CancelledError:
                 reason = "cancelled"
             except PersistenceError:
@@ -121,7 +125,10 @@ async def run_evaluated(
 
         if evaluation_provider is not None:
             try:
-                await _finish(wait.run(evaluation_provider.close(), limits.close_timeout_seconds))
+                with span("resource.cleanup", operation="evaluation.close"):
+                    await _finish(
+                        wait.run(evaluation_provider.close(), limits.close_timeout_seconds)
+                    )
             except asyncio.CancelledError:
                 reason = "cancelled"
             except Exception:
@@ -189,9 +196,12 @@ async def run_evaluated(
                     }
                 ).model_dump()
             )
-            await _finish(
-                wait.run(storage.finalize_run(finalized_run), limits.persistence_timeout_seconds)
-            )
+            with span("persistence.finalize"):
+                await _finish(
+                    wait.run(
+                        storage.finalize_run(finalized_run), limits.persistence_timeout_seconds
+                    )
+                )
             final = True
             outcome = decision.outcome
             exit_code = decision.exit_code
@@ -225,7 +235,8 @@ async def run_evaluated(
         for resource in (storage,):
             if isinstance(resource, AsyncCloseable):
                 try:
-                    await _finish(wait.run(resource.close(), limits.close_timeout_seconds))
+                    with span("resource.cleanup", operation="storage.close"):
+                        await _finish(wait.run(resource.close(), limits.close_timeout_seconds))
                 except (Exception, asyncio.CancelledError):
                     cleanup_completed = False
 

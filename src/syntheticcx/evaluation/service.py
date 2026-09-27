@@ -25,6 +25,7 @@ from syntheticcx.evaluation.semantic import SemanticGoalEvaluator
 from syntheticcx.evaluation.validation import validate_result
 from syntheticcx.privacy import Redactor
 from syntheticcx.runtime.journal import RunJournal
+from syntheticcx.telemetry.run import span
 
 _KINDS = frozenset(
     {"turn_count", "journey_timeout", "repeated_information", "semantic_goal_completion"}
@@ -99,7 +100,16 @@ class EvaluationService:
                 failure: Exception | None = None
                 candidate: EvaluationResult | None = None
                 try:
-                    candidate = await self._wait.run(evaluator.evaluate(context), self._timeout)
+                    with span("evaluation.criterion"):
+                        if criterion.evaluator_type == "semantic_goal_completion":
+                            with span("model.call", operation="evaluation.generate"):
+                                candidate = await self._wait.run(
+                                    evaluator.evaluate(context), self._timeout
+                                )
+                        else:
+                            candidate = await self._wait.run(
+                                evaluator.evaluate(context), self._timeout
+                            )
                 except asyncio.CancelledError:
                     raise
                 except PersistenceError:
