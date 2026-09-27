@@ -11,10 +11,12 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import Protocol
 
 from syntheticcx.domain.artifacts import MetadataArtifact
+from syntheticcx.domain.models import ArtifactRecord
 
 
 class LivenessProbe(Protocol):
@@ -100,8 +102,35 @@ class Recovery:
                 return "warned"
         elif content and not self._validate_complete_lines(content):
             return "warned"
+        artifacts = list(metadata.artifacts)
+        for name in ("conversation.json", "evaluation.json", "report.json"):
+            if any(record.path == name for record in artifacts):
+                continue
+            path = directory / name
+            if path.is_file():
+                try:
+                    content = path.read_bytes()
+                    json.loads(content)
+                except (OSError, ValueError):
+                    return "warned"
+                artifacts.append(
+                    ArtifactRecord(
+                        path=name,
+                        media_type="application/json",
+                        content_hash=sha256(content).hexdigest(),
+                        status="captured",
+                    )
+                )
+            else:
+                artifacts.append(
+                    ArtifactRecord(
+                        media_type="application/json",
+                        status="omitted",
+                        reason=f"{name}:not_materialized",
+                    )
+                )
         updated = metadata.model_copy(
-            update={"lifecycle_status": "incomplete"},
+            update={"lifecycle_status": "incomplete", "artifacts": artifacts},
         )
         try:
             self._atomic_write(

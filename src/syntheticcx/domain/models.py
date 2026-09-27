@@ -193,6 +193,7 @@ class ModelInteraction(DomainModel):
     input_event_ids: list[Identifier] = Field(default_factory=list)
     output_event_ids: list[Identifier] = Field(default_factory=list)
     capture_omissions: list[str] = Field(default_factory=list)
+    captured_prompt: str | None = None
 
 
 class LLMResponse(DomainModel):

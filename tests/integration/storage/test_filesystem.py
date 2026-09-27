@@ -10,19 +10,24 @@ from threading import Event
 
 import pytest
 import yaml
+from pydantic import TypeAdapter
 
 from syntheticcx.adapters.storage.filesystem import FilesystemStorage, canonical_bytes
-from syntheticcx.config.loader import load_config_with_source_hash
+from syntheticcx.adapters.storage.recovery import Recovery
+from syntheticcx.config.loader import load_config, load_config_with_source_hash
 from syntheticcx.config.models import PrivacyConfig, ProjectConfig
 from syntheticcx.domain.artifacts import ConfigArtifact, MetadataArtifact, Run
 from syntheticcx.domain.events import (
     ArtifactRecordedEvent,
     ConversationStarted,
     ConversationStartedEvent,
+    EvaluationCompleted,
+    MessageObserved,
     RunLifecycleChange,
     RunLifecycleEvent,
+    TypedTraceEvent,
 )
-from syntheticcx.domain.models import ArtifactRecord, Report
+from syntheticcx.domain.models import ArtifactRecord, EvaluationResult, Message, Report
 from syntheticcx.errors import PersistenceError
 from syntheticcx.privacy import Redactor
 from syntheticcx.runtime.journal import RunJournal
@@ -212,6 +217,100 @@ def test_committed_screenshot_artifact_projects_to_metadata_and_report(
         await backend.close()
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(
+    "stage", ["created", "started", "customer", "assistant", "evaluation", "projection"]
+)
+def test_recovery_at_each_durable_stage_preserves_evidence_and_inventories_artifacts(
+    tmp_path: Path, stage: str
+) -> None:
+    class DeadOwner:
+        def supported(self) -> bool:
+            return True
+
+        def process_start_evidence(self, pid: int) -> None:
+            return None
+
+    async def prepare() -> list[str]:
+        backend = storage(tmp_path)
+        initial = run()
+        journal = RunJournal(initial.id, backend, Redactor(PrivacyConfig()), Clock())
+        await backend.create_run(initial, config())
+        acknowledged: list[str] = []
+        steps = [
+            ConversationStarted(greeting_observed=False, grace_seconds=0),
+            MessageObserved(
+                message=Message(
+                    id="customer-1",
+                    sequence=0,
+                    actor="customer",
+                    content="My bill",
+                    observed_at=NOW,
+                )
+            ),
+            MessageObserved(
+                message=Message(
+                    id="assistant-1",
+                    sequence=1,
+                    actor="assistant",
+                    content="Plan change",
+                    observed_at=NOW,
+                )
+            ),
+            EvaluationCompleted(
+                result=EvaluationResult(
+                    evaluator_id="semantic_goal_completion",
+                    criterion_id="billing-explanation",
+                    required=True,
+                    status="passed",
+                    explanation="Plan change explained.",
+                    evidence_event_ids=[],
+                    evidence_message_ids=["assistant-1"],
+                ),
+                criterion=load_config(
+                    Path("examples/telecom/scenario.yaml")
+                ).scenario.success_criteria[0],
+            ),
+        ]
+        count = {
+            "created": 0,
+            "started": 1,
+            "customer": 2,
+            "assistant": 3,
+            "evaluation": 4,
+            "projection": 4,
+        }[stage]
+        for data in steps[:count]:
+            committed = await journal.append(data)
+            acknowledged.append(committed.id)
+        await backend.close()
+        return acknowledged
+
+    acknowledged = asyncio.run(prepare())
+    directory = tmp_path / "run-1"
+    if stage == "projection":
+        (directory / "conversation.json").write_text("[]\n", encoding="utf-8")
+    trace = directory / "trace.jsonl"
+    complete = trace.read_bytes()
+    with trace.open("ab") as output:
+        output.write(b'{"unfinished":')
+    report = Recovery(tmp_path, DeadOwner(), "test").scan()
+    assert report.repaired == ["run-1"]
+    assert trace.read_bytes() == complete
+    recovered = MetadataArtifact.model_validate_json((directory / "metadata.json").read_bytes())
+    assert recovered.lifecycle_status == "incomplete" and recovered.outcome is None
+    events = [json.loads(line) for line in trace.read_text().splitlines()]
+    for item in events:
+        TypeAdapter(TypedTraceEvent).validate_python(item)
+    assert [event["id"] for event in events] == acknowledged
+    assert [event["sequence"] for event in events] == list(range(len(events)))
+    assert not (directory / "report.json").exists()
+    inventory = {record.path: record for record in recovered.artifacts if record.path}
+    assert inventory.keys() == ({"conversation.json"} if stage == "projection" else set())
+    assert sum(record.status == "omitted" for record in recovered.artifacts) == (
+        2 if stage == "projection" else 3
+    )
 
 
 def test_create_append_retry_and_detached_committed_events(tmp_path: Path) -> None:

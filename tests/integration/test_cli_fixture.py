@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import sys
@@ -280,6 +281,60 @@ def test_two_personas_keep_scenario_identical_and_runs_isolated(
         ]
         == "abandonment"
     )
+
+
+def test_identical_config_creates_distinct_runs_without_overwriting_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.syspath_prepend(str(EXAMPLE))
+    demo = importlib.import_module("run_demo")
+    monkeypatch.setenv("OPENAI_API_KEY", "offline-test-secret")
+
+    async def preflight(*_args: Any) -> CapabilityPreflight:
+        return CapabilityPreflight()
+
+    monkeypatch.setattr(application, "preflight_models", preflight)
+    monkeypatch.setattr(
+        application, "TinyTroupePersonaSimulator", lambda *_args, **_kwargs: DeterministicPersona()
+    )
+    monkeypatch.setattr(
+        application, "OpenAIProvider", lambda *_args, **_kwargs: DeterministicJudge()
+    )
+    with demo.FixtureServer() as fixture:
+        configured = demo.configured_example(
+            fixture.base_url, variant="success", persona="standard", run_root=tmp_path / "runs"
+        )
+        configured["execution"]["greeting_grace_seconds"] = 1
+        configured["model"]["seed"] = 123
+        source = tmp_path / "identical.yaml"
+        source.write_text(yaml.safe_dump(configured), encoding="utf-8")
+        first = CliRunner().invoke(app, ["run", str(source)])
+        assert first.exit_code == 0, first.output
+        first_dir = next((tmp_path / "runs").iterdir())
+        before = {
+            path.relative_to(first_dir): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in first_dir.rglob("*")
+            if path.is_file()
+        }
+        second = CliRunner().invoke(app, ["run", str(source)])
+        assert second.exit_code == 0, second.output
+    directories = list((tmp_path / "runs").iterdir())
+    assert len(directories) == len({directory.name for directory in directories}) == 2
+    second_dir = next(directory for directory in directories if directory != first_dir)
+    assert before == {
+        path.relative_to(first_dir): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in first_dir.rglob("*")
+        if path.is_file()
+    }
+    for directory in (first_dir, second_dir):
+        metadata, report = validate_artifacts(directory)
+        assert metadata["id"] == report["run_id"] == directory.name
+        for role in ("persona_model", "evaluation_model"):
+            model = metadata["metadata"][role]
+            assert model["provider"] == "openai"
+            assert model["model"] == configured["model"]["model"]
+            assert model["requested_seed"] == 123
+            assert model["sampling_parameters"]["requested_temperature"] == 0
 
 
 def test_demo_launcher_uses_and_removes_temporary_yaml(

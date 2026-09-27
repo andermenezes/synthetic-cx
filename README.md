@@ -41,7 +41,7 @@ request, which can trigger a recorded state transition and abandonment. Model
 behavior is nondeterministic: inspect actual outcomes rather than assuming a
 particular generated message or a fixed exit code. A selected OpenAI-compatible
 endpoint can be configured instead of OpenAI when its explicit credential and
-capabilities pass preflight; the reference demo uses `gpt-5-mini`. Persona and
+capabilities pass preflight; the reference demo uses `gpt-5.4-mini`. Persona and
 semantic evaluation model calls may transmit configured synthetic conversation
 content to the selected endpoint. They do not silently fall back to another
 credential source.
@@ -77,6 +77,13 @@ final report exists. If a control is missing, check `channel.*_locator` and
 the fixture variant; if a response stalls, check `response_timeout_seconds`
 and the configured completion strategy. A capability failure before browser
 startup means the chosen endpoint did not satisfy the persona/evaluator path.
+
+Set `privacy.capture_prompts: true` only for a controlled synthetic scenario
+when prompt evidence is needed. Successful persona and semantic-evaluator calls
+then store redacted input messages as `captured_prompt` on model-interaction
+events in `trace.jsonl`. Configured sensitive scenario values and selected
+credentials are redacted before persistence; model output remains uncaptured.
+With prompt capture off, metadata records `prompts_not_captured`.
 
 The five variants are `success`, `repeated_question`, `streamed_response`,
 `missing_control`, and `silent_response`. For example:
@@ -128,7 +135,7 @@ The offline suite checks OpenAI and OpenAI-compatible provider translation,
 selected credentials/endpoints, controlled capability probing, and a pinned
 TinyTroupe persona action through an in-memory SDK transport.
 
-The reference OpenAI `gpt-5-mini` persona interaction is opt-in:
+The reference OpenAI `gpt-5.4-mini` persona interaction is opt-in:
 
 ```bash
 export OPENAI_API_KEY='replace-with-selected-credential'

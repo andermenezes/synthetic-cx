@@ -758,6 +758,18 @@
           "title": "Capture Omissions",
           "type": "array"
         },
+        "captured_prompt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Captured Prompt"
+        },
         "ended_at": {
           "format": "date-time",
           "title": "Ended At",

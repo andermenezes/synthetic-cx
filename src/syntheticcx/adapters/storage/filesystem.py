@@ -130,6 +130,9 @@ class FilesystemStorage:
         self._screenshot_policy = (
             ScreenshotPolicy.from_config(project_config) if project_config else ScreenshotPolicy()
         )
+        self._prompt_capture_disabled = (
+            project_config is not None and not project_config.privacy.capture_prompts
+        )
         self._lock = asyncio.Lock()
         self._worker: _Worker | None = None
         self._failed = False
@@ -189,6 +192,21 @@ class FilesystemStorage:
             metadata = MetadataArtifact.model_validate(
                 run.model_dump(exclude={"events", "messages", "evaluations"})
             )
+            if self._prompt_capture_disabled:
+                metadata = metadata.model_copy(
+                    update={
+                        "metadata": metadata.metadata.model_copy(
+                            update={
+                                "capture_omissions": list(
+                                    dict.fromkeys(
+                                        metadata.metadata.capture_omissions
+                                        + ["prompts_not_captured"]
+                                    )
+                                )
+                            }
+                        )
+                    }
+                )
             safe_metadata = self._redactor.redact_model(metadata)
             if safe_metadata.id != run.id:
                 raise ValueError("redaction changed run identity")
@@ -388,6 +406,8 @@ class FilesystemStorage:
                 for record in safe_records
                 if record.media_type == "image/png" and record.status != "captured"
             ]
+            if self._prompt_capture_disabled:
+                omissions.append("prompts_not_captured")
             safe_metadata = self._redactor.redact_model(
                 metadata.model_copy(
                     update={

@@ -37,6 +37,7 @@ from syntheticcx.domain.models import (
 from syntheticcx.errors import ConfigurationError, PersistenceError
 from syntheticcx.evaluation.service import EvaluationService
 from syntheticcx.privacy import Redactor
+from syntheticcx.privacy.prompt_capture import PromptCapture
 from syntheticcx.reporting.materialize import build_projections
 from syntheticcx.runtime.clock import RealClock, RealWaitController
 from syntheticcx.runtime.journal import RunJournal
@@ -141,6 +142,9 @@ async def execute_run(
         settings.evaluation.credential.get_secret_value(),
     )
     redactor = Redactor(config.privacy, resolved_secrets=secrets)
+    prompt_capture = (
+        PromptCapture(redactor, config.scenario) if config.privacy.capture_prompts else None
+    )
     config_artifact = ConfigArtifact(
         source_content_hash=loaded.source_content_hash,
         effective_config=sanitized_effective_config(config, resolved_secrets=secrets),
@@ -204,12 +208,14 @@ async def execute_run(
                     model,
                     settings.evaluation,
                     timeout_seconds=config.execution.model_timeout_seconds,
+                    prompt_capture=prompt_capture,
                 )
             else:
                 provider = OpenAIProvider(
                     model,
                     settings.evaluation,
                     timeout_seconds=config.execution.model_timeout_seconds,
+                    prompt_capture=prompt_capture,
                 )
         journal = RunJournal(run.id, storage, redactor, clock)
         evaluation = EvaluationService(
@@ -221,7 +227,10 @@ async def execute_run(
         )
         channel = PlaywrightChannel(config.channel, config.execution)
         simulator = TinyTroupePersonaSimulator(
-            config.model, settings.persona, timeout_seconds=config.execution.model_timeout_seconds
+            config.model,
+            settings.persona,
+            timeout_seconds=config.execution.model_timeout_seconds,
+            prompt_capture=prompt_capture,
         )
         with telemetry.activate(), span("run.initialize"):
             result = await run_evaluated(

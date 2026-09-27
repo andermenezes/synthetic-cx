@@ -31,6 +31,7 @@ from syntheticcx.domain.models import (
     ModelInteraction,
 )
 from syntheticcx.errors import ModelError
+from syntheticcx.privacy.prompt_capture import PromptCapture
 
 
 class _ChatCompletions(Protocol):
@@ -59,6 +60,7 @@ class ChatProvider:
         *,
         timeout_seconds: float,
         client: _AsyncChatClient | None = None,
+        prompt_capture: PromptCapture | None = None,
     ) -> None:
         if config.provider != settings.provider or config.model != settings.model:
             raise ValueError("model configuration and resolved settings must match")
@@ -68,6 +70,7 @@ class ChatProvider:
         self._timeout_seconds = timeout_seconds
         self._client = client or self._new_client(settings)
         self._owns_client = client is None
+        self._prompt_capture = prompt_capture
         self._closed = False
 
     def _new_client(self, settings: ResolvedModelSettings) -> AsyncOpenAI:
@@ -145,8 +148,13 @@ class ChatProvider:
                     started_at=started,
                     ended_at=ended,
                     usage=token_usage,
+                    captured_prompt=self._prompt_capture.sanitize(
+                        [message.model_dump(mode="json") for message in request.messages]
+                    )
+                    if self._prompt_capture is not None
+                    else None,
                     capture_omissions=[
-                        "prompts_not_captured",
+                        *(["prompts_not_captured"] if self._prompt_capture is None else []),
                         "model_output_not_captured",
                         *omissions,
                     ],

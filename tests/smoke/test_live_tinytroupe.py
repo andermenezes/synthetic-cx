@@ -28,7 +28,7 @@ def test_live_tinytroupe_openai_reference_interaction() -> None:
     credential = os.environ["OPENAI_API_KEY"]
 
     config = load_config(Path("examples/telecom/scenario.yaml"))
-    assert config.model.provider == "openai" and config.model.model == "gpt-5-mini"
+    assert config.model.provider == "openai" and config.model.model == "gpt-5.4-mini"
     config = config.model_copy(
         update={
             "execution": config.execution.model_copy(
@@ -65,7 +65,7 @@ def test_live_tinytroupe_openai_reference_interaction() -> None:
             assert all(isinstance(interaction, ModelInteraction) for interaction in interactions)
             assert all(
                 interaction.identity.provider == "openai"
-                and interaction.identity.model == "gpt-5-mini"
+                and interaction.identity.model == "gpt-5.4-mini"
                 for interaction in interactions
             )
             assert all(

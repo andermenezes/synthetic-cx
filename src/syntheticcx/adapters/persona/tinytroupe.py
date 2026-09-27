@@ -27,6 +27,7 @@ from syntheticcx.domain.models import (
     PersonaStateTransition,
 )
 from syntheticcx.errors import ModelError
+from syntheticcx.privacy.prompt_capture import PromptCapture
 
 T = TypeVar("T")
 
@@ -84,10 +85,16 @@ class TinyTroupePersonaSimulator:
         settings: ResolvedModelSettings,
         *,
         timeout_seconds: float,
+        prompt_capture: PromptCapture | None = None,
     ) -> None:
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError("persona timeout must be finite and positive")
-        self._client = TinyModelClient(config, settings, timeout_seconds)
+        if prompt_capture is None:
+            self._client = TinyModelClient(config, settings, timeout_seconds)
+        else:
+            self._client = TinyModelClient(
+                config, settings, timeout_seconds, prompt_capture=prompt_capture
+            )
         self._session = TinySession(
             self._client, model=config.model, timeout_seconds=timeout_seconds
         )

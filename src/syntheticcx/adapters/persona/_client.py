@@ -22,6 +22,7 @@ from syntheticcx.config.models import (
     ResolvedModelSettings,
 )
 from syntheticcx.domain.models import ModelIdentity, ModelInteraction
+from syntheticcx.privacy.prompt_capture import PromptCapture
 
 
 class TinyModelClient:
@@ -32,6 +33,7 @@ class TinyModelClient:
         config: ModelConfiguration,
         settings: ResolvedModelSettings,
         timeout_seconds: float,
+        prompt_capture: PromptCapture | None = None,
     ) -> None:
         if (config.provider, config.model) != (settings.provider, settings.model):
             raise ValueError("model settings do not match configuration")
@@ -47,6 +49,7 @@ class TinyModelClient:
             ),
         )
         self._config = config
+        self._prompt_capture = prompt_capture
         self.interactions: list[ModelInteraction] = []
 
     def send_message(
@@ -103,8 +106,13 @@ class TinyModelClient:
                 started_at=started,
                 ended_at=ended,
                 usage=tokens,
+                captured_prompt=(
+                    self._prompt_capture.sanitize(current_messages)
+                    if self._prompt_capture is not None
+                    else None
+                ),
                 capture_omissions=[
-                    "prompts_not_captured",
+                    *(["prompts_not_captured"] if self._prompt_capture is None else []),
                     "model_output_not_captured",
                     *(["temperature_not_applied"] if temperature_omitted else []),
                     *omissions,

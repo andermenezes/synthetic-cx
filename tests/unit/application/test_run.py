@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -21,10 +22,13 @@ from syntheticcx.domain.models import (
     CustomerScenarioContext,
     EvaluationResult,
     Message,
+    ModelIdentity,
+    ModelInteraction,
     PersonaAction,
     PersonaDefinition,
     PersonaState,
     SendReceipt,
+    TokenUsage,
 )
 from syntheticcx.errors import ConfigurationError
 from syntheticcx.evaluation.service import EvaluationService
@@ -204,6 +208,209 @@ def test_cli_composes_run_and_renders_committed_projection(
         assert "report.json: omitted" in output.output
 
 
+def test_cli_infrastructure_error_takes_precedence_over_failed_evaluation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = scenario_file(tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "canary-credential")
+
+    async def preflight(*_args: Any) -> CapabilityPreflight:
+        return CapabilityPreflight()
+
+    class FailingCloseChannel(FakeChannel):
+        async def close(self) -> None:
+            await super().close()
+            raise OSError("hostile close: canary-credential")
+
+    channel = FailingCloseChannel()
+    monkeypatch.setattr(application, "preflight_models", preflight)
+    monkeypatch.setattr(application, "PlaywrightChannel", lambda *_args: channel)
+    monkeypatch.setattr(
+        application, "TinyTroupePersonaSimulator", lambda *_args, **_kwargs: FakePersona()
+    )
+    monkeypatch.setattr(application, "OpenAIProvider", lambda *_args, **_kwargs: FakeProvider())
+
+    def service(**kwargs: Any) -> EvaluationService:
+        return EvaluationService(
+            **kwargs, evaluators={"semantic_goal_completion": GoalEvaluator("failed")}
+        )
+
+    monkeypatch.setattr(application, "EvaluationService", service)
+    output = CliRunner().invoke(app, ["run", str(path)])
+    assert channel.closed
+    assert output.exit_code == 3, output.output
+    directory = next((tmp_path / "runs").iterdir())
+    report = json.loads((directory / "report.json").read_text())
+    assert report["outcome"] == "error"
+    assert report["goal_result"]["status"] == "failed"
+    assert "Outcome: error" in output.output
+    assert "Goal: failed" in output.output
+    assert "canary-credential" not in output.output
+
+
+def test_cli_enabled_prompt_capture_is_redacted_in_committed_trace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = scenario_file(tmp_path)
+    source = yaml.safe_load(path.read_text())
+    source["privacy"]["capture_prompts"] = True
+    source["scenario"]["knowledge"]["account_number"] = "private-account"
+    path.write_text(yaml.safe_dump(source), encoding="utf-8")
+    monkeypatch.setenv("OPENAI_API_KEY", "canary-credential")
+
+    async def preflight(*_args: Any) -> CapabilityPreflight:
+        return CapabilityPreflight()
+
+    class CapturingPersona(FakePersona):
+        def __init__(self, prompt_capture: Any) -> None:
+            super().__init__()
+            self.capture = prompt_capture
+            self.interactions: list[ModelInteraction] = []
+
+        async def respond(
+            self, observation: ConversationObservation, state: PersonaState
+        ) -> PersonaAction:
+            now = application.RealClock().now()
+            self.interactions.append(
+                ModelInteraction(
+                    id=f"persona-{len(self.interactions)}",
+                    identity=ModelIdentity(provider="openai", model="fake"),
+                    started_at=now,
+                    ended_at=now,
+                    usage=TokenUsage(unavailable_reason="offline fixture"),
+                    captured_prompt=self.capture.sanitize(
+                        [{"role": "user", "content": "private-account canary-credential"}]
+                    ),
+                )
+            )
+            return await super().respond(observation, state)
+
+        def take_interactions(self) -> tuple[ModelInteraction, ...]:
+            values = tuple(self.interactions)
+            self.interactions.clear()
+            return values
+
+    monkeypatch.setattr(application, "preflight_models", preflight)
+    monkeypatch.setattr(application, "PlaywrightChannel", lambda *_args: FakeChannel())
+    monkeypatch.setattr(
+        application,
+        "TinyTroupePersonaSimulator",
+        lambda *_args, **kwargs: CapturingPersona(kwargs["prompt_capture"]),
+    )
+    monkeypatch.setattr(application, "OpenAIProvider", lambda *_args, **_kwargs: FakeProvider())
+
+    def service(**kwargs: Any) -> EvaluationService:
+        return EvaluationService(
+            **kwargs, evaluators={"semantic_goal_completion": GoalEvaluator("passed")}
+        )
+
+    monkeypatch.setattr(application, "EvaluationService", service)
+    output = CliRunner().invoke(app, ["run", str(path)])
+    assert output.exit_code == 0, output.output
+    directory = next((tmp_path / "runs").iterdir())
+    trace = [json.loads(line) for line in (directory / "trace.jsonl").read_text().splitlines()]
+    prompts = [
+        event["data"]["captured_prompt"]
+        for event in trace
+        if event["type"] == "model_interaction_completed"
+    ]
+    assert len(prompts) == 2
+    assert all("<redacted:account_number>" in prompt for prompt in prompts)
+    assert all("<redacted:secret>" in prompt for prompt in prompts)
+    assert "private-account" not in (directory / "trace.jsonl").read_text()
+    assert "canary-credential" not in (directory / "trace.jsonl").read_text()
+    assert "prompts_not_captured" not in json.dumps(trace)
+    metadata = json.loads((directory / "metadata.json").read_text())
+    assert "prompts_not_captured" not in metadata["metadata"]["capture_omissions"]
+
+
+@pytest.mark.parametrize("blocked", ["model", "browser", "evaluator", "persistence"])
+def test_cli_deadline_matrix_retains_evidence_and_reports_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, blocked: str
+) -> None:
+    path = scenario_file(tmp_path)
+    source = yaml.safe_load(path.read_text())
+    source["execution"].update(
+        model_timeout_seconds=0.1,
+        response_timeout_seconds=0.1,
+        evaluator_timeout_seconds=0.1,
+        persistence_timeout_seconds=0.1,
+        journey_timeout_seconds=3,
+    )
+    path.write_text(yaml.safe_dump(source), encoding="utf-8")
+    monkeypatch.setenv("OPENAI_API_KEY", "canary-credential")
+
+    async def preflight(*_args: Any) -> CapabilityPreflight:
+        return CapabilityPreflight()
+
+    class SlowPersona(FakePersona):
+        async def respond(
+            self, observation: ConversationObservation, state: PersonaState
+        ) -> PersonaAction:
+            if blocked == "model":
+                await asyncio.Event().wait()
+            return await super().respond(observation, state)
+
+    class SlowChannel(FakeChannel):
+        async def receive(self) -> CompletedResponse:
+            if blocked == "browser":
+                await asyncio.Event().wait()
+            return await super().receive()
+
+    class SlowEvaluator(GoalEvaluator):
+        async def evaluate(self, context: Any) -> EvaluationResult:
+            if blocked == "evaluator":
+                await asyncio.Event().wait()
+            return await super().evaluate(context)
+
+    class SlowStorage(application.FilesystemStorage):
+        async def append_event(self, run_id: str, event: Any) -> None:
+            if blocked == "persistence" and event.type == "message_observed":
+                await asyncio.Event().wait()
+            await super().append_event(run_id, event)
+
+    channel = SlowChannel()
+    persona = SlowPersona()
+    monkeypatch.setattr(application, "preflight_models", preflight)
+    monkeypatch.setattr(application, "PlaywrightChannel", lambda *_args: channel)
+    monkeypatch.setattr(
+        application, "TinyTroupePersonaSimulator", lambda *_args, **_kwargs: persona
+    )
+    monkeypatch.setattr(application, "OpenAIProvider", lambda *_args, **_kwargs: FakeProvider())
+    monkeypatch.setattr(application, "FilesystemStorage", SlowStorage)
+
+    def service(**kwargs: Any) -> EvaluationService:
+        return EvaluationService(
+            **kwargs, evaluators={"semantic_goal_completion": SlowEvaluator("passed")}
+        )
+
+    monkeypatch.setattr(application, "EvaluationService", service)
+    started = time.monotonic()
+    output = CliRunner().invoke(app, ["run", str(path)])
+    assert time.monotonic() - started < 3
+    assert output.exit_code == 3, output.output
+    assert channel.closed and persona.closed
+    assert "canary-credential" not in output.output
+    directory = next((tmp_path / "runs").iterdir())
+    events = [json.loads(line) for line in (directory / "trace.jsonl").read_text().splitlines()]
+    assert events and [event["sequence"] for event in events] == list(range(len(events)))
+    metadata = json.loads((directory / "metadata.json").read_text())
+    if blocked == "persistence":
+        assert metadata["lifecycle_status"] != "finalized"
+        assert not (directory / "report.json").exists()
+        assert "final report unavailable" in output.output
+    else:
+        report = json.loads((directory / "report.json").read_text())
+        assert metadata["outcome"] == report["outcome"] == "error"
+        assert "Outcome: error" in output.output
+        if blocked in {"model", "browser"}:
+            category = "model" if blocked == "model" else "channel"
+            assert any(error["category"] == category for error in report["errors"])
+            assert report["termination_reason"] == f"{category}_error"
+        else:
+            assert report["goal_result"]["status"] == "error"
+
+
 def test_invalid_configuration_does_not_probe_or_create_a_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -283,6 +490,7 @@ def test_run_id_is_announced_only_after_initial_metadata_commit(
     [
         ("cancel", 130, "Outcome: cancelled", True),
         ("storage", 3, "storage failure; final report unavailable", False),
+        ("append", 3, "final report unavailable", False),
     ],
 )
 def test_cli_reports_cancelled_and_storage_failure_without_claiming_a_final_report(
@@ -311,6 +519,12 @@ def test_cli_reports_cancelled_and_storage_failure_without_claiming_a_final_repo
                 raise OSError("hostile secret: canary-credential")
             await super().create_run(*args, **kwargs)
 
+        async def append_event(self, *args: Any, **kwargs: Any) -> None:
+            event = kwargs.get("event") if kwargs else args[1]
+            if failure == "append" and event.type == "message_observed":
+                raise OSError("hostile secret: canary-credential")
+            await super().append_event(*args, **kwargs)
+
     monkeypatch.setattr(application, "preflight_models", preflight)
     monkeypatch.setattr(application, "PlaywrightChannel", lambda *_args: InterruptingChannel())
     monkeypatch.setattr(
@@ -323,6 +537,11 @@ def test_cli_reports_cancelled_and_storage_failure_without_claiming_a_final_repo
     assert expected_text in output.output
     assert ("Outcome:" in output.output) is finalized
     assert "canary-credential" not in output.output
+    if failure == "append":
+        directory = next((tmp_path / "runs").iterdir())
+        assert not (directory / "report.json").exists()
+        assert not (directory / "evaluation.json").exists()
+        assert "Outcome: passed" not in output.output
 
 
 def test_telemetry_shutdown_failure_does_not_overwrite_final_outcome(

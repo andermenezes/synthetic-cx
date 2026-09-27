@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any, cast
 
 import httpx
@@ -9,6 +10,7 @@ import pytest
 from openai import AsyncOpenAI
 
 from syntheticcx.adapters.llm import OpenAICompatibleProvider, OpenAIProvider, _chat
+from syntheticcx.config.loader import load_config
 from syntheticcx.config.models import (
     OpenAICompatibleModelConfig,
     OpenAIModelConfig,
@@ -17,6 +19,8 @@ from syntheticcx.config.models import (
 from syntheticcx.domain.models import LLMMessage, LLMRequest, LLMResponse
 from syntheticcx.domain.protocols import LLMProvider
 from syntheticcx.errors import ModelError
+from syntheticcx.privacy import Redactor
+from syntheticcx.privacy.prompt_capture import PromptCapture
 
 _CAPABILITIES = {
     "chat_completions": True,
@@ -29,7 +33,7 @@ _CAPABILITIES = {
 
 def config_for(kind: str) -> OpenAIModelConfig | OpenAICompatibleModelConfig:
     if kind == "openai":
-        return OpenAIModelConfig(provider="openai", model="gpt-5-mini")
+        return OpenAIModelConfig(provider="openai", model="gpt-5.4-mini")
     return cast(
         OpenAICompatibleModelConfig,
         OpenAICompatibleModelConfig.model_validate(
@@ -76,16 +80,30 @@ def fake_client(handler: httpx.MockTransport) -> AsyncOpenAI:
 
 
 def provider_for(
-    kind: str, client: AsyncOpenAI | None = None, *, timeout_seconds: float = 1
+    kind: str,
+    client: AsyncOpenAI | None = None,
+    *,
+    timeout_seconds: float = 1,
+    prompt_capture: PromptCapture | None = None,
 ) -> OpenAIProvider | OpenAICompatibleProvider:
     config = config_for(kind)
     settings = ResolvedModelSettings(
         provider=config.provider, model=config.model, credential="selected-secret"
     )
     if isinstance(config, OpenAIModelConfig):
-        return OpenAIProvider(config, settings, timeout_seconds=timeout_seconds, client=client)
+        return OpenAIProvider(
+            config,
+            settings,
+            timeout_seconds=timeout_seconds,
+            client=client,
+            prompt_capture=prompt_capture,
+        )
     return OpenAICompatibleProvider(
-        config, settings, timeout_seconds=timeout_seconds, client=client
+        config,
+        settings,
+        timeout_seconds=timeout_seconds,
+        client=client,
+        prompt_capture=prompt_capture,
     )
 
 
@@ -128,6 +146,53 @@ def test_provider_contract_translates_request_and_usage(kind: str) -> None:
         assert "effective_temperature" not in result.interaction.identity.sampling_parameters
     else:
         assert observed[0]["temperature"] == 0
+
+
+@pytest.mark.parametrize("kind", ["openai", "openai_compatible"])
+def test_enabled_prompt_capture_redacts_context_and_selected_secret(kind: str) -> None:
+    project = load_config(Path("examples/telecom/scenario.yaml"))
+    capture = PromptCapture(
+        Redactor(project.privacy, resolved_secrets=["selected-secret"]), project.scenario
+    )
+
+    async def exercise() -> LLMResponse:
+        client = fake_client(httpx.MockTransport(lambda _: httpx.Response(200, json=payload())))
+        adapter = provider_for(kind, client, prompt_capture=capture)
+        try:
+            return await adapter.generate(
+                LLMRequest(
+                    id="capture-1",
+                    messages=[
+                        LLMMessage(
+                            role="user", content="Account SYNTHETIC-001, selected-secret: help"
+                        )
+                    ],
+                )
+            )
+        finally:
+            await adapter.close()
+            await client.close()
+
+    interaction = asyncio.run(exercise()).interaction
+    assert interaction.captured_prompt is not None
+    assert "SYNTHETIC-001" not in interaction.captured_prompt
+    assert "selected-secret" not in interaction.captured_prompt
+    assert "<redacted:account_number>" in interaction.captured_prompt
+    assert "<redacted:secret>" in interaction.captured_prompt
+    assert "prompts_not_captured" not in interaction.capture_omissions
+
+
+def test_prompt_capture_redacts_before_json_escaping() -> None:
+    project = load_config(Path("examples/telecom/scenario.yaml"))
+    scenario = project.scenario.model_copy(
+        update={"knowledge": {"account_number": 'quoted"account'}}
+    )
+    capture = PromptCapture(
+        Redactor(project.privacy, resolved_secrets=['quoted"credential']), scenario
+    )
+    saved = capture.sanitize([{"role": "user", "content": 'quoted"account quoted"credential'}])
+    assert json.loads(saved)[0]["content"] == "<redacted:account_number> <redacted:secret>"
+    assert "quoted" not in saved
 
 
 @pytest.mark.parametrize("kind", ["openai", "openai_compatible"])

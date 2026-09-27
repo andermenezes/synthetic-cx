@@ -3,6 +3,7 @@
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,12 @@ from syntheticcx.adapters.storage.filesystem import FilesystemStorage
 from syntheticcx.config.loader import load_config
 from syntheticcx.config.models import Criterion, PrivacyConfig, ProjectConfig
 from syntheticcx.domain.artifacts import ConfigArtifact, Run
-from syntheticcx.domain.events import EvaluationCompletedEvent, RunLifecycleEvent, TypedTraceEvent
+from syntheticcx.domain.events import (
+    EvaluationCompletedEvent,
+    OperationFailure,
+    RunLifecycleEvent,
+    TypedTraceEvent,
+)
 from syntheticcx.domain.models import (
     ArtifactRecord,
     CompletedResponse,
@@ -33,6 +39,7 @@ from syntheticcx.domain.models import (
 from syntheticcx.errors import ModelError
 from syntheticcx.evaluation.service import EvaluationService
 from syntheticcx.privacy import Redactor
+from syntheticcx.privacy.prompt_capture import PromptCapture
 from syntheticcx.runtime.clock import ManualClock, ManualWaitController
 from syntheticcx.runtime.journal import RunJournal
 from syntheticcx.runtime.owner import run_evaluated
@@ -506,6 +513,7 @@ def test_owner_semantic_provider_persists_usage_and_redacted_fact(tmp_path: Path
         def __init__(self) -> None:
             self.closed = 0
             self.requests = []
+            self.capture: PromptCapture | None = None
 
         async def generate(self, request):
             self.requests.append(request)
@@ -527,6 +535,11 @@ def test_owner_semantic_provider_persists_usage_and_redacted_fact(tmp_path: Path
                     started_at=NOW,
                     ended_at=NOW,
                     usage=TokenUsage(input_tokens=12, output_tokens=9),
+                    captured_prompt=self.capture.sanitize(
+                        [message.model_dump(mode="json") for message in request.messages]
+                    )
+                    if self.capture is not None
+                    else None,
                 ),
             )
 
@@ -541,6 +554,7 @@ def test_owner_semantic_provider_persists_usage_and_redacted_fact(tmp_path: Path
             "The plan changed for secret-marker."
         ]
         source["privacy"]["redaction_keys"] = ["account_number"]
+        source["privacy"]["capture_prompts"] = True
         config = ProjectConfig.model_validate(source)
         redactor = Redactor(config.privacy, resolved_secrets=["secret-marker"])
         storage = FilesystemStorage(tmp_path, redactor, timeout_seconds=5, project_config=config)
@@ -548,6 +562,7 @@ def test_owner_semantic_provider_persists_usage_and_redacted_fact(tmp_path: Path
         wait = ManualWaitController(clock)
         journal = RunJournal("run-1", storage, redactor, clock)
         provider = Provider()
+        provider.capture = PromptCapture(redactor, config.scenario)
         service = EvaluationService(
             journal=journal,
             wait=wait,
@@ -579,6 +594,9 @@ def test_owner_semantic_provider_persists_usage_and_redacted_fact(tmp_path: Path
         interaction = next(item for item in trace if item["type"] == "model_interaction_completed")
         assert interaction["data"]["usage"]["input_tokens"] == 12
         assert interaction["data"]["usage"]["output_tokens"] == 9
+        assert interaction["data"]["captured_prompt"] is not None
+        assert "<redacted:account_number>" in interaction["data"]["captured_prompt"]
+        assert "prompts_not_captured" not in interaction["data"]["capture_omissions"]
         assert trace.index(interaction) < next(
             i for i, item in enumerate(trace) if item["type"] == "evaluation_completed"
         )
@@ -1113,6 +1131,128 @@ def test_screenshot_capture_requires_policy_and_is_acknowledged_before_event() -
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_capture_policy_projects_real_failure_artifacts_and_omissions(
+    tmp_path: Path, enabled: bool
+) -> None:
+    class FailingChannel(Channel):
+        async def capture_failure_screenshot(self) -> bytes:
+            assert self.closed == 0
+            return PNG
+
+    class CapturingPersona(Persona):
+        def __init__(self, capture: PromptCapture | None) -> None:
+            super().__init__()
+            self.capture = capture
+            self.interactions: list[ModelInteraction] = []
+
+        async def respond(
+            self, observation: ConversationObservation, state: PersonaState
+        ) -> PersonaAction:
+            self.interactions.append(
+                ModelInteraction(
+                    id="capture-call",
+                    identity=ModelIdentity(provider="fake", model="fake"),
+                    started_at=NOW,
+                    ended_at=NOW,
+                    usage=TokenUsage(unavailable_reason="offline test"),
+                    captured_prompt=(
+                        self.capture.sanitize(
+                            [{"role": "user", "content": "canary-credential account SYNTHETIC-001"}]
+                        )
+                        if self.capture is not None
+                        else None
+                    ),
+                    capture_omissions=["prompts_not_captured"] if self.capture is None else [],
+                )
+            )
+            return await super().respond(observation, state)
+
+        def take_interactions(self) -> tuple[ModelInteraction, ...]:
+            values = tuple(self.interactions)
+            self.interactions.clear()
+            return values
+
+    async def scenario() -> None:
+        config = (
+            capture_config() if enabled else load_config(Path("examples/telecom/scenario.yaml"))
+        )
+        if enabled:
+            source = config.model_dump(mode="json")
+            source["privacy"]["capture_prompts"] = True
+            config = ProjectConfig.model_validate(source)
+        redactor = Redactor(config.privacy, resolved_secrets=["canary-credential"])
+        backend = FilesystemStorage(tmp_path, redactor, timeout_seconds=5, project_config=config)
+        clock = ManualClock(NOW)
+        journal = RunJournal("run-1", backend, redactor, clock)
+        service = EvaluationService(
+            journal=journal,
+            wait=ManualWaitController(clock),
+            evaluator_timeout_seconds=5,
+            redactor=redactor,
+            evaluators={"semantic_goal_completion": GoalEvaluator()},
+        )
+        channel = FailingChannel(failure="send")
+        capture = PromptCapture(redactor, config.scenario) if enabled else None
+        result = await run_evaluated(
+            run=run(),
+            config_artifact=ConfigArtifact(
+                source_content_hash="hash", effective_config={"credential": "canary-credential"}
+            ),
+            scenario=Scenario.model_validate(config.scenario.model_dump()),
+            persona=PersonaDefinition.model_validate(config.persona.model_dump()),
+            channel=channel,
+            simulator=CapturingPersona(capture),
+            storage=backend,
+            journal=journal,
+            clock=clock,
+            wait=ManualWaitController(clock),
+            limits=config.execution.model_copy(update={"greeting_grace_seconds": 0}),
+            evaluation=service,
+            redactor=redactor,
+            project_config=config,
+        )
+        directory = tmp_path / "run-1"
+        metadata = json.loads((directory / "metadata.json").read_text())
+        report = json.loads((directory / "report.json").read_text())
+        assert result.outcome == report["outcome"] == "error"
+        assert channel.closed == 1
+        image = directory / "artifacts/screenshots/channel-failure.png"
+        records = [record for record in report["artifacts"] if record["media_type"] == "image/png"]
+        assert len(records) == 1 and records == [
+            record for record in metadata["artifacts"] if record["media_type"] == "image/png"
+        ]
+        if enabled:
+            assert image.read_bytes() == PNG
+            assert records[0]["status"] == "captured"
+            assert records[0]["content_hash"] == sha256(PNG).hexdigest()
+            trace = [
+                json.loads(line) for line in (directory / "trace.jsonl").read_text().splitlines()
+            ]
+            captured = [
+                event["data"]["captured_prompt"]
+                for event in trace
+                if event["type"] == "model_interaction_completed"
+            ]
+            assert len(captured) == 1
+            assert "<redacted:secret>" in captured[0]
+            assert "<redacted:account_number>" in captured[0]
+            assert "prompts_not_captured" not in metadata["metadata"]["capture_omissions"]
+        else:
+            assert not image.exists()
+            assert records[0]["status"] == "omitted"
+            assert "screenshot:screenshots_disabled" in metadata["metadata"]["capture_omissions"]
+            assert "screenshot:screenshots_disabled" in report["omissions"]
+            assert "prompts_not_captured" in metadata["metadata"]["capture_omissions"]
+        assert all(
+            "canary-credential" not in path.read_text()
+            for path in directory.rglob("*")
+            if path.is_file() and path.suffix in {".json", ".jsonl", ".yaml"}
+        )
+
+    asyncio.run(scenario())
+
+
 def test_model_failure_does_not_capture_browser_image() -> None:
     class CapturingChannel(Channel):
         async def capture_failure_screenshot(self) -> bytes:
@@ -1272,6 +1412,57 @@ def test_persistence_error_and_secondary_close_error_do_not_hide_primary() -> No
         assert result.committed_events == ()
 
     asyncio.run(scenario())
+
+
+def test_owner_append_failure_stops_evaluation_and_attempts_one_bounded_failure_record() -> None:
+    class CountingJournal(RunJournal):
+        def __init__(self, storage: Storage, clock: ManualClock) -> None:
+            super().__init__("run-1", storage, Redactor(PrivacyConfig()), clock)
+            self.failure_attempts = 0
+
+        async def append(self, data):
+            if isinstance(data, OperationFailure):
+                self.failure_attempts += 1
+            return await super().append(data)
+
+    class NeverEvaluate:
+        async def evaluate(self, scenario: Scenario):
+            raise AssertionError("evaluation must not run after failed evidence append")
+
+    async def scenario() -> None:
+        config = load_config(Path("examples/telecom/scenario.yaml"))
+        storage = Storage(fail_at_sequence=2)
+        channel = Channel(close_failure=True)
+        clock = ManualClock(NOW)
+        journal = CountingJournal(storage, clock)
+        result = await run_evaluated(
+            run=run(),
+            config_artifact=ConfigArtifact(source_content_hash="hash", effective_config={}),
+            scenario=Scenario.model_validate(config.scenario.model_dump()),
+            persona=PersonaDefinition.model_validate(config.persona.model_dump()),
+            channel=channel,
+            simulator=Persona(),
+            storage=storage,
+            journal=journal,
+            clock=clock,
+            wait=ManualWaitController(clock),
+            limits=config.execution.model_copy(update={"greeting_grace_seconds": 0}),
+            evaluation=NeverEvaluate(),
+            redactor=Redactor(PrivacyConfig()),
+            project_config=config,
+        )
+        assert not result.finalized and result.outcome is None and result.exit_code == 3
+        assert result.conversation.termination_reason == "persistence_error"
+        assert result.evaluations == () and storage.finalized == 0
+        assert journal.failure_attempts == 1
+        assert [event.type for event in result.committed_events] == [
+            "run_lifecycle_changed",
+            "conversation_started",
+        ]
+        assert channel.closed == storage.closed == 1
+        assert "sensitive-storage-path" not in str(result.model_dump())
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=1))
 
 
 def test_successful_receipt_remains_counted_when_customer_evidence_fails() -> None:

@@ -9,6 +9,7 @@ from typing import Any, cast
 
 import httpx
 from openai import OpenAI
+from pydantic import BaseModel
 
 from syntheticcx.adapters.persona import _client
 from syntheticcx.adapters.persona.tinytroupe import TinyTroupePersonaSimulator
@@ -23,6 +24,8 @@ from syntheticcx.domain.models import (
     CustomerScenarioContext,
     PersonaDefinition,
 )
+from syntheticcx.privacy import Redactor
+from syntheticcx.privacy.prompt_capture import PromptCapture
 
 
 def install_mock_sdk_transport(
@@ -39,6 +42,49 @@ def install_mock_sdk_transport(
         return original(**kwargs)
 
     monkeypatch.setattr(_client, "OpenAI", stub_sdk)
+
+
+def test_tinytroupe_enabled_prompt_capture_redacts_before_evidence(monkeypatch: Any) -> None:
+    class Action(BaseModel):  # type: ignore[misc]
+        ok: bool
+
+    install_mock_sdk_transport(
+        monkeypatch,
+        lambda _: httpx.Response(
+            200,
+            json={
+                "id": "response-1",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "gpt-5.4-mini",
+                "choices": [
+                    {"index": 0, "message": {"role": "assistant", "content": '{"ok":true}'}}
+                ],
+            },
+        ),
+    )
+    project = load_config(Path("examples/telecom/scenario.yaml"))
+    capture = PromptCapture(
+        Redactor(project.privacy, resolved_secrets=["selected-secret"]), project.scenario
+    )
+    settings = ResolvedModelSettings(
+        provider="openai", model="gpt-5.4-mini", credential="selected-secret"
+    )
+    client = _client.TinyModelClient(project.model, settings, 5, prompt_capture=capture)
+    try:
+        client.send_message(
+            [{"role": "user", "content": "Account SYNTHETIC-001 selected-secret"}],
+            response_format=Action,
+        )
+        interaction = client.interactions[0]
+        assert interaction.captured_prompt is not None
+        assert "SYNTHETIC-001" not in interaction.captured_prompt
+        assert "selected-secret" not in interaction.captured_prompt
+        assert "<redacted:account_number>" in interaction.captured_prompt
+        assert "<redacted:secret>" in interaction.captured_prompt
+        assert "prompts_not_captured" not in interaction.capture_omissions
+    finally:
+        client.close()
 
 
 def test_custom_client_routes_per_run_without_ambient_credentials(
@@ -182,7 +228,7 @@ def test_pinned_persona_uses_selected_sdk_transport_and_returns_owned_evidence(
     context = CustomerScenarioContext.from_scenario(project.scenario)
     configurations: list[tuple[OpenAIModelConfig | OpenAICompatibleModelConfig, str, str]] = [
         (
-            OpenAIModelConfig(provider="openai", model="gpt-5-mini"),
+            OpenAIModelConfig(provider="openai", model="gpt-5.4-mini"),
             "selected-openai",
             "api.openai.com",
         ),

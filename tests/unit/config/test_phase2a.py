@@ -15,7 +15,7 @@ def test_loads_the_canonical_example() -> None:
     config = load_config(Path("examples/telecom/scenario.yaml"))
 
     assert config.version == "1"
-    assert config.effective_evaluation_model.model == "gpt-5-mini"
+    assert config.effective_evaluation_model.model == "gpt-5.4-mini"
 
 
 def test_rejects_a_non_mapping_document() -> None:
@@ -25,7 +25,7 @@ def test_rejects_a_non_mapping_document() -> None:
 
 def test_rejects_embedded_credentials() -> None:
     source = Path("examples/telecom/scenario.yaml").read_text(encoding="utf-8")
-    source = source.replace("  model: gpt-5-mini", "  model: gpt-5-mini\n  api_key: leaked")
+    source = source.replace("  model: gpt-5.4-mini", "  model: gpt-5.4-mini\n  api_key: leaked")
 
     with pytest.raises(ConfigurationError, match="Extra inputs are not permitted"):
         load_config_text(source)
