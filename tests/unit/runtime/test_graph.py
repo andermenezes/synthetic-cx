@@ -15,11 +15,14 @@ from syntheticcx.domain.models import (
     ConversationObservation,
     CustomerScenarioContext,
     Message,
+    ModelIdentity,
+    ModelInteraction,
     PersonaAction,
     PersonaDefinition,
     PersonaState,
     Scenario,
     SendReceipt,
+    TokenUsage,
 )
 from syntheticcx.errors import ChannelError
 from syntheticcx.privacy import Redactor
@@ -54,6 +57,18 @@ def response(*parts: tuple[str, str]) -> CompletedResponse:
         started_at=NOW,
         completed_at=NOW,
         completion_strategy="completion_locator",
+    )
+
+
+def model_interaction(
+    identifier: str, *, model: str = "fake", requested_seed: int | None = None
+) -> ModelInteraction:
+    return ModelInteraction(
+        id=identifier,
+        identity=ModelIdentity(provider="fake", model=model, requested_seed=requested_seed),
+        started_at=NOW,
+        ended_at=NOW,
+        usage=TokenUsage(unavailable_reason="not reported"),
     )
 
 
@@ -308,3 +323,109 @@ def test_manual_greeting_deadline_produces_no_greeting_observation() -> None:
     assert persona.observations[0].kind == "conversation_started"
     assert storage.events[-1].type == "conversation_started"
     assert not storage.events[-1].data.greeting_observed
+
+
+def test_persona_interactions_are_acknowledged_before_customer_send_and_routing() -> None:
+    class EvidencePersona(Persona):
+        def __init__(self) -> None:
+            super().__init__(["Why is my bill higher?", None])
+            self.pending: list[ModelInteraction] = []
+
+        async def respond(
+            self, observation: ConversationObservation, state: PersonaState
+        ) -> PersonaAction:
+            result = await super().respond(observation, state)
+            self.pending.append(
+                model_interaction(
+                    f"call-{len(self.observations)}", model="example", requested_seed=42
+                )
+            )
+            return result
+
+        def take_interactions(self) -> tuple[ModelInteraction, ...]:
+            result = tuple(self.pending)
+            self.pending.clear()
+            return result
+
+    persona = EvidencePersona()
+    result, events = execute(Channel([response(("answer", "Your plan changed"))]), persona)
+    assert result["termination_reason"] == "goal_believed_complete"
+    interactions = [event for event in events if event.type == "model_interaction_completed"]
+    assert len(interactions) == 2
+    assert [event.type for event in events] == [
+        "run_lifecycle_changed",
+        "conversation_started",
+        "model_interaction_completed",
+        "message_observed",
+        "persona_state_changed",
+        "message_observed",
+        "model_interaction_completed",
+    ]
+    assert interactions[0].data.input_event_ids == [events[1].id]
+    assert interactions[1].data.input_event_ids == [events[5].id]
+    for event in interactions:
+        assert event.data.output_event_ids == []
+        assert "output_event_not_yet_committed" in event.data.capture_omissions
+        assert event.data.usage.unavailable_reason is not None
+        assert all(
+            any(previous.id == ref for previous in events[: event.sequence])
+            for ref in event.data.input_event_ids
+        )
+
+
+def test_initialization_interaction_references_committed_lifecycle() -> None:
+    class InitializingPersona(Persona):
+        def __init__(self) -> None:
+            super().__init__([None])
+            self.pending: tuple[ModelInteraction, ...] = ()
+
+        async def initialize(
+            self, definition: PersonaDefinition, scenario_context: CustomerScenarioContext
+        ) -> PersonaState:
+            self.pending = (model_interaction("initial-call"),)
+            return await super().initialize(definition, scenario_context)
+
+        def take_interactions(self) -> tuple[ModelInteraction, ...]:
+            result, self.pending = self.pending, ()
+            return result
+
+    _, events = execute(Channel([]), InitializingPersona())
+    assert [event.type for event in events] == [
+        "run_lifecycle_changed",
+        "model_interaction_completed",
+        "conversation_started",
+    ]
+    assert events[1].data.input_event_ids == [events[0].id]
+    assert events[1].data.output_event_ids == []
+
+
+def test_interaction_references_all_ordered_greeting_bubbles() -> None:
+    class EvidencePersona(Persona):
+        def __init__(self) -> None:
+            super().__init__([None])
+            self.pending: tuple[ModelInteraction, ...] = ()
+
+        async def respond(
+            self, observation: ConversationObservation, state: PersonaState
+        ) -> PersonaAction:
+            result = await super().respond(observation, state)
+            self.pending = (model_interaction("greeting-call"),)
+            return result
+
+        def take_interactions(self) -> tuple[ModelInteraction, ...]:
+            result, self.pending = self.pending, ()
+            return result
+
+    _, events = execute(
+        Channel([response(("greeting-1", "Hello"), ("greeting-2", "How can I help?"))]),
+        EvidencePersona(),
+        greeting_grace=1,
+    )
+    assert [event.type for event in events] == [
+        "run_lifecycle_changed",
+        "message_observed",
+        "message_observed",
+        "conversation_started",
+        "model_interaction_completed",
+    ]
+    assert events[-1].data.input_event_ids == [events[1].id, events[2].id]

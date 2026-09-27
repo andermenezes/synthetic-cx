@@ -6,12 +6,14 @@ from typing import Any
 
 import pytest
 import yaml
+from jsonschema import Draft202012Validator
 
 from syntheticcx.config.loader import load_config_text
 from syntheticcx.config.models import ProjectConfig
 from syntheticcx.config.sanitize import sanitized_effective_config
 from syntheticcx.config.schema import export_project_schema
 from syntheticcx.config.settings import prepare_settings, resolve_model_settings
+from syntheticcx.domain.models import CustomerScenarioContext, Scenario
 from syntheticcx.errors import ConfigurationError
 
 
@@ -104,6 +106,106 @@ def test_checked_in_schema_matches_generated_contract(tmp_path: Path) -> None:
     assert generated.read_text() == Path("schemas/project.schema.json").read_text()
 
 
+@pytest.mark.parametrize(
+    ("evaluator_type", "parameters", "result_kind", "location"),
+    [
+        ("turn_count", {}, "boolean", "parameters.max_turns"),
+        ("turn_count", {"max_turns": True}, "boolean", "parameters.max_turns"),
+        ("turn_count", {"max_turns": 1, "extra": 2}, "boolean", "parameters.extra"),
+        ("turn_count", {"max_turns": 1}, "scored", "result_kind"),
+        ("journey_timeout", {"extra": 1}, "boolean", "parameters.extra"),
+        ("repeated_information", {"max_repeats": -1}, "boolean", "parameters.max_repeats"),
+        ("repeated_information", {"max_repeats": False}, "boolean", "parameters.max_repeats"),
+        ("semantic_goal_completion", {}, "boolean", "parameters.expected_facts"),
+        (
+            "semantic_goal_completion",
+            {"expected_facts": [" "]},
+            "boolean",
+            "parameters.expected_facts",
+        ),
+        (
+            "semantic_goal_completion",
+            {"expected_facts": ["invoice charge"], "extra": 1},
+            "boolean",
+            "parameters.extra",
+        ),
+    ],
+)
+def test_evaluator_parameters_fail_before_external_activity(
+    document: dict[str, Any],
+    evaluator_type: str,
+    parameters: dict[str, Any],
+    result_kind: str,
+    location: str,
+) -> None:
+    criterion = document["scenario"]["success_criteria"][0]
+    criterion.update(evaluator_type=evaluator_type, parameters=parameters, result_kind=result_kind)
+    if result_kind == "scored":
+        criterion["threshold"] = 0.8
+    with pytest.raises(ConfigurationError) as caught:
+        load_config_text(yaml.safe_dump(document))
+    assert location in str(caught.value)
+
+
+def test_turn_count_bound_uses_root_execution_limit(document: dict[str, Any]) -> None:
+    document["scenario"]["success_criteria"][0].update(
+        evaluator_type="turn_count", parameters={"max_turns": 6}
+    )
+    with pytest.raises(ConfigurationError, match="success_criteria.parameters.max_turns"):
+        load_config_text(yaml.safe_dump(document))
+    document["scenario"]["success_criteria"][0]["parameters"]["max_turns"] = 5
+    assert load_config_text(yaml.safe_dump(document)).scenario.success_criteria[0].parameters == {
+        "max_turns": 5
+    }
+
+
+def test_evaluator_parameter_defaults_and_scored_semantic_contract(
+    document: dict[str, Any],
+) -> None:
+    criterion = document["scenario"]["success_criteria"][0]
+    criterion.update(evaluator_type="repeated_information", parameters={})
+    assert load_config_text(yaml.safe_dump(document)).scenario.success_criteria[0].parameters == {
+        "max_repeats": 0
+    }
+    criterion.update(
+        evaluator_type="semantic_goal_completion",
+        result_kind="scored",
+        threshold=0.8,
+        parameters={"expected_facts": ["one-time charge"]},
+    )
+    assert load_config_text(yaml.safe_dump(document)).scenario.success_criteria[0].threshold == 0.8
+
+
+def test_expected_facts_remain_outside_persona_context(document: dict[str, Any]) -> None:
+    marker = "EVALUATOR-ONLY-7A-MARKER"
+    document["scenario"]["success_criteria"][0]["parameters"]["expected_facts"] = [marker]
+    scenario = Scenario.model_validate(
+        load_config_text(yaml.safe_dump(document)).scenario.model_dump()
+    )
+    context = CustomerScenarioContext.from_scenario(scenario)
+    assert marker not in context.model_dump_json()
+    assert marker in scenario.success_criteria[0].parameters["expected_facts"]
+
+
+def test_project_schema_enforces_evaluator_specific_parameters(document: dict[str, Any]) -> None:
+    validator = Draft202012Validator(json.loads(Path("schemas/project.schema.json").read_text()))
+    assert validator.is_valid(document)
+    criterion = document["scenario"]["success_criteria"][0]
+    criterion["parameters"] = {"max_turns": 2}
+    assert not validator.is_valid(document)
+    criterion.update(evaluator_type="turn_count", result_kind="boolean")
+    assert validator.is_valid(document)
+    criterion["parameters"] = {"max_turns": 2, "unknown": 1}
+    assert not validator.is_valid(document)
+    criterion.update(
+        evaluator_type="semantic_goal_completion", parameters={"expected_facts": ["charge"]}
+    )
+    criterion.update(result_kind="scored")
+    assert not validator.is_valid(document)
+    criterion["threshold"] = 0.8
+    assert validator.is_valid(document)
+
+
 @pytest.mark.parametrize("field", ["success_criteria", "behavioral_rules"])
 def test_duplicate_ids_are_rejected(document: dict[str, Any], field: str) -> None:
     section = "scenario" if field == "success_criteria" else "persona"
@@ -121,6 +223,43 @@ def test_preparation_rejects_missing_required_capabilities(
     config = load_config_text(yaml.safe_dump(document))
     with pytest.raises(ConfigurationError, match=capability):
         prepare_settings(config, {"LOCAL_KEY": "explicit"})
+
+
+def test_persona_needs_structured_actions_even_without_semantic_evaluation(
+    document: dict[str, Any],
+) -> None:
+    document["scenario"]["success_criteria"] = [
+        {
+            "id": "turns",
+            "evaluator_type": "turn_count",
+            "result_kind": "boolean",
+            "evidence_policy": "none",
+            "parameters": {"max_turns": 5},
+        }
+    ]
+    document["model"] = compatible("http://localhost")
+    document["model"]["capabilities"]["structured_output"] = False
+    config = load_config_text(yaml.safe_dump(document))
+    with pytest.raises(ConfigurationError, match="model.capabilities.structured_output"):
+        prepare_settings(config, {"LOCAL_KEY": "explicit"})
+
+
+def test_unused_evaluation_model_does_not_require_structured_output(
+    document: dict[str, Any],
+) -> None:
+    document["scenario"]["success_criteria"] = [
+        {
+            "id": "turns",
+            "evaluator_type": "turn_count",
+            "result_kind": "boolean",
+            "evidence_policy": "none",
+            "parameters": {"max_turns": 5},
+        }
+    ]
+    document["evaluation_model"] = compatible("http://localhost")
+    document["evaluation_model"]["capabilities"]["structured_output"] = False
+    config = load_config_text(yaml.safe_dump(document))
+    assert prepare_settings(config, {"OPENAI_API_KEY": "persona", "LOCAL_KEY": "evaluation"})
 
 
 def test_preparation_requires_telemetry_extra(

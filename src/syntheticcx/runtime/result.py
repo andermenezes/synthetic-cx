@@ -7,7 +7,14 @@ from typing import Literal
 from pydantic import Field
 
 from syntheticcx.domain.events import TypedTraceEvent
-from syntheticcx.domain.models import DomainModel, ErrorDetail, Identifier, PersonaState
+from syntheticcx.domain.models import (
+    DomainModel,
+    ErrorDetail,
+    EvaluationResult,
+    Identifier,
+    Outcome,
+    PersonaState,
+)
 
 TerminationReason = Literal[
     "goal_believed_complete",
@@ -31,3 +38,16 @@ class RuntimeResult(DomainModel):
     turn_count: int = Field(ge=0)
     error: ErrorDetail | None = None
     cleanup_completed: bool
+
+
+class EvaluatedRunResult(DomainModel):
+    """One-owner result; outcome is only present after durable finalization."""
+
+    conversation: RuntimeResult
+    evaluations: tuple[EvaluationResult, ...] = ()
+    outcome: Outcome | None = None
+    exit_code: int
+    finalized: bool = False
+    cleanup_completed: bool = True
+    committed_events: tuple[TypedTraceEvent, ...]
+    errors: tuple[ErrorDetail, ...] = ()

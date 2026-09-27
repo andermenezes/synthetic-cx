@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal, cast
+from typing import Literal, Protocol, cast, runtime_checkable
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -18,6 +18,7 @@ from syntheticcx.domain.models import (
     ConversationObservation,
     CustomerScenarioContext,
     Message,
+    ModelInteraction,
     PersonaDefinition,
     PersonaState,
     PersonaStateTransition,
@@ -29,6 +30,11 @@ from syntheticcx.runtime.behavior import apply_behavior
 from syntheticcx.runtime.journal import RunJournal
 from syntheticcx.runtime.repetition import RepetitionTracker
 from syntheticcx.runtime.state import RuntimeProgress, RuntimeState
+
+
+@runtime_checkable
+class _InteractionSource(Protocol):
+    def take_interactions(self) -> tuple[ModelInteraction, ...]: ...
 
 
 def build_graph(
@@ -45,6 +51,34 @@ def build_graph(
     """Build one graph per run; its repetition tracker is deliberately not shared."""
     tracker = RepetitionTracker(scenario.information)
 
+    async def commit_interactions(input_ids: list[str]) -> None:
+        """Acknowledge model evidence before any action depending on its output."""
+        if not isinstance(simulator, _InteractionSource):
+            return
+        try:
+            interactions = simulator.take_interactions()
+        except Exception:
+            raise ModelError(
+                "persona.interactions", "persona interaction evidence failed"
+            ) from None
+        for interaction in interactions:
+            omissions = list(interaction.capture_omissions)
+            if not input_ids:
+                omissions.append("input_event_unavailable")
+            # The customer send or terminal action is not yet durable here. Do
+            # not manufacture references to an event that may never be written.
+            omissions.append("output_event_not_yet_committed")
+            await journal.append(
+                interaction.model_copy(
+                    update={
+                        "input_event_ids": input_ids,
+                        "output_event_ids": [],
+                        "capture_omissions": omissions,
+                    },
+                    deep=True,
+                )
+            )
+
     async def initialize(state: RuntimeState) -> dict[str, object]:
         lifecycle = await journal.append(RunLifecycleChange(previous=None, current="in_progress"))
         try:
@@ -54,6 +88,7 @@ def build_graph(
             )
         except Exception:
             raise ModelError("persona.initialize", "persona initialization failed") from None
+        await commit_interactions([lifecycle.id])
         if initialized != state["persona_state"]:
             await journal.append(
                 PersonaStateTransition(
@@ -141,6 +176,14 @@ def build_graph(
             )
         except Exception:
             raise ModelError("persona.respond", "persona response failed") from None
+        observation_ids = {message.id for message in observation.messages}
+        input_ids = [
+            event.id
+            for event in journal.committed_events
+            if (event.type == "message_observed" and event.data.message.id in observation_ids)
+            or (observation.kind == "conversation_started" and event.type == "conversation_started")
+        ]
+        await commit_interactions(input_ids)
         current: PersonaState = state["persona_state"]
         for transition in action.transitions:
             if transition.before != current:

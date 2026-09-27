@@ -1,3 +1,6 @@
+import inspect
+from importlib import import_module
+
 from syntheticcx._compat import tinytroupe
 
 
@@ -28,3 +31,30 @@ def test_construct_persona_restores_tinytroupe_global_configuration() -> None:
 
     assert result.name == "syntheticcx-compat-probe"
     assert tinytroupe_module.config_manager.get("model") == original_model
+
+
+def test_pinned_persona_and_custom_client_extension_surface() -> None:
+    """Detect an upstream change to the surfaces required for the Phase 6 persona adapter."""
+    person = import_module("tinytroupe.agent").TinyPerson
+    clients = import_module("tinytroupe.clients")
+    from tinytroupe.agent.mental_faculty import CustomMentalFaculty
+
+    # TinyTroupe decorators hide both method signatures behind (*args, **kwargs).
+    # The action shape itself needs fake-client execution in checkpoint 6c.
+    assert callable(person.act)
+    assert callable(person.listen)
+    assert "actions_configs" in inspect.signature(CustomMentalFaculty).parameters
+    assert callable(clients.register_client)
+    assert callable(clients.client)
+
+
+def test_compatibility_probe_does_not_clear_other_agents() -> None:
+    people = import_module("tinytroupe.agent").TinyPerson.all_agents
+    existing = object()
+    people["unrelated-agent"] = existing
+    try:
+        tinytroupe.construct_persona("syntheticcx-probe-isolated")
+        assert people["unrelated-agent"] is existing
+        assert "syntheticcx-probe-isolated" not in people
+    finally:
+        people.pop("unrelated-agent", None)

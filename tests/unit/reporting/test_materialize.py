@@ -18,6 +18,8 @@ from syntheticcx.domain.events import (
     PersonaStateChangedEvent,
     RepeatedInformationEvent,
     RepeatedInformationObserved,
+    RunLifecycleChange,
+    RunLifecycleEvent,
 )
 from syntheticcx.domain.models import (
     ArtifactRecord,
@@ -31,6 +33,17 @@ from syntheticcx.privacy import Redactor
 from syntheticcx.reporting.materialize import build_projections
 
 NOW = datetime(2026, 9, 24, tzinfo=UTC)
+GOAL_PARAMETERS = {"expected_facts": ["The invoice includes a one-time charge."]}
+
+
+def goal_criterion(identifier: str = "billing-explanation") -> Criterion:
+    return Criterion(
+        id=identifier,
+        evaluator_type="semantic_goal_completion",
+        result_kind="boolean",
+        evidence_policy="optional",
+        parameters=GOAL_PARAMETERS,
+    )
 
 
 def make_run(identifier: str = "run-1") -> Run:
@@ -93,12 +106,19 @@ def make_evaluation(
                 required=True,
                 explanation="billing explained",
             ),
-            criterion=Criterion(
-                id=criterion_id,
-                evaluator_type="semantic_goal_completion",
-                result_kind="boolean",
-                evidence_policy="required",
-            ),
+            criterion=goal_criterion(criterion_id),
+        ),
+    )
+
+
+def final_event(sequence: int, reason: str = "goal_reached") -> RunLifecycleEvent:
+    return RunLifecycleEvent(
+        id=f"event-{sequence}",
+        sequence=sequence,
+        timestamp=NOW + timedelta(seconds=sequence),
+        type="run_lifecycle_changed",
+        data=RunLifecycleChange(
+            previous="in_progress", current="finalized", termination_reason=reason, outcome="passed"
         ),
     )
 
@@ -143,7 +163,7 @@ def test_projections_derive_report_from_committed_evidence() -> None:
     projections = build_projections(
         "run-1",
         events,
-        [("billing-explanation", "semantic_goal_completion", True)],
+        [goal_criterion()],
         materialize_conversation=True,
         materialize_evaluation=True,
         materialize_report=True,
@@ -180,12 +200,12 @@ def test_projections_preserve_criterion_contract_and_goal_type() -> None:
         result_kind="scored",
         threshold=0.8,
         evidence_policy="optional",
-        parameters={"prompt": "hidden"},
+        parameters=GOAL_PARAMETERS,
     )
     original = make_evaluation(0, criterion.id)
-    result = original.data.result.model_copy(update={"evaluator_id": "custom-goal-evaluator"})
+    result = original.data.result.model_copy(update={"score": 0.85})
     event = original.model_copy(
-        update={"data": original.data.model_copy(update={"result": result})}
+        update={"data": original.data.model_copy(update={"result": result, "criterion": criterion})}
     )
     projections = build_projections(
         "run-1",
@@ -213,7 +233,7 @@ def test_missing_required_criterion_fails_finalization() -> None:
         build_projections(
             "run-1",
             events,
-            [("billing-explanation", "semantic_goal_completion", True)],
+            [goal_criterion()],
             materialize_conversation=True,
             materialize_evaluation=True,
             materialize_report=True,
@@ -226,7 +246,7 @@ def test_unknown_criterion_reference_fails_finalization() -> None:
         build_projections(
             "run-1",
             events,
-            [("billing-explanation", "semantic_goal_completion", True)],
+            [goal_criterion()],
             materialize_conversation=True,
             materialize_evaluation=True,
             materialize_report=True,
@@ -249,19 +269,86 @@ def test_uncommitted_evidence_reference_fails_finalization() -> None:
         type="evaluation_completed",
         data=EvaluationCompleted(
             result=result,
-            criterion=Criterion(
-                id="billing-explanation",
-                evaluator_type="semantic_goal_completion",
-                result_kind="boolean",
-                evidence_policy="required",
-            ),
+            criterion=goal_criterion(),
         ),
     )
     with pytest.raises(PersistenceError, match="uncommitted evidence"):
         build_projections(
             "run-1",
             [event],
-            [("billing-explanation", "semantic_goal_completion", True)],
+            [goal_criterion()],
+            materialize_conversation=True,
+            materialize_evaluation=True,
+            materialize_report=True,
+        )
+
+
+def test_evidence_must_pair_the_message_with_a_prior_committed_event() -> None:
+    result = EvaluationResult(
+        evaluator_id="semantic_goal_completion",
+        criterion_id="billing-explanation",
+        status="passed",
+        required=True,
+        explanation="The answer was observed.",
+        evidence_event_ids=["event-0"],
+        evidence_message_ids=["message-1"],
+    )
+    event = make_evaluation(2, "billing-explanation").model_copy(
+        update={
+            "data": make_evaluation(2, "billing-explanation").data.model_copy(
+                update={"result": result}
+            )
+        }
+    )
+    with pytest.raises(PersistenceError, match="invalid or uncommitted evidence"):
+        build_projections(
+            "run-1",
+            [make_event(0), make_event(1), event],
+            [goal_criterion()],
+            materialize_conversation=True,
+            materialize_evaluation=True,
+            materialize_report=True,
+        )
+
+
+def test_evaluation_cannot_cite_message_committed_later_in_trace() -> None:
+    finding = make_evaluation(0, "billing-explanation")
+    future = finding.model_copy(
+        update={
+            "data": finding.data.model_copy(
+                update={
+                    "result": finding.data.result.model_copy(
+                        update={
+                            "evidence_event_ids": ["event-1"],
+                            "evidence_message_ids": ["message-1"],
+                        }
+                    )
+                }
+            )
+        }
+    )
+    with pytest.raises(PersistenceError, match="invalid or uncommitted evidence"):
+        build_projections(
+            "run-1",
+            [future, make_event(1)],
+            [goal_criterion()],
+            materialize_conversation=True,
+            materialize_evaluation=True,
+            materialize_report=True,
+        )
+
+
+def test_criterion_snapshot_mismatch_fails_finalization() -> None:
+    original = make_evaluation(0, "billing-explanation")
+    criterion = goal_criterion().model_copy(update={"evidence_policy": "required"})
+    event = original.model_copy(
+        update={"data": original.data.model_copy(update={"criterion": criterion})}
+    )
+    with pytest.raises(PersistenceError, match="criterion snapshot"):
+        build_projections(
+            "run-1",
+            [event],
+            [goal_criterion()],
             materialize_conversation=True,
             materialize_evaluation=True,
             materialize_report=True,
@@ -274,7 +361,7 @@ def test_duplicate_criterion_results_are_rejected() -> None:
         build_projections(
             "run-1",
             events,
-            [("billing-explanation", "semantic_goal_completion", True)],
+            [goal_criterion()],
             materialize_conversation=True,
             materialize_evaluation=True,
             materialize_report=True,
@@ -286,7 +373,7 @@ def test_disabled_flags_record_omissions() -> None:
     projections = build_projections(
         "run-1",
         events,
-        [("billing-explanation", "semantic_goal_completion", True)],
+        [goal_criterion()],
         materialize_conversation=False,
         materialize_evaluation=False,
         materialize_report=False,
@@ -308,6 +395,8 @@ def test_finalize_writes_projections_then_metadata_last(tmp_path: Path) -> None:
                     "id": "billing-explanation",
                     "evaluator_type": "semantic_goal_completion",
                     "required": True,
+                    "evidence_policy": "optional",
+                    "parameters": GOAL_PARAMETERS,
                 }
             ],
         )
@@ -320,6 +409,7 @@ def test_finalize_writes_projections_then_metadata_last(tmp_path: Path) -> None:
                 await backend.append_event(run.id, event)
             evaluation = make_evaluation(2, "billing-explanation")
             await backend.append_event(run.id, evaluation)
+            await backend.append_event(run.id, final_event(3))
             finalized = run.model_copy(
                 update={
                     "lifecycle_status": "finalized",
@@ -343,9 +433,40 @@ def test_finalize_writes_projections_then_metadata_last(tmp_path: Path) -> None:
             assert any(record.status == "omitted" for record in metadata.artifacts) is False
             report = json.loads((directory / "report.json").read_bytes())
             assert report["turn_count"] == 2
-            assert report["duration_seconds"] == 2.0
+            assert report["duration_seconds"] == 3.0
+            assert report["outcome"] == metadata.outcome
+            assert report["termination_reason"] == metadata.termination_reason
             # Idempotent retry with identical evidence.
             await backend.finalize_run(finalized)
+        finally:
+            await backend.close()
+
+    asyncio.run(exercise())
+
+
+def test_finalization_rejects_mismatched_terminal_trace(tmp_path: Path) -> None:
+    async def exercise() -> None:
+        backend = FilesystemStorage(tmp_path, Redactor(PrivacyConfig()), timeout_seconds=5)
+        initial = make_run()
+        try:
+            await backend.create_run(
+                initial, ConfigArtifact(source_content_hash="hash", effective_config={})
+            )
+            await backend.append_event(initial.id, final_event(0))
+            inconsistent = initial.model_copy(
+                update={
+                    "lifecycle_status": "finalized",
+                    "outcome": "failed",
+                    "termination_reason": "goal_reached",
+                    "ended_at": NOW,
+                }
+            )
+            with pytest.raises(PersistenceError, match="invalid finalization"):
+                await backend.finalize_run(inconsistent)
+            metadata = MetadataArtifact.model_validate_json(
+                (tmp_path / initial.id / "metadata.json").read_bytes()
+            )
+            assert metadata.lifecycle_status == "in_progress"
         finally:
             await backend.close()
 
@@ -363,6 +484,8 @@ def test_final_metadata_redacts_caller_artifacts(tmp_path: Path) -> None:
                     "id": "billing-explanation",
                     "evaluator_type": "semantic_goal_completion",
                     "required": True,
+                    "evidence_policy": "optional",
+                    "parameters": GOAL_PARAMETERS,
                 }
             ],
         )
@@ -372,6 +495,7 @@ def test_final_metadata_redacts_caller_artifacts(tmp_path: Path) -> None:
                 run, ConfigArtifact(source_content_hash="hash", effective_config={})
             )
             await backend.append_event(run.id, make_evaluation(0, "billing-explanation"))
+            await backend.append_event(run.id, final_event(1))
             finalized = run.model_copy(
                 update={
                     "lifecycle_status": "finalized",
@@ -394,6 +518,24 @@ def test_final_metadata_redacts_caller_artifacts(tmp_path: Path) -> None:
             await backend.close()
 
     asyncio.run(exercise())
+
+
+def test_semantic_raw_criteria_require_project_config_for_field_redaction(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="semantic criteria require project_config"):
+        FilesystemStorage(
+            tmp_path,
+            Redactor(PrivacyConfig(redaction_keys=["account_number"])),
+            timeout_seconds=5,
+            criteria=[
+                {
+                    "id": "billing-explanation",
+                    "evaluator_type": "semantic_goal_completion",
+                    "required": True,
+                    "evidence_policy": "optional",
+                    "parameters": GOAL_PARAMETERS,
+                }
+            ],
+        )
 
 
 def test_finalize_requires_created_run_and_finalized_lifecycle(tmp_path: Path) -> None:
@@ -435,6 +577,8 @@ def test_finalize_failure_leaves_no_finalized_metadata(
                     "id": "billing-explanation",
                     "evaluator_type": "semantic_goal_completion",
                     "required": True,
+                    "evidence_policy": "optional",
+                    "parameters": GOAL_PARAMETERS,
                 }
             ],
         )
@@ -445,6 +589,7 @@ def test_finalize_failure_leaves_no_finalized_metadata(
             )
             await backend.append_event(run.id, make_event(0))
             await backend.append_event(run.id, make_evaluation(1, "billing-explanation"))
+            await backend.append_event(run.id, final_event(2))
             finalized = run.model_copy(
                 update={
                     "lifecycle_status": "finalized",

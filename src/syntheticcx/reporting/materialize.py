@@ -19,17 +19,21 @@ from syntheticcx.domain.events import (
     EvaluationCompletedEvent,
     MessageObservedEvent,
     RepeatedInformationEvent,
+    RunLifecycleEvent,
     TypedTraceEvent,
+    committed_errors,
 )
 from syntheticcx.domain.models import (
     ArtifactRecord,
+    ErrorDetail,
     EvaluationResult,
     Message,
     PersonaState,
     PersonaStateTransition,
     Report,
 )
-from syntheticcx.errors import PersistenceError
+from syntheticcx.errors import EvaluationError, PersistenceError
+from syntheticcx.evaluation.validation import validate_result
 from syntheticcx.privacy import Redactor
 
 _EVENT = TypeAdapter(TypedTraceEvent)
@@ -47,7 +51,7 @@ class Projections:
 def build_projections(
     run_id: str,
     events: list[TypedTraceEvent],
-    criteria: list[Criterion | tuple[str, str, bool]],
+    criteria: list[Criterion],
     *,
     artifact_location: str | None = None,
     artifacts: list[ArtifactRecord] | None = None,
@@ -62,10 +66,14 @@ def build_projections(
     approved in the plan checkpoint.
     """
     snapshots = [_criterion_snapshot(criterion) for criterion in criteria]
+    configured = {criterion.id: criterion for criterion in snapshots}
+    if len(configured) != len(snapshots):
+        raise PersistenceError("materialize evidence", "configured criteria contain duplicate IDs")
     messages: list[Message] = []
     message_ids: set[str] = set()
-    event_ids = {event.id for event in events}
+    prior_events: list[TypedTraceEvent] = []
     results: list[EvaluationResult] = []
+    final_lifecycle: RunLifecycleEvent | None = None
     result_criterion_ids: list[str] = []
     turn_count = 0
     repetition_count = 0
@@ -85,13 +93,41 @@ def build_projections(
             repetition_count += 1
         elif isinstance(event, EvaluationCompletedEvent):
             result = event.data.result.model_copy(deep=True)
-            _validate_references(result, event_ids, message_ids)
+            criterion = configured.get(result.criterion_id)
+            if criterion is None:
+                raise PersistenceError(
+                    "materialize evidence", "an evaluation references an unknown criterion"
+                )
+            snapshot = event.data.criterion
+            if (
+                snapshot.id != criterion.id
+                or snapshot.evaluator_type != criterion.evaluator_type
+                or snapshot.result_kind != criterion.result_kind
+                or snapshot.required != criterion.required
+                or snapshot.threshold != criterion.threshold
+                or snapshot.evidence_policy != criterion.evidence_policy
+                or snapshot.parameters != criterion.parameters
+            ):
+                raise PersistenceError(
+                    "materialize evidence", "evaluation criterion snapshot is inconsistent"
+                )
+            try:
+                validate_result(result, criterion, prior_events)
+            except EvaluationError:
+                raise PersistenceError(
+                    "materialize evidence", "an evaluation contains invalid or uncommitted evidence"
+                ) from None
             if result.criterion_id in result_criterion_ids:
                 raise PersistenceError(
                     "materialize evidence", "one criterion produced multiple results"
                 )
             result_criterion_ids.append(result.criterion_id)
             results.append(result)
+        elif isinstance(event, RunLifecycleEvent) and event.data.current == "finalized":
+            if final_lifecycle is not None:
+                raise PersistenceError("materialize evidence", "multiple final lifecycle events")
+            final_lifecycle = event
+        prior_events.append(event)
 
     _validate_criterion_coverage(snapshots, result_criterion_ids)
 
@@ -117,6 +153,8 @@ def build_projections(
         snapshots,
         artifact_location or f".runs/{run_id}",
         reconciled_artifacts,
+        final_lifecycle,
+        committed_errors(events),
     )
     return Projections(conversation, evaluation, report)
 
@@ -138,32 +176,9 @@ def reconcile_artifacts(
     return records
 
 
-def _validate_references(
-    result: EvaluationResult, event_ids: set[str], message_ids: set[str]
-) -> None:
-    unknown_events = set(result.evidence_event_ids) - event_ids
-    unknown_messages = set(result.evidence_message_ids) - message_ids
-    if unknown_events or unknown_messages:
-        raise PersistenceError(
-            "materialize evidence", "an evaluation references uncommitted evidence"
-        )
-
-
-def _criterion_snapshot(criterion: Criterion | tuple[str, str, bool]) -> Criterion:
-    """Accept legacy compact inputs only for pure direct callers.
-
-    Filesystem finalization always supplies complete validated Criterion values.
-    """
-    if isinstance(criterion, Criterion):
-        return cast(Criterion, Criterion.model_validate(criterion.model_dump()))
-    identifier, evaluator_type, required = criterion
-    return Criterion(
-        id=identifier,
-        evaluator_type=evaluator_type,
-        result_kind="boolean",
-        evidence_policy="required",
-        required=required,
-    )
+def _criterion_snapshot(criterion: Criterion) -> Criterion:
+    """Detach a complete validated criterion for a persisted projection."""
+    return cast(Criterion, Criterion.model_validate(criterion.model_dump()))
 
 
 def _validate_criterion_coverage(
@@ -195,6 +210,8 @@ def _build_report(
     criteria: list[Criterion],
     artifact_location: str,
     artifacts: list[ArtifactRecord],
+    final_lifecycle: RunLifecycleEvent | None,
+    failures: list[ErrorDetail],
 ) -> Report | None:
     if not materialize_report:
         return None
@@ -218,14 +235,14 @@ def _build_report(
     )
     return Report(
         run_id=run_id,
-        outcome=None,
+        outcome=final_lifecycle.data.outcome if final_lifecycle else None,
         findings=[result.model_copy(deep=True) for result in results],
-        termination_reason=None,
+        termination_reason=final_lifecycle.data.termination_reason if final_lifecycle else None,
         goal_result=goal.model_copy(deep=True) if goal is not None else None,
         turn_count=turn_count,
         duration_seconds=duration,
         repetition_count=repetition_count,
-        errors=[],
+        errors=failures,
         artifact_location=artifact_location,
         artifacts=[artifact.model_copy(deep=True) for artifact in artifacts],
         omissions=omissions,

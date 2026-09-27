@@ -166,6 +166,155 @@
     },
     "Criterion": {
       "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "evaluator_type": {
+                "const": "turn_count"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {
+                  "max_turns": {
+                    "exclusiveMinimum": 0,
+                    "title": "Max Turns",
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "max_turns"
+                ],
+                "title": "TurnCountParameters",
+                "type": "object"
+              },
+              "result_kind": {
+                "const": "boolean"
+              }
+            },
+            "required": [
+              "parameters"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "evaluator_type": {
+                "const": "journey_timeout"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "parameters": {
+                "additionalProperties": false,
+                "description": "The observed termination reason supplies the timeout decision.",
+                "properties": {},
+                "title": "JourneyTimeoutParameters",
+                "type": "object"
+              },
+              "result_kind": {
+                "const": "boolean"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "evaluator_type": {
+                "const": "repeated_information"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {
+                  "max_repeats": {
+                    "default": 0,
+                    "minimum": 0,
+                    "title": "Max Repeats",
+                    "type": "integer"
+                  }
+                },
+                "title": "RepeatedInformationParameters",
+                "type": "object"
+              },
+              "result_kind": {
+                "const": "boolean"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "evaluator_type": {
+                "const": "semantic_goal_completion"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {
+                  "expected_facts": {
+                    "items": {
+                      "pattern": "\\S",
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "title": "Expected Facts",
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "expected_facts"
+                ],
+                "title": "SemanticGoalParameters",
+                "type": "object"
+              }
+            },
+            "required": [
+              "parameters"
+            ]
+          }
+        },
+        {
+          "else": {
+            "properties": {
+              "threshold": {
+                "type": "null"
+              }
+            }
+          },
+          "if": {
+            "properties": {
+              "result_kind": {
+                "const": "scored"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "threshold": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "threshold"
+            ]
+          }
+        }
+      ],
       "properties": {
         "evaluator_type": {
           "enum": [

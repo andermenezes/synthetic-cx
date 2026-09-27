@@ -117,3 +117,14 @@ TypedTraceEvent = Annotated[
     | ArtifactRecordedEvent,
     Field(discriminator="type"),
 ]
+
+
+def committed_errors(
+    events: list[TypedTraceEvent] | tuple[TypedTraceEvent, ...],
+) -> list[ErrorDetail]:
+    """Return detached operation failures in durable trace order."""
+    return [
+        event.data.error.model_copy(deep=True)
+        for event in events
+        if isinstance(event, OperationFailedEvent)
+    ]

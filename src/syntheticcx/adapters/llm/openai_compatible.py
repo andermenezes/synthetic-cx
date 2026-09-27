@@ -1,0 +1,18 @@
+"""Explicit endpoint and credential for OpenAI-compatible chat generation."""
+
+from __future__ import annotations
+
+from syntheticcx.adapters.llm._chat import ChatProvider, _AsyncChatClient
+from syntheticcx.config.models import OpenAICompatibleModelConfig, ResolvedModelSettings
+
+
+class OpenAICompatibleProvider(ChatProvider):
+    def __init__(
+        self,
+        config: OpenAICompatibleModelConfig,
+        settings: ResolvedModelSettings,
+        *,
+        timeout_seconds: float,
+        client: _AsyncChatClient | None = None,
+    ) -> None:
+        super().__init__(config, settings, timeout_seconds=timeout_seconds, client=client)

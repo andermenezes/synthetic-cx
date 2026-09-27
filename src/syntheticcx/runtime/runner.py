@@ -53,6 +53,7 @@ def _failure(exc: Exception, stage: str) -> tuple[TerminationReason, ErrorDetail
             in {
                 "persona.initialize",
                 "persona.respond",
+                "persona.interactions",
                 "channel.greeting",
                 "channel.send",
                 "channel.receive",
@@ -90,12 +91,15 @@ async def run_conversation(
     wait: WaitController,
     limits: ExecutionLimits,
     project_config: ProjectConfig | None = None,
+    retain_storage: bool = False,
 ) -> RuntimeResult:
     """Execute once and return committed evidence without finalizing the run.
 
     The caller provides an uncreated run and a journal bound to the same run ID,
-    storage, and clock. Only a successfully started resource is closed; a failed
-    start is also closed because it may have acquired partial resources.
+    storage, and clock. In owner mode the conversation stop is recorded while
+    the lifecycle stays in progress; the owner closes the writer after evaluation.
+    Only a successfully started resource is closed; a failed start is also closed
+    because it may have acquired partial resources.
     """
     progress = RuntimeProgress(persona.fresh_state())
     reason: TerminationReason | None = None
@@ -254,18 +258,27 @@ async def run_conversation(
                     if error is None:
                         error = secondary
                     secondary_errors.append(secondary)
+            if isinstance(simulator, AsyncCloseable):
+                try:
+                    await finish_cleanup(wait.run(simulator.close(), limits.close_timeout_seconds))
+                except (Exception, asyncio.CancelledError):
+                    cleanup_completed = False
+                    secondary = _error("model", "persona.close")
+                    if error is None:
+                        error = secondary
+                    secondary_errors.append(secondary)
             if error is not None and reason is not None and reason != "persistence_error":
                 await finish_cleanup(record_failure(error))
             for secondary in secondary_errors:
                 if secondary is not error and reason != "persistence_error":
                     await finish_cleanup(record_failure(secondary))
-            if reason is not None:
+            if reason is not None and (not retain_storage or reason != "persistence_error"):
                 try:
                     await finish_cleanup(
                         journal.append(
                             RunLifecycleChange(
                                 previous="in_progress" if journal.committed_events else None,
-                                current="incomplete",
+                                current="in_progress" if retain_storage else "incomplete",
                                 termination_reason=reason,
                             )
                         ),
@@ -276,7 +289,7 @@ async def run_conversation(
                         reason = "persistence_error"
                         error = _error("persistence", "journal.append")
         finally:
-            if isinstance(storage, AsyncCloseable):
+            if not retain_storage and isinstance(storage, AsyncCloseable):
                 try:
                     await finish_cleanup(
                         wait.run(storage.close(), limits.close_timeout_seconds),

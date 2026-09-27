@@ -33,7 +33,7 @@ It prints a URL such as `http://127.0.0.1:<port>/?variant=success` and stops
 on Ctrl-C. The port is selected by the OS. The port `8000` in
 `examples/telecom/scenario.yaml` is an example value; substitute the printed
 port when configuring this target. Integration tests start and stop their own
-ephemeral fixture servers. The CLI `run` command and live persona/model
+ephemeral fixture servers. The CLI `run` command and full evaluation/reporting
 composition are planned for later phases; for now, use
 `uv run pytest tests/integration/channel` to exercise the browser channel
 against the fixture.
@@ -75,6 +75,25 @@ explicit settings: `privacy.allow_screenshots`,
 `privacy.confirm_screenshot_target_safe`, and `storage.store_screenshots`.
 The controlled fixture test opts in deliberately. Image pixels are not
 sanitized by text redaction, and no raw image bytes go into the event trace.
+
+## Model and persona verification
+
+The offline suite checks OpenAI and OpenAI-compatible provider translation,
+selected credentials/endpoints, controlled capability probing, and a pinned
+TinyTroupe persona action through an in-memory SDK transport.
+
+The reference OpenAI `gpt-5-mini` persona interaction is opt-in:
+
+```bash
+export OPENAI_API_KEY='replace-with-selected-credential'
+SYNTHETICCX_RUN_LIVE_SMOKE=1 uv run pytest -q tests/smoke/test_live_tinytroupe.py
+```
+
+It skips when the flag or credential is absent, probes chat and structured
+output before constructing the persona, and checks typed owned results without
+asserting generated wording. The selected persona path does not use embeddings.
+Compatible endpoints require an explicit URL/credential and a successful
+chat/structured-output preflight; arbitrary endpoints are not assumed compatible.
 
 ## Build and verify a distribution
 

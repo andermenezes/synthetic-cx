@@ -25,7 +25,7 @@ from pydantic import BaseModel
 
 from syntheticcx.config.models import Criterion, ProjectConfig
 from syntheticcx.domain.artifacts import ConfigArtifact, MetadataArtifact, Run
-from syntheticcx.domain.events import TypedTraceEvent
+from syntheticcx.domain.events import RunLifecycleEvent, TypedTraceEvent, committed_errors
 from syntheticcx.domain.models import ArtifactRecord
 from syntheticcx.errors import PersistenceError
 from syntheticcx.privacy import Redactor
@@ -105,12 +105,25 @@ class FilesystemStorage:
         self._root = root
         self._redactor = redactor
         self._timeout = timeout_seconds
-        self._criteria = [
+        supplied_criteria = [
             Criterion.model_validate(
                 {"result_kind": "boolean", "evidence_policy": "required", **criterion}
             )
             for criterion in criteria or []
         ]
+        if project_config is not None:
+            self._criteria = [
+                redactor.redact_criterion(item, project_config.scenario)
+                for item in project_config.scenario.success_criteria
+            ]
+        elif redactor.has_field_redaction and any(
+            item.evaluator_type == "semantic_goal_completion" for item in supplied_criteria
+        ):
+            raise ValueError(
+                "semantic criteria require project_config when field redaction is enabled"
+            )
+        else:
+            self._criteria = supplied_criteria
         self._materialize_conversation = materialize_conversation
         self._materialize_evaluation = materialize_evaluation
         self._materialize_report = materialize_report
@@ -315,6 +328,20 @@ class FilesystemStorage:
                 raise ValueError("finalization requires a finalized run")
             lines = (self._root / run.id / "trace.jsonl").read_text(encoding="utf-8").splitlines()
             events = committed_events_from_lines(lines)
+            final_events = [
+                event
+                for event in events
+                if isinstance(event, RunLifecycleEvent) and event.data.current == "finalized"
+            ]
+            if (
+                len(final_events) != 1
+                or events[-1] is not final_events[0]
+                or final_events[0].data.outcome != run.outcome
+                or final_events[0].data.termination_reason != run.termination_reason
+                or not final_events[0].data.termination_reason
+                or final_events[0].data.outcome is None
+            ):
+                raise ValueError("final lifecycle does not agree with metadata")
             criteria = [criterion.model_copy(deep=True) for criterion in self._criteria]
             records: list[ArtifactRecord] = [
                 ArtifactRecord(
@@ -354,6 +381,8 @@ class FilesystemStorage:
             )
             if metadata.lifecycle_status != "finalized":
                 raise ValueError("finalization requires a finalized metadata artifact")
+            if metadata.errors != committed_errors(events):
+                raise ValueError("metadata errors do not agree with the trace")
             omissions = [
                 f"screenshot:{record.reason or record.status}"
                 for record in safe_records

@@ -37,26 +37,39 @@ class PreparedSettings(StrictModel):
     evaluation: ResolvedModelSettings
 
 
+def requires_semantic_evaluation(config: ProjectConfig) -> bool:
+    """Return whether the selected criteria need an evaluation-model call."""
+    return any(
+        criterion.evaluator_type == "semantic_goal_completion"
+        for criterion in config.scenario.success_criteria
+    )
+
+
 def prepare_settings(
     config: ProjectConfig, environment: Mapping[str, str] | None = None
 ) -> PreparedSettings:
-    """Validate local prerequisites without importing adapters or probing endpoints.
-
-    Phase 6 will verify declared capabilities through bounded network preflight.
-    """
+    """Validate local prerequisites without importing adapters or probing endpoints."""
+    semantic = requires_semantic_evaluation(config)
     for role, model in [
         ("model", config.model),
         ("evaluation_model", config.effective_evaluation_model),
     ]:
-        if isinstance(model, OpenAICompatibleModelConfig):
-            if not model.capabilities.chat_completions:
-                raise ConfigurationError(
-                    "prepare configuration", f"{role}.capabilities.chat_completions is required"
-                )
-    semantic = any(
-        criterion.evaluator_type == "semantic_goal_completion"
-        for criterion in config.scenario.success_criteria
-    )
+        if (
+            isinstance(model, OpenAICompatibleModelConfig)
+            and (role == "model" or semantic)
+            and not model.capabilities.chat_completions
+        ):
+            raise ConfigurationError(
+                "prepare configuration", f"{role}.capabilities.chat_completions is required"
+            )
+    persona = config.model
+    if (
+        isinstance(persona, OpenAICompatibleModelConfig)
+        and not persona.capabilities.structured_output
+    ):
+        raise ConfigurationError(
+            "prepare configuration", "model.capabilities.structured_output is required"
+        )
     evaluator = config.effective_evaluation_model
     if semantic and isinstance(evaluator, OpenAICompatibleModelConfig):
         if not evaluator.capabilities.structured_output:

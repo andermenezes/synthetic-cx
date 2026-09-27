@@ -1,33 +1,595 @@
 """Deterministic runner boundaries: persistence, terminal policy, and cleanup."""
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
+from syntheticcx.adapters.storage.filesystem import FilesystemStorage
 from syntheticcx.config.loader import load_config
-from syntheticcx.config.models import PrivacyConfig, ProjectConfig
+from syntheticcx.config.models import Criterion, PrivacyConfig, ProjectConfig
 from syntheticcx.domain.artifacts import ConfigArtifact, Run
-from syntheticcx.domain.events import TypedTraceEvent
+from syntheticcx.domain.events import EvaluationCompletedEvent, RunLifecycleEvent, TypedTraceEvent
 from syntheticcx.domain.models import (
     ArtifactRecord,
     CompletedResponse,
     ConversationObservation,
     CustomerScenarioContext,
+    EvaluationResult,
+    LLMResponse,
     Message,
+    ModelIdentity,
+    ModelInteraction,
     PersonaAction,
     PersonaDefinition,
     PersonaState,
     Scenario,
     SendReceipt,
+    TokenUsage,
 )
+from syntheticcx.errors import ModelError
+from syntheticcx.evaluation.service import EvaluationService
 from syntheticcx.privacy import Redactor
 from syntheticcx.runtime.clock import ManualClock, ManualWaitController
 from syntheticcx.runtime.journal import RunJournal
+from syntheticcx.runtime.owner import run_evaluated
 from syntheticcx.runtime.result import RuntimeResult
 from syntheticcx.runtime.runner import run_conversation
+
+
+class GoalEvaluator:
+    def __init__(self, status: str = "passed") -> None:
+        self.status = status
+
+    async def evaluate(self, context):
+        assistant = next(
+            (
+                event
+                for event in context.sanitized_trace
+                if event.type == "message_observed" and event.data.message.actor == "assistant"
+            ),
+            None,
+        )
+        if assistant is None:
+            return None
+        return EvaluationResult(
+            evaluator_id=context.criterion.evaluator_type,
+            criterion_id=context.criterion.id,
+            required=context.criterion.required,
+            status=self.status,
+            explanation="The assistant explained the plan change."
+            if self.status == "passed"
+            else "The explanation is insufficient.",
+            evidence_event_ids=[assistant.id],
+            evidence_message_ids=[assistant.data.message.id],
+        )
+
+
+@pytest.mark.parametrize(
+    ("verdict", "expected", "exit_code"),
+    [
+        ("passed", "passed", 0),
+        ("failed", "failed", 1),
+        ("error", "error", 3),
+    ],
+)
+def test_owner_commits_evaluation_and_final_lifecycle_before_closing_storage(
+    verdict: str, expected: str, exit_code: int
+) -> None:
+    async def exercise() -> None:
+        config = load_config(Path("examples/telecom/scenario.yaml"))
+        storage = Storage()
+        clock = ManualClock(NOW)
+        wait = ManualWaitController(clock)
+        redactor = Redactor(PrivacyConfig())
+        journal = RunJournal("run-1", storage, redactor, clock)
+        service = EvaluationService(
+            journal=journal,
+            wait=wait,
+            evaluator_timeout_seconds=5,
+            redactor=redactor,
+            evaluators={"semantic_goal_completion": GoalEvaluator(verdict)},
+        )
+        result = await run_evaluated(
+            run=run(),
+            config_artifact=ConfigArtifact(source_content_hash="hash", effective_config={}),
+            scenario=Scenario.model_validate(config.scenario.model_dump()),
+            persona=PersonaDefinition.model_validate(config.persona.model_dump()),
+            channel=Channel(),
+            simulator=Persona(),
+            storage=storage,
+            journal=journal,
+            clock=clock,
+            wait=wait,
+            limits=config.execution.model_copy(update={"greeting_grace_seconds": 0}),
+            evaluation=service,
+            redactor=redactor,
+            project_config=config,
+        )
+        assert result.finalized and result.outcome == expected and result.exit_code == exit_code
+        assert storage.finalized == storage.closed == 1
+        assert (
+            len([event for event in storage.events if isinstance(event, EvaluationCompletedEvent)])
+            == 1
+        )
+        assert isinstance(storage.events[-1], RunLifecycleEvent)
+        assert storage.events[-1].data.outcome == expected
+        assert result.conversation.committed_events[-1].data.current == "in_progress"
+
+    asyncio.run(exercise())
+
+
+def test_owner_finalizes_consistent_filesystem_artifacts(tmp_path: Path) -> None:
+    async def exercise() -> None:
+        config = load_config(Path("examples/telecom/scenario.yaml"))
+        redactor = Redactor(config.privacy)
+        storage = FilesystemStorage(tmp_path, redactor, timeout_seconds=5, project_config=config)
+        clock = ManualClock(NOW)
+        wait = ManualWaitController(clock)
+        journal = RunJournal("run-1", storage, redactor, clock)
+        service = EvaluationService(
+            journal=journal,
+            wait=wait,
+            evaluator_timeout_seconds=5,
+            redactor=redactor,
+            evaluators={"semantic_goal_completion": GoalEvaluator()},
+        )
+        result = await run_evaluated(
+            run=run(),
+            config_artifact=ConfigArtifact(source_content_hash="hash", effective_config={}),
+            scenario=Scenario.model_validate(config.scenario.model_dump()),
+            persona=PersonaDefinition.model_validate(config.persona.model_dump()),
+            channel=Channel(),
+            simulator=Persona(),
+            storage=storage,
+            journal=journal,
+            clock=clock,
+            wait=wait,
+            limits=config.execution.model_copy(update={"greeting_grace_seconds": 0}),
+            evaluation=service,
+            redactor=redactor,
+            project_config=config,
+        )
+        assert result.finalized and result.outcome == "passed"
+        directory = tmp_path / "run-1"
+        metadata = json.loads((directory / "metadata.json").read_text())
+        report = json.loads((directory / "report.json").read_text())
+        evaluation = json.loads((directory / "evaluation.json").read_text())
+        trace = [
+            (json.loads(line)) for line in (directory / "trace.jsonl").read_text().splitlines()
+        ]
+        assert metadata["outcome"] == report["outcome"] == "passed"
+        assert (
+            metadata["termination_reason"]
+            == report["termination_reason"]
+            == "goal_believed_complete"
+        )
+        assert evaluation["results"][0] == report["findings"][0]
+        assert trace[-1]["data"]["outcome"] == "passed"
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(
+    (
+        "channel_failure",
+        "close_failure",
+        "storage_options",
+        "expected_outcome",
+        "expected_finalized",
+        "expected_exit",
+    ),
+    [
+        ("receive", False, {}, "error", True, 3),
+        (None, True, {}, "error", True, 3),
+        (None, False, {"fail_evaluation": True}, None, False, 3),
+        (None, False, {"fail_finalize": True}, None, False, 3),
+        (None, False, {"fail_close": True}, "passed", True, 0),
+    ],
+)
+def test_owner_preserves_partial_evidence_on_failure(
+    channel_failure: str | None,
+    close_failure: bool,
+    storage_options: dict[str, bool],
+    expected_outcome: str | None,
+    expected_finalized: bool,
+    expected_exit: int,
+) -> None:
+    async def exercise() -> None:
+        config = load_config(Path("examples/telecom/scenario.yaml"))
+        redactor = Redactor(PrivacyConfig())
+        storage = Storage(**storage_options)
+        clock = ManualClock(NOW)
+        wait = ManualWaitController(clock)
+        journal = RunJournal("run-1", storage, redactor, clock)
+        service = EvaluationService(
+            journal=journal,
+            wait=wait,
+            evaluator_timeout_seconds=5,
+            redactor=redactor,
+            evaluators={"semantic_goal_completion": GoalEvaluator()},
+        )
+        result = await run_evaluated(
+            run=run(),
+            config_artifact=ConfigArtifact(source_content_hash="hash", effective_config={}),
+            scenario=Scenario.model_validate(config.scenario.model_dump()),
+            persona=PersonaDefinition.model_validate(config.persona.model_dump()),
+            channel=Channel(failure=channel_failure, close_failure=close_failure),
+            simulator=Persona(),
+            storage=storage,
+            journal=journal,
+            clock=clock,
+            wait=wait,
+            limits=config.execution.model_copy(update={"greeting_grace_seconds": 0}),
+            evaluation=service,
+            redactor=redactor,
+            project_config=config,
+        )
+        assert result.finalized is expected_finalized
+        assert result.outcome == expected_outcome
+        assert result.exit_code == expected_exit
+        assert storage.closed == 1
+        assert result.cleanup_completed is (not storage.fail_close and not close_failure)
+        assert storage.events == list(result.committed_events)
+        if expected_finalized:
+            assert result.evaluations[0].status == ("unavailable" if channel_failure else "passed")
+            assert storage.events[-1].data.outcome == expected_outcome
+
+    asyncio.run(exercise())
+
+
+def test_owner_cancellation_records_cancelled_outcome() -> None:
+    async def exercise() -> None:
+        config = load_config(Path("examples/telecom/scenario.yaml"))
+        redactor = Redactor(PrivacyConfig())
+        storage = Storage()
+        channel = Channel(failure="hang")
+        clock = ManualClock(NOW)
+        wait = ManualWaitController(clock)
+        journal = RunJournal("run-1", storage, redactor, clock)
+        service = EvaluationService(
+            journal=journal,
+            wait=wait,
+            evaluator_timeout_seconds=5,
+            redactor=redactor,
+            evaluators={"semantic_goal_completion": GoalEvaluator()},
+        )
+        task = asyncio.create_task(
+            run_evaluated(
+                run=run(),
+                config_artifact=ConfigArtifact(source_content_hash="hash", effective_config={}),
+                scenario=Scenario.model_validate(config.scenario.model_dump()),
+                persona=PersonaDefinition.model_validate(config.persona.model_dump()),
+                channel=channel,
+                simulator=Persona(),
+                storage=storage,
+                journal=journal,
+                clock=clock,
+                wait=wait,
+                limits=config.execution.model_copy(update={"greeting_grace_seconds": 0}),
+                evaluation=service,
+                redactor=redactor,
+                project_config=config,
+            )
+        )
+        await channel.receiving.wait()
+        task.cancel()
+        result = await task
+        assert result.finalized and result.outcome == "cancelled" and result.exit_code == 130
+        assert result.evaluations[0].status == "unavailable"
+        assert channel.closed == storage.closed == 1
+
+    asyncio.run(exercise())
+
+
+def test_owner_journey_timeout_is_finalized_as_error_with_partial_evidence() -> None:
+    async def exercise() -> None:
+        config = load_config(Path("examples/telecom/scenario.yaml"))
+        storage = Storage()
+        channel = Channel(failure="hang")
+        clock = ManualClock(NOW)
+        wait = ManualWaitController(clock)
+        redactor = Redactor(PrivacyConfig())
+        journal = RunJournal("run-1", storage, redactor, clock)
+        service = EvaluationService(
+            journal=journal,
+            wait=wait,
+            evaluator_timeout_seconds=5,
+            redactor=redactor,
+            evaluators={"semantic_goal_completion": GoalEvaluator()},
+        )
+        task = asyncio.create_task(
+            run_evaluated(
+                run=run(),
+                config_artifact=ConfigArtifact(source_content_hash="hash", effective_config={}),
+                scenario=Scenario.model_validate(config.scenario.model_dump()),
+                persona=PersonaDefinition.model_validate(config.persona.model_dump()),
+                channel=channel,
+                simulator=Persona(),
+                storage=storage,
+                journal=journal,
+                clock=clock,
+                wait=wait,
+                limits=config.execution.model_copy(
+                    update={
+                        "greeting_grace_seconds": 0,
+                        "journey_timeout_seconds": 2,
+                    }
+                ),
+                evaluation=service,
+                redactor=redactor,
+                project_config=config,
+            )
+        )
+        await channel.receiving.wait()
+        await clock.advance(2)
+        result = await task
+        assert result.finalized and result.outcome == "error" and result.exit_code == 3
+        assert result.conversation.termination_reason == "journey_timeout"
+        assert result.evaluations[0].status == "unavailable"
+        assert storage.events[-1].data.termination_reason == "journey_timeout"
+        assert channel.closed == storage.closed == 1
+
+    asyncio.run(exercise())
+
+
+def test_evaluation_cancellation_preserves_conversation_stop_reason() -> None:
+    class WaitingEvaluator:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+
+        async def evaluate(self, context):
+            self.started.set()
+            await asyncio.Event().wait()
+
+    async def exercise() -> None:
+        config = load_config(Path("examples/telecom/scenario.yaml"))
+        redactor = Redactor(PrivacyConfig())
+        storage = Storage()
+        clock = ManualClock(NOW)
+        wait = ManualWaitController(clock)
+        journal = RunJournal("run-1", storage, redactor, clock)
+        evaluator = WaitingEvaluator()
+        service = EvaluationService(
+            journal=journal,
+            wait=wait,
+            evaluator_timeout_seconds=5,
+            redactor=redactor,
+            evaluators={"semantic_goal_completion": evaluator},
+        )
+        task = asyncio.create_task(
+            run_evaluated(
+                run=run(),
+                config_artifact=ConfigArtifact(source_content_hash="hash", effective_config={}),
+                scenario=Scenario.model_validate(config.scenario.model_dump()),
+                persona=PersonaDefinition.model_validate(config.persona.model_dump()),
+                channel=Channel(),
+                simulator=Persona(),
+                storage=storage,
+                journal=journal,
+                clock=clock,
+                wait=wait,
+                limits=config.execution.model_copy(update={"greeting_grace_seconds": 0}),
+                evaluation=service,
+                redactor=redactor,
+            )
+        )
+        await evaluator.started.wait()
+        task.cancel()
+        result = await task
+        assert result.finalized and result.outcome == "cancelled" and result.exit_code == 130
+        assert result.conversation.termination_reason == "goal_believed_complete"
+        assert storage.events[-1].data.termination_reason == "cancelled"
+        assert any(
+            event.data.termination_reason == "goal_believed_complete"
+            for event in storage.events
+            if isinstance(event, RunLifecycleEvent) and event.data.current == "in_progress"
+        )
+        assert result.evaluations[0].status == "unavailable"
+
+    asyncio.run(exercise())
+
+
+def test_optional_evaluation_error_is_visible_without_gating_outcome() -> None:
+    class TransientEvaluator:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def evaluate(self, context):
+            self.calls += 1
+            raise ModelError("evaluation.generate", "temporary", retryable=True)
+
+    async def exercise() -> None:
+        config = load_config(Path("examples/telecom/scenario.yaml"))
+        scenario = Scenario.model_validate(config.scenario.model_dump()).model_copy(
+            update={
+                "success_criteria": [
+                    *config.scenario.success_criteria,
+                    Criterion(
+                        id="optional-timeout",
+                        evaluator_type="journey_timeout",
+                        result_kind="boolean",
+                        evidence_policy="required",
+                        required=False,
+                    ),
+                ]
+            }
+        )
+        redactor = Redactor(PrivacyConfig())
+        storage = Storage()
+        clock = ManualClock(NOW)
+        wait = ManualWaitController(clock)
+        journal = RunJournal("run-1", storage, redactor, clock)
+        transient = TransientEvaluator()
+        service = EvaluationService(
+            journal=journal,
+            wait=wait,
+            evaluator_timeout_seconds=5,
+            redactor=redactor,
+            evaluators={"semantic_goal_completion": GoalEvaluator(), "journey_timeout": transient},
+        )
+        result = await run_evaluated(
+            run=run(),
+            config_artifact=ConfigArtifact(source_content_hash="hash", effective_config={}),
+            scenario=scenario,
+            persona=PersonaDefinition.model_validate(config.persona.model_dump()),
+            channel=Channel(),
+            simulator=Persona(),
+            storage=storage,
+            journal=journal,
+            clock=clock,
+            wait=wait,
+            limits=config.execution.model_copy(update={"greeting_grace_seconds": 0}),
+            evaluation=service,
+            redactor=redactor,
+        )
+        assert result.outcome == "passed" and result.exit_code == 0
+        assert [finding.status for finding in result.evaluations] == ["passed", "error"]
+        assert transient.calls == 2
+
+    asyncio.run(exercise())
+
+
+def test_evaluation_provider_close_failure_is_recorded_before_finalization() -> None:
+    class Provider:
+        def __init__(self) -> None:
+            self.closed = 0
+
+        async def close(self) -> None:
+            self.closed += 1
+            raise OSError("sensitive-provider-token")
+
+    async def exercise() -> None:
+        config = load_config(Path("examples/telecom/scenario.yaml"))
+        redactor = Redactor(PrivacyConfig())
+        storage = Storage()
+        clock = ManualClock(NOW)
+        wait = ManualWaitController(clock)
+        journal = RunJournal("run-1", storage, redactor, clock)
+        service = EvaluationService(
+            journal=journal,
+            wait=wait,
+            evaluator_timeout_seconds=5,
+            redactor=redactor,
+            evaluators={"semantic_goal_completion": GoalEvaluator()},
+        )
+        provider = Provider()
+        result = await run_evaluated(
+            run=run(),
+            config_artifact=ConfigArtifact(source_content_hash="hash", effective_config={}),
+            scenario=Scenario.model_validate(config.scenario.model_dump()),
+            persona=PersonaDefinition.model_validate(config.persona.model_dump()),
+            channel=Channel(),
+            simulator=Persona(),
+            storage=storage,
+            journal=journal,
+            clock=clock,
+            wait=wait,
+            limits=config.execution.model_copy(update={"greeting_grace_seconds": 0}),
+            evaluation=service,
+            evaluation_provider=provider,
+            redactor=redactor,
+        )
+        assert provider.closed == 1
+        assert result.finalized and result.outcome == "error" and result.exit_code == 3
+        assert result.errors[-1].operation == "evaluation.close"
+        assert result.errors[-1].message == "model operation failed"
+
+    asyncio.run(exercise())
+
+
+def test_owner_semantic_provider_persists_usage_and_redacted_fact(tmp_path: Path) -> None:
+    class Provider:
+        def __init__(self) -> None:
+            self.closed = 0
+            self.requests = []
+
+        async def generate(self, request):
+            self.requests.append(request)
+            transcript = json.loads(request.messages[1].content)["transcript"]
+            answer = next(item for item in transcript if item["actor"] == "assistant")
+            return LLMResponse(
+                content=json.dumps(
+                    {
+                        "passed": True,
+                        "explanation": "The plan increase was explained.",
+                        "evidence": [
+                            {"event_id": answer["event_id"], "message_id": answer["message_id"]}
+                        ],
+                    }
+                ),
+                interaction=ModelInteraction(
+                    id="evaluation-call",
+                    identity=ModelIdentity(provider="openai", model="fake"),
+                    started_at=NOW,
+                    ended_at=NOW,
+                    usage=TokenUsage(input_tokens=12, output_tokens=9),
+                ),
+            )
+
+        async def close(self):
+            self.closed += 1
+
+    async def exercise() -> None:
+        config = load_config(Path("examples/telecom/scenario.yaml"))
+        source = config.model_dump(mode="json")
+        source["scenario"]["starting_context"]["account_number"] = "secret-marker"
+        source["scenario"]["success_criteria"][0]["parameters"]["expected_facts"] = [
+            "The plan changed for secret-marker."
+        ]
+        source["privacy"]["redaction_keys"] = ["account_number"]
+        config = ProjectConfig.model_validate(source)
+        redactor = Redactor(config.privacy, resolved_secrets=["secret-marker"])
+        storage = FilesystemStorage(tmp_path, redactor, timeout_seconds=5, project_config=config)
+        clock = ManualClock(NOW)
+        wait = ManualWaitController(clock)
+        journal = RunJournal("run-1", storage, redactor, clock)
+        provider = Provider()
+        service = EvaluationService(
+            journal=journal,
+            wait=wait,
+            evaluator_timeout_seconds=5,
+            redactor=redactor,
+            provider=provider,
+        )
+        result = await run_evaluated(
+            run=run(),
+            config_artifact=ConfigArtifact(source_content_hash="hash", effective_config=source),
+            scenario=Scenario.model_validate(config.scenario.model_dump()),
+            persona=PersonaDefinition.model_validate(config.persona.model_dump()),
+            channel=Channel(),
+            simulator=Persona(),
+            storage=storage,
+            journal=journal,
+            clock=clock,
+            wait=wait,
+            limits=config.execution.model_copy(update={"greeting_grace_seconds": 0}),
+            evaluation=service,
+            evaluation_provider=provider,
+            redactor=redactor,
+            project_config=config,
+        )
+        assert result.finalized and result.outcome == "passed" and provider.closed == 1
+        trace = [
+            json.loads(line) for line in (tmp_path / "run-1/trace.jsonl").read_text().splitlines()
+        ]
+        interaction = next(item for item in trace if item["type"] == "model_interaction_completed")
+        assert interaction["data"]["usage"]["input_tokens"] == 12
+        assert interaction["data"]["usage"]["output_tokens"] == 9
+        assert trace.index(interaction) < next(
+            i for i, item in enumerate(trace) if item["type"] == "evaluation_completed"
+        )
+        assert "secret-marker" not in (tmp_path / "run-1/trace.jsonl").read_text()
+        assert "secret-marker" not in (tmp_path / "run-1/evaluation.json").read_text()
+        assert "secret-marker" not in (tmp_path / "run-1/report.json").read_text()
+        assert "secret-marker" not in (tmp_path / "run-1/config.yaml").read_text()
+        assert "secret-marker" not in provider.requests[0].messages[1].content
+
+    asyncio.run(exercise())
+
 
 NOW = datetime(2026, 9, 24, tzinfo=UTC)
 PNG = b"\x89PNG\r\n\x1a\nsynthetic-fixture-bytes"
@@ -73,6 +635,9 @@ class Storage:
         fail_append: bool = False,
         fail_at_sequence: int | None = None,
         fail_create: bool = False,
+        fail_evaluation: bool = False,
+        fail_finalize: bool = False,
+        fail_close: bool = False,
     ) -> None:
         self.created = 0
         self.finalized = 0
@@ -81,6 +646,9 @@ class Storage:
         self.fail_append = fail_append
         self.fail_at_sequence = fail_at_sequence
         self.fail_create = fail_create
+        self.fail_evaluation = fail_evaluation
+        self.fail_finalize = fail_finalize
+        self.fail_close = fail_close
 
     async def create_run(self, run: Run, config_artifact: ConfigArtifact) -> None:
         assert run.id == "run-1"
@@ -89,15 +657,24 @@ class Storage:
             raise OSError("sensitive-storage-path")
 
     async def append_event(self, run_id: str, event: TypedTraceEvent) -> None:
-        if self.fail_append or event.sequence == self.fail_at_sequence:
+        if (
+            self.fail_append
+            or event.sequence == self.fail_at_sequence
+            or self.fail_evaluation
+            and isinstance(event, EvaluationCompletedEvent)
+        ):
             raise OSError("sensitive-storage-path")
         self.events.append(event)
 
     async def finalize_run(self, run: Run) -> None:
         self.finalized += 1
+        if self.fail_finalize:
+            raise OSError("sensitive-storage-path")
 
     async def close(self) -> None:
         self.closed += 1
+        if self.fail_close:
+            raise OSError("sensitive-storage-path")
 
 
 def reply(content: str) -> CompletedResponse:
@@ -249,6 +826,195 @@ def test_success_returns_detached_evidence_without_finalizing() -> None:
         assert result.committed_events[2].data.message.id == "sent-1"
         assert result.committed_events[2].data.message.content == "My account number is 123"
         assert not hasattr(result, "outcome")
+
+    asyncio.run(scenario())
+
+
+def test_persona_close_is_owned_and_bounded_on_success_and_failure() -> None:
+    class CloseablePersona(Persona):
+        def __init__(self, *, fail: bool = False) -> None:
+            super().__init__(failure=fail)
+            self.closed = 0
+
+        async def close(self) -> None:
+            self.closed += 1
+
+    async def scenario() -> None:
+        for failed in (False, True):
+            persona = CloseablePersona(fail=failed)
+            result = await exercise(Channel(), persona, Storage())
+            assert persona.closed == 1
+            assert result.cleanup_completed
+            assert result.termination_reason == (
+                "model_error" if failed else "goal_believed_complete"
+            )
+
+    asyncio.run(scenario())
+
+
+def test_persona_close_failure_is_sanitized_and_does_not_hide_primary_error() -> None:
+    class FailingClose(Persona):
+        async def close(self) -> None:
+            raise RuntimeError("secret model endpoint")
+
+    async def scenario() -> None:
+        result = await exercise(Channel(), FailingClose(failure=True), Storage())
+        assert result.termination_reason == "model_error"
+        assert result.error is not None and result.error.operation == "persona.respond"
+        assert not result.cleanup_completed
+        failures = [
+            event.data.error
+            for event in result.committed_events
+            if event.type == "operation_failed"
+        ]
+        assert {failure.operation for failure in failures} == {"persona.respond", "persona.close"}
+        assert "secret model endpoint" not in str(result.model_dump())
+
+    asyncio.run(scenario())
+
+
+def test_persona_cleanup_on_runner_cancellation_and_close_deadline() -> None:
+    class ClosingPersona(Persona):
+        def __init__(self, *, hangs: bool = False) -> None:
+            super().__init__()
+            self.hangs = hangs
+            self.closed = 0
+            self.closing = asyncio.Event()
+
+        async def close(self) -> None:
+            self.closed += 1
+            self.closing.set()
+            if self.hangs:
+                await asyncio.Event().wait()
+
+    async def scenario() -> None:
+        channel = Channel(failure="hang")
+        persona = ClosingPersona()
+        task = asyncio.create_task(exercise(channel, persona, Storage()))
+        await channel.receiving.wait()
+        task.cancel()
+        cancelled = await task
+        assert cancelled.termination_reason == "cancelled"
+        assert cancelled.cleanup_completed
+        assert persona.closed == 1
+
+        clock = ManualClock(NOW)
+        hanging = ClosingPersona(hangs=True)
+        task = asyncio.create_task(exercise(Channel(), hanging, Storage(), clock=clock))
+        await hanging.closing.wait()
+        await clock.advance(5)
+        result = await task
+        assert not result.cleanup_completed
+        assert result.error is not None and result.error.operation == "persona.close"
+        assert hanging.closed == 1
+
+    asyncio.run(scenario())
+
+
+def test_failed_interaction_append_prevents_customer_send() -> None:
+    class EvidencePersona(Persona):
+        def __init__(self) -> None:
+            super().__init__()
+            self.pending = False
+
+        async def respond(
+            self, observation: ConversationObservation, state: PersonaState
+        ) -> PersonaAction:
+            result = await super().respond(observation, state)
+            self.pending = True
+            return result
+
+        def take_interactions(self) -> tuple[ModelInteraction, ...]:
+            if not self.pending:
+                return ()
+            self.pending = False
+            return (
+                ModelInteraction(
+                    id="persona-call-1",
+                    identity=ModelIdentity(provider="fake", model="model"),
+                    started_at=NOW,
+                    ended_at=NOW,
+                    usage=TokenUsage(unavailable_reason="not supplied"),
+                ),
+            )
+
+    async def scenario() -> None:
+        channel = Channel()
+        result = await exercise(channel, EvidencePersona(), Storage(fail_at_sequence=2))
+        assert result.termination_reason == "persistence_error"
+        assert channel.sent == []
+        assert [event.type for event in result.committed_events] == [
+            "run_lifecycle_changed",
+            "conversation_started",
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_interaction_drain_failure_reports_the_specific_persona_operation() -> None:
+    class BrokenEvidencePersona(Persona):
+        def take_interactions(self) -> tuple[ModelInteraction, ...]:
+            raise RuntimeError("secret interaction failure")
+
+    async def scenario() -> None:
+        result = await exercise(Channel(), BrokenEvidencePersona(), Storage())
+        assert result.termination_reason == "model_error"
+        assert result.error is not None
+        assert result.error.operation == "persona.interactions"
+        assert "secret interaction failure" not in str(result.model_dump())
+
+    asyncio.run(scenario())
+
+
+def test_timed_out_persona_result_does_not_publish_model_interaction() -> None:
+    class DelayedPersona(Persona):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = asyncio.Event()
+            self.pending: list[ModelInteraction] = []
+            self.closed = 0
+
+        async def respond(
+            self, observation: ConversationObservation, state: PersonaState
+        ) -> PersonaAction:
+            self.entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                self.pending.append(
+                    ModelInteraction(
+                        id="late-call",
+                        identity=ModelIdentity(provider="fake", model="fake"),
+                        started_at=NOW,
+                        ended_at=NOW,
+                        usage=TokenUsage(unavailable_reason="not reported"),
+                    )
+                )
+            raise AssertionError("unreachable")
+
+        def take_interactions(self) -> tuple[ModelInteraction, ...]:
+            return tuple(self.pending)
+
+        async def close(self) -> None:
+            self.closed += 1
+
+    async def scenario() -> None:
+        clock = ManualClock(NOW)
+        persona = DelayedPersona()
+        channel = Channel()
+        task = asyncio.create_task(exercise(channel, persona, Storage(), clock=clock, timeout=100))
+        await persona.entered.wait()
+        await asyncio.sleep(0)
+        await clock.advance(30)
+        result = await task
+        assert result.termination_reason == "model_error"
+        assert result.error is not None and result.error.operation == "persona.respond"
+        assert persona.closed == 1
+        assert persona.pending  # late model metadata existed, but was never acknowledged
+        assert channel.sent == []
+        assert not any(
+            event.type == "model_interaction_completed" for event in result.committed_events
+        )
 
     asyncio.run(scenario())
 

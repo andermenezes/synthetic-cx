@@ -19,6 +19,8 @@ from syntheticcx.domain.events import (
     ArtifactRecordedEvent,
     ConversationStarted,
     ConversationStartedEvent,
+    RunLifecycleChange,
+    RunLifecycleEvent,
 )
 from syntheticcx.domain.models import ArtifactRecord, Report
 from syntheticcx.errors import PersistenceError
@@ -171,6 +173,21 @@ def test_committed_screenshot_artifact_projects_to_metadata_and_report(
                 timestamp=NOW,
                 type="artifact_recorded",
                 data=artifact,
+            ),
+        )
+        await backend.append_event(
+            initial.id,
+            RunLifecycleEvent(
+                id="final-lifecycle",
+                sequence=1,
+                timestamp=NOW,
+                type="run_lifecycle_changed",
+                data=RunLifecycleChange(
+                    previous="in_progress",
+                    current="finalized",
+                    termination_reason="channel_error",
+                    outcome="error",
+                ),
             ),
         )
         final = initial.model_copy(

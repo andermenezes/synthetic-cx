@@ -15,6 +15,7 @@ from pydantic import (
     Field,
     JsonValue,
     SecretStr,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -55,7 +56,68 @@ class BehaviorRule(StrictModel):
     abandonment_threshold: Normalized | None = None
 
 
+class TurnCountParameters(StrictModel):
+    max_turns: int = Field(gt=0, strict=True)
+
+
+class JourneyTimeoutParameters(StrictModel):
+    """The observed termination reason supplies the timeout decision."""
+
+
+class RepeatedInformationParameters(StrictModel):
+    max_repeats: int = Field(default=0, ge=0, strict=True)
+
+
+class SemanticGoalParameters(StrictModel):
+    expected_facts: list[Annotated[str, Field(pattern=r"\S")]] = Field(min_length=1)
+
+
+_PARAMETER_MODELS = {
+    "turn_count": TurnCountParameters,
+    "journey_timeout": JourneyTimeoutParameters,
+    "repeated_information": RepeatedInformationParameters,
+    "semantic_goal_completion": SemanticGoalParameters,
+}
+
+
+def _criterion_parameter_schema(schema: dict[str, Any]) -> None:
+    """Express the same tagged parameter constraints in generated JSON Schema."""
+    conditions: list[dict[str, Any]] = [
+        {
+            "if": {"properties": {"evaluator_type": {"const": evaluator_type}}},
+            "then": {
+                "properties": {
+                    "parameters": model.model_json_schema(),
+                    **(
+                        {"result_kind": {"const": "boolean"}}
+                        if evaluator_type != "semantic_goal_completion"
+                        else {}
+                    ),
+                },
+                **(
+                    {"required": ["parameters"]}
+                    if evaluator_type in {"turn_count", "semantic_goal_completion"}
+                    else {}
+                ),
+            },
+        }
+        for evaluator_type, model in _PARAMETER_MODELS.items()
+    ] + [
+        {
+            "if": {"properties": {"result_kind": {"const": "scored"}}},
+            "then": {
+                "required": ["threshold"],
+                "properties": {"threshold": {"type": "number"}},
+            },
+            "else": {"properties": {"threshold": {"type": "null"}}},
+        }
+    ]
+    schema.setdefault("allOf", []).extend(conditions)
+
+
 class Criterion(StrictModel):
+    model_config = ConfigDict(json_schema_extra=_criterion_parameter_schema)
+
     id: str = Field(min_length=1)
     evaluator_type: Literal[
         "turn_count", "journey_timeout", "repeated_information", "semantic_goal_completion"
@@ -64,10 +126,22 @@ class Criterion(StrictModel):
     required: bool = True
     threshold: Normalized | None = None
     evidence_policy: Literal["required", "optional", "none"]
-    parameters: JsonObject = Field(default_factory=dict)
+    parameters: JsonObject = Field(default_factory=dict, validate_default=True)
+
+    @field_validator("parameters")
+    @classmethod
+    def validate_parameters(cls, value: JsonObject, info: ValidationInfo) -> JsonObject:
+        evaluator_type = info.data.get("evaluator_type")
+        if evaluator_type not in _PARAMETER_MODELS:
+            # A preceding evaluator_type validation error leaves it out of info.data.
+            return value
+        validated = _PARAMETER_MODELS[evaluator_type].model_validate(value)
+        return validated.model_dump(mode="json")  # type: ignore[no-any-return]
 
     @model_validator(mode="after")
     def validate_threshold(self) -> Criterion:
+        if self.evaluator_type != "semantic_goal_completion" and self.result_kind != "boolean":
+            raise ValueError("deterministic evaluator result_kind must be boolean")
         if self.result_kind == "scored" and self.threshold is None:
             raise ValueError("scored criteria require threshold")
         if self.result_kind == "boolean" and self.threshold is not None:
@@ -347,6 +421,18 @@ class ProjectConfig(StrictModel):
             raise ValueError("screenshot storage requires explicit safe-target affirmation")
         if self.storage.store_video and not self.privacy.allow_video:
             raise ValueError("storage cannot enable video forbidden by privacy")
+        return self
+
+    @model_validator(mode="after")
+    def validate_criteria_limits(self) -> ProjectConfig:
+        for criterion in self.scenario.success_criteria:
+            if (
+                criterion.evaluator_type == "turn_count"
+                and criterion.parameters["max_turns"] > self.execution.max_turns
+            ):
+                raise ValueError(
+                    "scenario.success_criteria.parameters.max_turns exceeds execution.max_turns"
+                )
         return self
 
     @property

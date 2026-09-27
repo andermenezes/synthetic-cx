@@ -18,6 +18,9 @@ scenario:
       evaluator_type: semantic_goal_completion
       result_kind: boolean
       evidence_policy: required
+      parameters:
+        expected_facts:
+          - The invoice increased by 50 because the customer changed to a more expensive plan.
 persona:
   id: standard-customer
   name: Alex Customer
