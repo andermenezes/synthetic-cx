@@ -14,6 +14,7 @@ from syntheticcx.discovery.publish import publish_guide
 from syntheticcx.discovery.run import discover_candidate
 from syntheticcx.discovery.verify import verify_candidate
 from syntheticcx.errors import ConfigurationError, SyntheticCXError
+from syntheticcx.language import first_probe, require_language
 from syntheticcx.reporting.console import render_partial, render_report
 
 app = typer.Typer(
@@ -45,10 +46,13 @@ def discover(
     scenario: Path = typer.Argument(..., help="Scenario draft without channel controls."),
     url: str = typer.Option(..., "--url", help="Customer-facing chat URL to explore."),
     output: Path = typer.Option(..., "--output", help="Path for the verified channel guide."),
-    probe_message: str = typer.Option(
-        "Synthetic test: please reply with a greeting.",
+    probe_message: str | None = typer.Option(
+        None,
         "--probe-message",
-        help="Non-destructive message for native channel validation.",
+        help="Override the first localized synthetic verification probe.",
+    ),
+    language: str | None = typer.Option(
+        None, "--language", help="Customer-facing language: en-US or pt-BR."
     ),
     discovery_model_config: Path | None = typer.Option(
         None, "--discovery-model-config", help="Optional discovery-only model configuration."
@@ -86,7 +90,12 @@ def discover(
             progress("validating draft and command options")
         draft = load_discovery_draft(scenario)
         TypeAdapter(AnyHttpUrl).validate_python(url)
-        if not probe_message.strip():
+        selected_language = (
+            require_language(language)
+            if language is not None
+            else draft.persona.communication.language
+        )
+        if probe_message is not None and not probe_message.strip():
             raise ConfigurationError("discover", "probe_message must not be empty")
         if chat_hint is not None and (not chat_hint.strip() or len(chat_hint) > 256):
             raise ConfigurationError("discover", "chat_hint must contain 1 to 256 characters")
@@ -120,8 +129,9 @@ def discover(
             verify_candidate(
                 candidate,
                 draft.execution,
-                probe_message,
+                probe_message if probe_message is not None else first_probe(selected_language),
                 headed=headed,
+                language=selected_language,
                 on_progress=progress if verbose else None,
             )
         )
@@ -147,7 +157,13 @@ def discover(
     try:
         if verbose:
             progress("publishing verified guide and completed scenario")
-        completed = publish_guide(scenario, output, guide, in_place=in_place)
+        completed = publish_guide(
+            scenario,
+            output,
+            guide,
+            in_place=in_place,
+            language=selected_language if language is not None else None,
+        )
     except ConfigurationError as error:
         typer.echo(f"Configuration error: {error}; check output paths for partial files.", err=True)
         if output.exists():
@@ -183,6 +199,9 @@ def main(
 def run(
     scenario: Path = typer.Argument(..., help="Validated version-1 scenario YAML."),
     headed: bool = typer.Option(False, "--headed", help="Show the native browser during the run."),
+    language: str | None = typer.Option(
+        None, "--language", help="Override the persona language: en-US or pt-BR."
+    ),
 ) -> None:
     """Run one scenario and persona through a configured web chat."""
 
@@ -191,11 +210,16 @@ def run(
         typer.echo("Running conversation and evaluation...")
 
     try:
-        result = asyncio.run(
-            execute_run(scenario, on_created=created, headed=True)
-            if headed
-            else execute_run(scenario, on_created=created)
-        )
+        selected_language = require_language(language) if language is not None else None
+        if selected_language is not None:
+            execution = execute_run(
+                scenario, on_created=created, headed=headed, language=selected_language
+            )
+        elif headed:
+            execution = execute_run(scenario, on_created=created, headed=True)
+        else:
+            execution = execute_run(scenario, on_created=created)
+        result = asyncio.run(execution)
     except ConfigurationError as error:
         typer.echo(f"Configuration error: {error}", err=True)
         raise typer.Exit(2) from None

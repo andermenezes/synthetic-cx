@@ -159,6 +159,36 @@ def test_real_tinyperson_retains_state_and_restores_globals(
     assert "HIDDEN_MARKER" not in caplog.text
 
 
+def test_persona_is_instructed_to_speak_selected_language(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    goals: list[str] = []
+
+    class Session:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def initialize(self, _description: str, goal: str) -> None:
+            goals.append(goal)
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(adapter_module, "TinySession", Session)
+    adapter, _client = simulator(monkeypatch)
+    definition, context = definitions()
+    definition = definition.model_copy(
+        update={"communication": definition.communication.model_copy(update={"language": "pt-BR"})}
+    )
+
+    async def exercise() -> None:
+        await adapter.initialize(definition, context)
+        await adapter.close()
+
+    asyncio.run(exercise())
+    assert "Brazilian Portuguese for every customer TALK message" in goals[0]
+
+
 @pytest.mark.parametrize(
     "actions",
     [

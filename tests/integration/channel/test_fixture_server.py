@@ -241,6 +241,106 @@ def test_navigation_failure_reports_http_status_without_page_content() -> None:
     asyncio.run(exercise())
 
 
+def test_native_channel_waits_for_unique_partial_name_opener() -> None:
+    async def exercise() -> None:
+        with FixtureServer() as fixture:
+            config = load_config(Path("examples/telecom/scenario.yaml"))
+            channel_data = config.channel.model_dump(mode="json")
+            channel_data["url"] = f"{fixture.base_url}/?variant=success"
+            channel_data["open_locator"] = {
+                "strategy": "role",
+                "value": "button",
+                "name": "Open",
+                "exact": False,
+            }
+            channel = PlaywrightChannel(
+                ChannelConfig.model_validate(channel_data), config.execution
+            )
+            progress: list[str] = []
+            try:
+                await channel.start(on_progress=progress.append)
+                assert channel.current_url is not None
+                assert "configured chat opener clicked in native browser" in progress
+                assert "configured chat input visible in native browser" in progress
+            finally:
+                await channel.close()
+
+    asyncio.run(exercise())
+
+
+def test_native_channel_reports_missing_opener_separately_from_input() -> None:
+    async def exercise() -> None:
+        with FixtureServer() as fixture:
+            config = load_config(Path("examples/telecom/scenario.yaml"))
+            channel_data = config.channel.model_dump(mode="json")
+            channel_data["url"] = f"{fixture.base_url}/?variant=success"
+            channel_data["open_locator"] = {
+                "strategy": "role",
+                "value": "button",
+                "name": "Missing chat button",
+            }
+            limits = config.execution.model_copy(update={"browser_action_timeout_seconds": 0.5})
+            channel = PlaywrightChannel(ChannelConfig.model_validate(channel_data), limits)
+            try:
+                with pytest.raises(
+                    ChannelError, match="configured chat opener could not be activated"
+                ):
+                    await channel.start()
+            finally:
+                await channel.close()
+
+    asyncio.run(exercise())
+
+
+def test_native_send_reports_failed_control_without_exposing_probe() -> None:
+    async def exercise() -> None:
+        with FixtureServer() as fixture:
+            config = load_config(Path("examples/telecom/scenario.yaml"))
+            channel_data = config.channel.model_dump(mode="json")
+            channel_data["url"] = f"{fixture.base_url}/?variant=success"
+            channel_data["send_strategy"]["locator"] = {
+                "strategy": "test_id",
+                "value": "missing-send-control",
+            }
+            limits = config.execution.model_copy(update={"browser_action_timeout_seconds": 0.6})
+            channel = PlaywrightChannel(ChannelConfig.model_validate(channel_data), limits)
+            progress: list[str] = []
+            try:
+                await channel.start()
+                with pytest.raises(ChannelError, match="configured send control activation failed"):
+                    await channel.send("synthetic-private-probe", on_progress=progress.append)
+            finally:
+                await channel.close()
+            assert "filling configured chat input for synthetic probe" in progress
+            assert "activating configured send control for synthetic probe" in progress
+            assert "synthetic-private-probe" not in " ".join(progress)
+
+    asyncio.run(exercise())
+
+
+def test_native_channel_sends_with_observed_role_name_button() -> None:
+    async def exercise() -> None:
+        with FixtureServer() as fixture:
+            config = load_config(Path("examples/telecom/scenario.yaml"))
+            channel_data = config.channel.model_dump(mode="json")
+            channel_data["url"] = f"{fixture.base_url}/?variant=success"
+            channel_data["send_strategy"] = {
+                "type": "click",
+                "locator": {"strategy": "role", "value": "button", "name": "Send message"},
+            }
+            channel = PlaywrightChannel(
+                ChannelConfig.model_validate(channel_data), config.execution
+            )
+            try:
+                await channel.start()
+                receipt = await channel.send("Synthetic fixture probe")
+                assert receipt.evidence["echo"] == "matched"
+            finally:
+                await channel.close()
+
+    asyncio.run(exercise())
+
+
 @pytest.mark.parametrize("variant", ["success", "repeated_question", "streamed_response"])
 @pytest.mark.parametrize(
     "framed,enter", [(False, False), (False, True), (True, False), (True, True)]

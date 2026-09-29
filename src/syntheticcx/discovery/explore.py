@@ -11,8 +11,19 @@ from uuid import uuid4
 
 from pydantic import Field, ValidationError, model_validator
 
-from syntheticcx.adapters.discovery.playwright_mcp import DiscoveryBrowser, _unique_safe_launcher
-from syntheticcx.config.models import ChannelConfig, JsonObject, StrictModel
+from syntheticcx.adapters.discovery.playwright_mcp import (
+    DiscoveryBrowser,
+    _observed_opener,
+    _observed_send_control,
+    _unique_safe_launcher,
+)
+from syntheticcx.config.models import (
+    ChannelConfig,
+    JsonObject,
+    LocatorConfig,
+    SendStrategyConfig,
+    StrictModel,
+)
 from syntheticcx.domain.models import LLMMessage, LLMRequest
 from syntheticcx.domain.protocols import LLMProvider
 from syntheticcx.errors import ChannelError, ModelError
@@ -200,10 +211,15 @@ async def explore(
     snapshot = await browser.navigate(url)
     inspection = ""
     opened_chat = False
+    observed_opener: LocatorConfig | None = None
+    observed_send_control: LocatorConfig | None = None
+    if on_progress is not None:
+        on_progress("initial page snapshot captured")
 
     async def open_control(target: str, element: str) -> None:
-        nonlocal snapshot, inspection, opened_chat
+        nonlocal snapshot, inspection, opened_chat, observed_opener, observed_send_control
         previous = snapshot
+        observed = _observed_opener(previous, target, element, chat_hint)
         snapshot = await browser.click(target, element, previous)
         for _ in range(2):
             if snapshot != previous:
@@ -213,11 +229,38 @@ async def explore(
         if snapshot == previous:
             raise ChannelError("discover controls", "chat opener did not reveal new controls")
         opened_chat = True
+        observed_opener = observed
+        observed_send_control = _observed_send_control(previous, snapshot)
         inspection = await browser.inspect_chat()
 
-    if on_progress is not None:
-        on_progress("initial page snapshot captured")
-    for step in range(max_steps):
+    def hinted_launcher() -> tuple[str, str] | None:
+        if chat_hint is None:
+            return None
+        launcher = _unique_safe_launcher(snapshot, chat_hint)
+        if launcher is None or " ".join(chat_hint.casefold().split()) not in " ".join(
+            launcher[1].casefold().split()
+        ):
+            return None
+        return launcher
+
+    if chat_hint is not None and hinted_launcher() is None:
+        if on_progress is not None:
+            on_progress("waiting briefly for hinted chat launcher in accessibility snapshot")
+        for _ in range(5):
+            await asyncio.sleep(1)
+            snapshot = await browser.snapshot()
+            if hinted_launcher() is not None:
+                break
+    launcher = hinted_launcher()
+    if launcher is not None and max_steps > 1:
+        if on_progress is not None:
+            on_progress("opening unique safely labeled hinted chat launcher")
+        await open_control(*launcher)
+        first_step = 1
+    else:
+        first_step = 0
+
+    for step in range(first_step, max_steps):
 
         async def request_decision(*, feedback: str | None = None) -> DiscoveryDecision:
             page_data = _PAGE_URL.sub(
@@ -285,8 +328,9 @@ async def explore(
                     fresh = await browser.snapshot()
                     if fresh != snapshot:
                         snapshot = fresh
-                        changed = True
-                        break
+                        if chat_hint is None or hinted_launcher() is not None:
+                            changed = True
+                            break
                 if not changed:
                     raise ChannelError("discover controls", "chat controls could not be identified")
                 feedback = "A fresh page snapshot is available; reassess only the current controls."
@@ -356,7 +400,7 @@ async def explore(
                         )
                     browser_action_taken = True
                     break
-            if opened_chat and channel.open_locator is None:
+            if opened_chat and channel.open_locator is None and observed_opener is None:
                 if attempt == max_discovery_attempts - 1:
                     raise ModelError(
                         "discover candidate", "opened chat proposal lacks an opener locator"
@@ -369,6 +413,20 @@ async def explore(
                 if on_progress is not None:
                     on_progress("channel proposal lacks launcher locator; requesting correction")
                 continue
+            if observed_opener is not None:
+                channel = channel.model_copy(update={"open_locator": observed_opener})
+                if on_progress is not None:
+                    on_progress("using safely observed chat opener for fresh native verification")
+            if observed_send_control is not None:
+                channel = channel.model_copy(
+                    update={
+                        "send_strategy": SendStrategyConfig(
+                            type="click", locator=observed_send_control
+                        )
+                    }
+                )
+                if on_progress is not None:
+                    on_progress("using safely observed chat send control for native verification")
             if on_progress is not None:
                 on_progress("channel-control proposal passed schema validation")
             return DiscoveryCandidate(channel=channel, open_steps=step)

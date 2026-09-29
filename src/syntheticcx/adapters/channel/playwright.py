@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 import unicodedata
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, TypeAlias, cast
 
@@ -36,14 +37,14 @@ def locate(scope: Scope, config: LocatorConfig, *, include_hidden: bool = False)
     """Resolve only explicitly configured strategies, using semantic locators first."""
     if config.strategy == "role":
         return scope.get_by_role(
-            config.value, name=config.name, exact=True, include_hidden=include_hidden
+            config.value, name=config.name, exact=config.exact, include_hidden=include_hidden
         )
     if config.strategy == "label":
-        return scope.get_by_label(config.value, exact=True)
+        return scope.get_by_label(config.value, exact=config.exact)
     if config.strategy == "placeholder":
-        return scope.get_by_placeholder(config.value, exact=True)
+        return scope.get_by_placeholder(config.value, exact=config.exact)
     if config.strategy == "text":
-        return scope.get_by_text(config.value, exact=True)
+        return scope.get_by_text(config.value, exact=config.exact)
     if config.strategy == "test_id":
         return scope.get_by_test_id(config.value)
     return scope.locator(f"css={config.value}")
@@ -107,7 +108,7 @@ class PlaywrightChannel:
             for entry in raw
         ]
 
-    async def start(self) -> None:
+    async def start(self, *, on_progress: Callable[[str], None] | None = None) -> None:
         if self._playwright is not None or self._closing is not None:
             raise ChannelError("channel.start", "channel already started")
         try:
@@ -127,6 +128,8 @@ class PlaywrightChannel:
                 raise ChannelError(
                     "channel.start", f"target navigation returned HTTP {response.status}"
                 )
+            if on_progress is not None:
+                on_progress("native target navigation succeeded")
             if self._config.frame_locator is not None:
                 frame = locate(self._page, self._config.frame_locator)
                 await frame.wait_for(state="attached", timeout=timeout_ms)
@@ -142,10 +145,28 @@ class PlaywrightChannel:
             self._history_count = len(await self._snapshot("assistant"))
             await self._prepare_completion()
             if self._config.open_locator is not None:
-                await locate(self._page, self._config.open_locator).click(timeout=timeout_ms)
-            await locate(self._scope, self._config.input_locator).wait_for(
-                state="visible", timeout=timeout_ms
-            )
+                if on_progress is not None:
+                    on_progress("waiting for configured chat opener in native browser")
+                opener = locate(self._page, self._config.open_locator)
+                try:
+                    await opener.wait_for(state="visible", timeout=timeout_ms)
+                    if await opener.count() != 1:
+                        raise ChannelError(
+                            "channel.start", "configured chat opener is missing or ambiguous"
+                        )
+                    await opener.click(timeout=timeout_ms)
+                except (PlaywrightError, TimeoutError):
+                    raise ChannelError(
+                        "channel.start", "configured chat opener could not be activated"
+                    ) from None
+                if on_progress is not None:
+                    on_progress("configured chat opener clicked in native browser")
+            chat_input = locate(self._scope, self._config.input_locator)
+            await chat_input.wait_for(state="visible", timeout=timeout_ms)
+            if await chat_input.count() != 1:
+                raise ChannelError("channel.start", "configured chat input is missing or ambiguous")
+            if on_progress is not None:
+                on_progress("configured chat input visible in native browser")
         except asyncio.CancelledError:
             raise
         except (PlaywrightError, TimeoutError):
@@ -218,7 +239,9 @@ class PlaywrightChannel:
             and self._marker_task.result()
         )
 
-    async def send(self, message: str) -> SendReceipt:
+    async def send(
+        self, message: str, *, on_progress: Callable[[str], None] | None = None
+    ) -> SendReceipt:
         scope = self._scope
         if scope is None or self._closing is not None:
             raise ChannelError("channel.send", "channel is not available")
@@ -227,26 +250,43 @@ class PlaywrightChannel:
         if not message.strip():
             raise ChannelError("channel.send", "customer message is empty")
         deadline = time.monotonic() + self._limits.browser_action_timeout_seconds
+        stage = "customer message baseline observation"
         try:
             async with asyncio.timeout(self._limits.browser_action_timeout_seconds):
                 customer_snapshot = await self._snapshot("customer")
                 customer_before = self._cursor.observe("customer", customer_snapshot)
                 if customer_before:
                     raise ChannelError("channel.send", "unexpected customer echo before submission")
+                stage = "assistant message baseline observation"
                 self._response_baseline = len(await self._snapshot("assistant"))
+                stage = "response completion preparation"
                 await self._prepare_completion()
+                stage = "configured chat input fill"
+                if on_progress is not None:
+                    on_progress("filling configured chat input for synthetic probe")
                 input_box = locate(scope, self._config.input_locator)
                 await input_box.fill(message)
                 # A UI action may have occurred even if Playwright reports a failure later.
                 self._submission_uncertain = True
                 strategy = self._config.send_strategy
+                stage = "configured send control activation"
+                if on_progress is not None:
+                    on_progress("activating configured send control for synthetic probe")
                 if strategy.type == "press_enter":
                     await input_box.press("Enter")
                 else:
                     assert strategy.locator is not None
-                    await locate(scope, strategy.locator).click()
+                    send_control = locate(scope, strategy.locator)
+                    await send_control.wait_for(state="visible")
+                    if await send_control.count() != 1:
+                        raise ChannelError(
+                            "channel.send", "configured send control is missing or ambiguous"
+                        )
+                    await send_control.click()
                 submitted = datetime.now(UTC)
                 self._submission_count += 1
+                if on_progress is not None:
+                    on_progress("send action completed; observing optional customer echo")
                 remaining = max(0, deadline - time.monotonic())
                 # Leave time within the action deadline for the final DOM snapshot.
                 echo_window = min(
@@ -254,6 +294,7 @@ class PlaywrightChannel:
                     max(0, remaining - min(0.05, remaining * 0.2)),
                 )
                 echoes: list[Bubble] = []
+                stage = "customer echo observation"
                 if echo_window > 0:
                     await asyncio.sleep(echo_window)
                     echoes = self._cursor.observe("customer", await self._snapshot("customer"))
@@ -273,9 +314,7 @@ class PlaywrightChannel:
         except asyncio.CancelledError:
             raise
         except (PlaywrightError, TimeoutError):
-            raise ChannelError(
-                "channel.send", "customer submission or echo observation failed"
-            ) from None
+            raise ChannelError("channel.send", f"{stage} failed") from None
 
     async def receive(self) -> CompletedResponse:
         scope = self._scope

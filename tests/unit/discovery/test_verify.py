@@ -13,11 +13,50 @@ from syntheticcx.config.models import ExecutionLimits
 from syntheticcx.discovery import verify
 from syntheticcx.discovery.explore import DiscoveryCandidate
 from syntheticcx.errors import ChannelError
+from syntheticcx.language import first_probe, second_probe
 
 
 def candidate() -> DiscoveryCandidate:
     document: dict[str, Any] = yaml.safe_load(Path("examples/telecom/scenario.yaml").read_text())
     return DiscoveryCandidate(channel=document["channel"], open_steps=1)
+
+
+def test_portuguese_verification_sends_two_localized_probes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent: list[str] = []
+
+    class RespondingChannel:
+        current_url = str(candidate().channel.url)
+
+        def __init__(self, *_args: Any) -> None:
+            pass
+
+        async def start(self) -> None:
+            pass
+
+        async def send(self, message: str) -> None:
+            sent.append(message)
+
+        async def receive(self) -> Any:
+            return type("Response", (), {"messages": [type("Message", (), {"content": "Olá"})()]})()
+
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(verify, "PlaywrightChannel", RespondingChannel)
+    limits = yaml.safe_load(Path("examples/telecom/scenario.yaml").read_text())["execution"]
+    limits["greeting_grace_seconds"] = 0
+    guide = asyncio.run(
+        verify.verify_candidate(
+            candidate(),
+            ExecutionLimits.model_validate(limits),
+            first_probe("pt-BR"),
+            language="pt-BR",
+        )
+    )
+    assert guide.validation.status == "verified"
+    assert sent == [first_probe("pt-BR"), second_probe("pt-BR")]
 
 
 def test_headed_verification_constructs_fresh_headed_channel(
@@ -30,7 +69,7 @@ def test_headed_verification_constructs_fresh_headed_channel(
         def __init__(self, *_args: Any, headed: bool = False) -> None:
             options.append(headed)
 
-        async def start(self) -> None:
+        async def start(self, *, on_progress: Any = None) -> None:
             raise ChannelError("channel.start", "target navigation returned HTTP 403")
 
         async def close(self) -> None:
@@ -60,10 +99,10 @@ def test_late_greeting_does_not_verify_silent_probe(monkeypatch: pytest.MonkeyPa
             self.receives = 0
             self.closed = False
 
-        async def start(self) -> None:
+        async def start(self, *, on_progress: Any = None) -> None:
             pass
 
-        async def send(self, message: str) -> None:
+        async def send(self, message: str, *, on_progress: Any = None) -> None:
             self.submitted.append(message)
 
         async def receive(self) -> Any:

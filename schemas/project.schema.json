@@ -132,6 +132,15 @@
           "title": "Clarification Probability",
           "type": "number"
         },
+        "language": {
+          "default": "en-US",
+          "enum": [
+            "en-US",
+            "pt-BR"
+          ],
+          "title": "Language",
+          "type": "string"
+        },
         "spelling_error_probability": {
           "default": 0,
           "maximum": 1,
@@ -457,6 +466,11 @@
     "LocatorConfig": {
       "additionalProperties": false,
       "properties": {
+        "exact": {
+          "default": true,
+          "title": "Exact",
+          "type": "boolean"
+        },
         "name": {
           "anyOf": [
             {

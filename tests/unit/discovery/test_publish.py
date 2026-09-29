@@ -66,3 +66,14 @@ def test_interactive_mode_requires_an_explicit_choice(monkeypatch: pytest.Monkey
     with pytest.raises(cli.typer.Exit) as caught:
         cli._choose_in_place(True)
     assert caught.value.exit_code == 2
+
+
+def test_explicit_discovery_language_is_saved_in_completed_scenario(tmp_path: Path) -> None:
+    source, guide = inputs(tmp_path)
+    original = source.read_bytes()
+    completed = publish.publish_guide(
+        source, tmp_path / "guide.yaml", guide, in_place=False, language="pt-BR"
+    )
+    document = yaml.safe_load(completed.read_text())
+    assert document["persona"]["communication"]["language"] == "pt-BR"
+    assert source.read_bytes() == original

@@ -139,7 +139,7 @@ or from a checkout:
 uv run synthetic-cx run path/to/scenario.yaml
 ```
 
-Add `--headed` to `run` to display its native Chromium browser instead of running it headless. This requires a desktop display and does not change the scenario or its channel guide.
+Add `--headed` to `run` to display its native Chromium browser instead of running it headless. This requires a desktop display and does not change the scenario or its channel guide. Use `run --language pt-BR` (or `en-US`) to override the customer persona's spoken language for that run; the effective configuration artifact records the selection. The model is instructed to keep customer messages in that language, but model output is not guaranteed to comply perfectly.
 
 Useful commands:
 
@@ -208,17 +208,22 @@ uv run --extra discovery synthetic-cx discover billing-draft.yaml \\
   --output billing-channel.yaml --verbose
 # Add --headed to show both MCP exploration and native verification browsers.
 # Add --chat-hint 'Talk to an agent' to guide label/tooltip discovery.
+# For a Portuguese chat, add --language pt-BR to localize both verification probes.
 uv run synthetic-cx run billing-draft.completed.yaml
 # If verification required headed mode, use: uv run synthetic-cx run billing-draft.completed.yaml --headed
 ```
 
-Credentials are read from the selected model's explicitly named environment variable. An optional discovery-only model can be supplied with `--discovery-model-config path/to/model.yaml`; `--probe-message` changes the synthetic verification text.
+Credentials are read from the selected model's explicitly named environment variable. An optional discovery-only model can be supplied with `--discovery-model-config path/to/model.yaml`; `--probe-message` overrides only the first synthetic verification message.
+
+Supported customer-facing languages are `en-US` and `pt-BR`. Pass `discover --language pt-BR` when the target chat uses Brazilian Portuguese. Both default verification probes will then be in Portuguese, and the selected language is saved in the completed scenario's `persona.communication.language` for later runs. If `--language` is omitted, discovery uses the draft's `persona.communication.language`, or `en-US` if it is absent. A custom `--probe-message` is sent exactly as written and is **not** translated; supply it in the selected language. Language is chosen explicitly, not inferred from the chat page. Normal `run` uses the completed scenario's language unless overridden by `run --language`.
 
 Discovery and normal runs are headless by default. Pass `discover --headed` to show both MCP exploration and **fresh native verification** in separate visible browsers (a desktop display is required). For a guide that only verifies headed, pass `run --headed` as well; a headed verification result does not prove that headless runs will succeed. Neither option shares cookies or browser state between sessions. Use `--chat-hint 'exact tooltip or button text'` when the launcher is ambiguous or its label appears only on hover. Hints must be 1–256 characters and do not bypass safe-control checks.
 
 `--max-discovery-attempts` allows 1–5 model decisions per exploration step (default 3). When the model stops, discovery waits up to the remaining attempt count in seconds for a **changed** accessibility snapshot. It does not ask the model repeatedly about an unchanged snapshot. Schema-invalid or malformed channel proposals can be corrected within the configured budget. Hover and chat-opening actions have a separate three-step limit. A safe chat-opening click triggers a fixed, bounded, read-only inspection of DOM attributes that can help identify selectors. It does not collect input values or message text, and it cannot inspect a cross-origin frame's contents. The model cannot supply executable inspection code. Native verification and its synthetic probe messages are **never** automatically retried.
 
-Before accepting a proposal, discovery checks whether the chat is still closed and the current snapshot contains **exactly one** safely labeled chat launcher. If so, it clicks that control under the same safe-click rules, waits briefly for new chat controls, and requests a fresh proposal based on the opened chat. Ambiguous or unsafe controls are never clicked automatically. When a launcher was clicked, the candidate must include an `open_locator` so the separate native verification browser can open it too. A click that reveals no new controls cannot produce a verified guide.
+When `--chat-hint` is supplied, discovery waits up to five seconds for a **unique, safely labeled launcher matching that hint** to appear in the accessibility snapshot. It can then click it before asking the model for its first decision, without submitting a message. After a model `stop`, unrelated page changes do not count as evidence that the hinted launcher appeared. Before accepting a proposal, discovery also checks whether the chat is still closed and the current snapshot contains **exactly one** safely labeled chat launcher. If so, it clicks that control under the same safe-click rules, waits briefly for new chat controls, and requests a fresh proposal based on the opened chat. Ambiguous or unsafe controls are never clicked automatically. A safely clicked labeled launcher supplies an observed role/name `open_locator` for the separate native verification browser, replacing any model guess. When the label matches a supplied hint, native lookup may use a partial name match, but only a **unique visible** match can be clicked. Other locators stay exact by default. A click that reveals no new controls cannot produce a verified guide.
+
+If opening the chat newly reveals exactly one nearby, explicitly labeled **Send message** or **Enviar mensagem** button, discovery records its observed role/name as the verification send control instead of trusting the model's send-selector guess. It only reads the snapshot at this stage; it does **not** click Send or transmit a message during MCP exploration. An ambiguous, pre-existing, or unlabeled send control is not automatically selected. Native verification still requires a visible, unique send control and runs the synthetic probe only once per verification step.
 
 Add `--verbose` to report safe stage progress and the owned failure category, operation, and message. Invalid channel proposals report field paths and validation types, without proposed values. Page snapshots, prompts, DOM inventory, probes, credentials, and raw exception details are not printed. MCP exploration is limited to navigation, snapshots, safe hovers, labeled chat-opening clicks, and the fixed read-only inspection after opening the chat; it does **not** send messages. Before publication, native Playwright checks the target origin, sends two synthetic probe messages, and requires completed assistant replies. The origin is checked again before each send and after each response. These probes reach the configured target: use only a site and account you are authorized to test. Target URL and known sensitive scenario values are redacted from model prompts. Discovery does not authenticate, complete business goals, or automatically repair guides during ordinary runs.
 
@@ -230,9 +235,10 @@ Add `--verbose` to report safe stage progress and the owned failure category, op
 | `--output PATH` | Required destination for the verified channel guide; existing files are not overwritten. |
 | `--headed` | Show both MCP exploration and fresh native verification browsers. Requires a desktop/display; normal `run` needs its own `--headed` option if headless access is blocked. |
 | `--chat-hint TEXT` | Optional visible button or hover-tooltip text to search for; 1–256 characters. It guides discovery but does not bypass safe-control checks. |
+| `--language en-US\|pt-BR` | Customer-facing language for both default verification probes; an explicit choice is persisted in the completed scenario for future runs. Defaults to the draft's persona language, otherwise `en-US`. |
 | `--max-discovery-attempts N` | Up to 1–5 model decisions per exploration step (default 3). A stop waits up to the remaining attempt count in seconds for a changed snapshot; invalid proposals can be corrected. Native verification and probe sends are never automatically retried. |
 | `--verbose` | Show stage progress and safe SyntheticCX error category, operation, and message on stderr. Invalid proposals include field paths and validation types, not values. Raw page content, prompts, probe text, credentials, and raw exceptions are not printed. |
-| `--probe-message TEXT` | Set the first native-verification probe; a second fixed synthetic probe is also sent. |
+| `--probe-message TEXT` | Override the first localized native-verification probe without translating it; the second probe still uses the selected language. |
 | `--discovery-model-config PATH` | Optional separate `openai` or `openai_compatible` discovery model configuration, using its explicitly named credential environment variable. |
 
 Example: append `--headed --chat-hint 'Talk to an agent' --verbose` to the discover command to watch exploration and search for a hover-only chat label.
@@ -245,9 +251,13 @@ Discovery currently targets text web chats with controls that can be identified 
 
 `stop` means the model did not identify a safe launcher in the available snapshot. With `--verbose`, a `page snapshot changed after bounded wait` line means it received new evidence; without that line, raising the attempt limit alone may not help. In `--headed` mode, check whether the launcher appears, whether it is represented as a button or link in the accessibility tree, and whether its visible or hover label matches `--chat-hint`. An icon without a recognizable label or a launcher hidden behind consent, login, a cross-origin frame, or another interaction may be unavailable under the safe-click policy. Do not rely on the model to guess a selector or click an unrelated control. Try an authorized staging page with accessible chat controls instead.
 
-With `--verbose`, `opened unique safe chat launcher` confirms the fallback clicked and refreshed the snapshot. If it does not appear, the model either chose `open_chat` itself, the chat was already open, or discovery could not identify exactly one safe launcher. Watching a headed browser alone does not prove that a click was issued: check the `discovery decision: open_chat` or fallback progress line.
+With `--verbose`, `waiting briefly for hinted chat launcher` means discovery is taking fresh snapshots before the first model call; `opening unique safely labeled hinted chat launcher` means it is clicking the observed hint match. `opened unique safe chat launcher` confirms the fallback after a model proposal. If neither opening line appears, the model may choose `open_chat`, the chat may already be open, or no unique safe launcher was identified. Watching a headed browser alone does not prove that a click was issued: check these lines or `discovery decision: open_chat`.
 
 `channel-control proposal passed schema validation` only confirms the configuration shape, not that the site works. A later `channel.start` navigation failure occurs in a **fresh** browser (headless unless `discover --headed` is set) and is not addressed by more model attempts. In `--verbose` mode, `target navigation returned HTTP 403` means the server refused that browser session; a different HTTP status or `no HTTP response` likewise indicates navigation failed before control verification. The status is shown without page content or URLs. Check the exact target URL from a fresh browser session; authentication, redirects, HTTP errors, or browser restrictions may prevent native verification. If the site permits headed but not headless access, headed verification and `run --headed` may help on an authorized target; neither guarantees that the chat controls or probes will work. No guide is published until verification succeeds.
+
+If navigation succeeds but the native chat window stays closed, verification now reports `configured chat opener could not be activated` when its observed locator does not become visible/clickable within the browser action timeout. In `--verbose` mode, `waiting for configured chat opener in native browser`, `configured chat opener clicked in native browser`, and `configured chat input visible in native browser` identify the last completed startup stage without printing page content. This distinguishes a failed opener from an input-control failure after the click. A successful headed exploration click does not share browser state with the fresh native session.
+
+If the opener clicks and the input is visible but probe 1 fails during `channel.send`, `--verbose` now distinguishes input fill, send-control activation, and customer-echo observation. Progress reports the stage only, never the probe text or locator value. A `configured send control activation failed` error points to the proposed send strategy or its control; `customer echo observation failed` points to observing the submitted message. Verification does not retry a failed send, because the probe may already have reached the target.
 
 ---
 
@@ -289,6 +299,7 @@ persona:
   communication:
     tone: polite
     style: concise
+    language: en-US
   initial_state:
     frustration: 0.1
     willingness_to_continue: 0.9

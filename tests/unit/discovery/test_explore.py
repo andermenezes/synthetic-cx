@@ -14,10 +14,12 @@ from syntheticcx.adapters.discovery.playwright_mcp import (
     _check_click,
     _check_hover,
     _check_page_origin,
+    _observed_opener,
+    _observed_send_control,
     _origin,
     _unique_safe_launcher,
 )
-from syntheticcx.config.models import ChannelConfig, PrivacyConfig
+from syntheticcx.config.models import ChannelConfig, LocatorConfig, PrivacyConfig
 from syntheticcx.discovery.explore import explore
 from syntheticcx.domain.models import LLMRequest, LLMResponse
 from syntheticcx.errors import ChannelError, ModelError
@@ -123,6 +125,9 @@ def test_safe_open_then_typed_candidate() -> None:
     assert result.open_steps == 1
     assert str(result.channel.url) == URL
     assert browser.clicks == ["e5"]
+    assert result.channel.open_locator == LocatorConfig(
+        strategy="role", value="button", name="Open chat"
+    )
     assert browser.inspections == 1
     assert len(provider.requests) == 2
     assert "chat-input" in provider.requests[1].messages[-1].content
@@ -147,19 +152,20 @@ def test_valid_proposal_opens_unique_safe_launcher_before_publication() -> None:
     assert "chat-input" in provider.requests[1].messages[-1].content
 
 
-def test_opened_chat_proposal_must_configure_opener() -> None:
+def test_opened_chat_uses_observed_opener_instead_of_missing_model_locator() -> None:
     proposal = candidate()
     proposal["open_locator"] = None
     browser = Browser()
     provider = Provider(
         decision("open_chat", target="e5", element="Open chat"),
         decision("propose", channel=json.dumps(proposal)),
-        decision("propose", channel=json.dumps(candidate())),
     )
     result = run(browser, provider, max_discovery_attempts=2)
     assert result.channel.open_locator is not None
+    assert result.channel.open_locator.strategy == "role"
+    assert result.channel.open_locator.name == "Open chat"
     assert browser.clicks == ["e5"]
-    assert "open_locator is missing" in provider.requests[2].messages[-1].content
+    assert len(provider.requests) == 2
 
 
 def test_ambiguous_or_unsafe_launchers_are_not_automatically_clicked() -> None:
@@ -173,7 +179,67 @@ def test_hint_identifies_unique_localized_launcher_without_relaxing_click_guard(
     assert _unique_safe_launcher(localized, None) is None
 
 
-def test_auto_open_still_requires_opener_locator_in_fresh_browser() -> None:
+def test_delayed_hinted_launcher_is_opened_before_first_model_decision(
+    monkeypatch: Any,
+) -> None:
+    async def no_wait(_seconds: float) -> None:
+        pass
+
+    monkeypatch.setattr("syntheticcx.discovery.explore.asyncio.sleep", no_wait)
+    localized = SNAPSHOT.replace("Open chat", "Pergunte à Aura")
+
+    class DelayedHintBrowser(Browser):
+        snapshots = 0
+
+        async def navigate(self, url: str) -> str:
+            assert url == URL
+            return SNAPSHOT.replace("Open chat", "Página inicial")
+
+        async def snapshot(self) -> str:
+            self.snapshots += 1
+            return (
+                localized
+                if self.snapshots >= 3
+                else SNAPSHOT.replace("Open chat", f"Página inicial {self.snapshots}")
+            )
+
+    browser = DelayedHintBrowser()
+    provider = Provider(decision("propose", channel=json.dumps(candidate())))
+    progress: list[str] = []
+
+    result = run(browser, provider, chat_hint="Pergunte à Aura", on_progress=progress.append)
+
+    assert isinstance(result.channel, ChannelConfig)
+    assert browser.snapshots == 3
+    assert browser.clicks == ["e5"]
+    assert result.open_steps == 1
+    assert result.channel.open_locator == LocatorConfig(
+        strategy="role", value="button", name="Pergunte à Aura", exact=False
+    )
+    assert len(provider.requests) == 1
+    assert "opening unique safely labeled hinted chat launcher" in progress
+
+
+def test_unrelated_page_changes_do_not_trigger_hint_stop_retry(monkeypatch: Any) -> None:
+    async def no_wait(_seconds: float) -> None:
+        pass
+
+    monkeypatch.setattr("syntheticcx.discovery.explore.asyncio.sleep", no_wait)
+
+    class UnrelatedBrowser(Browser):
+        snapshots = 0
+
+        async def snapshot(self) -> str:
+            self.snapshots += 1
+            return SNAPSHOT.replace("Open chat", f"Página inicial {self.snapshots}")
+
+    provider = Provider(decision("stop"))
+    with pytest.raises(ChannelError, match="could not be identified"):
+        run(UnrelatedBrowser(), provider, chat_hint="Pergunte à Aura", max_discovery_attempts=3)
+    assert len(provider.requests) == 1
+
+
+def test_auto_open_derives_locator_when_model_omits_it() -> None:
     proposal = candidate()
     proposal["open_locator"] = None
     browser = Browser()
@@ -181,9 +247,63 @@ def test_auto_open_still_requires_opener_locator_in_fresh_browser() -> None:
         decision("propose", channel=json.dumps(proposal)),
         decision("propose", channel=json.dumps(proposal)),
     )
-    with pytest.raises(ModelError, match="lacks an opener locator"):
-        run(browser, provider, max_discovery_attempts=1)
+    result = run(browser, provider, max_discovery_attempts=1)
+    assert result.channel.open_locator is not None
     assert browser.clicks == ["e5"]
+
+
+def test_observed_hint_uses_partial_name_but_only_after_safe_ref_click() -> None:
+    snapshot = SNAPSHOT.replace("Open chat", "Pergunte à Aura")
+    opener = _observed_opener(snapshot, "e5", "Pergunte à Aura", "Pergunte à Aura")
+    assert opener is not None
+    assert (opener.strategy, opener.value, opener.name, opener.exact) == (
+        "role",
+        "button",
+        "Pergunte à Aura",
+        False,
+    )
+    with pytest.raises(ChannelError, match="unsafe or ambiguous"):
+        _observed_opener(
+            snapshot.replace("Pergunte à Aura", "Buy now"), "e5", "Buy now", "Pergunte à Aura"
+        )
+
+
+def test_new_unique_send_button_overrides_model_send_guess() -> None:
+    opened_with_send = OPENED + '\n- button "Enviar mensagem" [ref=e7]'
+
+    class SendButtonBrowser(Browser):
+        async def click(self, target: str, element: str, snapshot: str) -> str:
+            _check_click(snapshot, target, element, self.chat_hint)
+            self.clicks.append(target)
+            return opened_with_send
+
+    proposal = candidate()
+    proposal["send_strategy"] = {"type": "press_enter"}
+    provider = Provider(
+        decision("open_chat", target="e5", element="Open chat"),
+        decision("propose", channel=json.dumps(proposal)),
+    )
+    progress: list[str] = []
+    result = run(SendButtonBrowser(), provider, on_progress=progress.append)
+    assert result.channel.send_strategy.type == "click"
+    assert result.channel.send_strategy.locator == LocatorConfig(
+        strategy="role", value="button", name="Enviar mensagem"
+    )
+    assert "using safely observed chat send control for native verification" in progress
+
+
+def test_ambiguous_or_preexisting_send_buttons_are_not_derived() -> None:
+    opened = OPENED + '\n- button "Enviar mensagem" [ref=e7]'
+    assert _observed_send_control(SNAPSHOT, opened) == LocatorConfig(
+        strategy="role", value="button", name="Enviar mensagem"
+    )
+    assert _observed_send_control(SNAPSHOT, opened + '\n- button "Enviar" [ref=e8]') is None
+    assert (
+        _observed_send_control(SNAPSHOT + '\n- button "Enviar mensagem" [ref=e9]', opened) is None
+    )
+    assert (
+        _observed_send_control(SNAPSHOT, SNAPSHOT + '\n- button "Enviar mensagem" [ref=e7]') is None
+    )
 
 
 def test_click_without_new_chat_controls_does_not_publish_candidate(monkeypatch: Any) -> None:
@@ -229,7 +349,11 @@ def test_chat_inventory_is_redacted_before_model_request() -> None:
     assert "canary-secret" not in provider.requests[1].messages[-1].content
 
 
-def test_chat_hint_can_reveal_and_select_a_hover_tooltip() -> None:
+def test_chat_hint_can_reveal_and_select_a_hover_tooltip(monkeypatch: Any) -> None:
+    async def no_wait(_seconds: float) -> None:
+        pass
+
+    monkeypatch.setattr("syntheticcx.discovery.explore.asyncio.sleep", no_wait)
     browser = Browser()
     hint = "Talk to an agent"
     provider = Provider(

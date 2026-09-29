@@ -36,6 +36,7 @@ from syntheticcx.domain.models import (
 )
 from syntheticcx.errors import ConfigurationError, PersistenceError
 from syntheticcx.evaluation.service import EvaluationService
+from syntheticcx.language import Language, require_language
 from syntheticcx.privacy import Redactor
 from syntheticcx.privacy.prompt_capture import PromptCapture
 from syntheticcx.reporting.materialize import build_projections
@@ -131,11 +132,28 @@ def _initial_run(
 
 
 async def execute_run(
-    path: Path, *, on_created: Callable[[str, Path], None] | None = None, headed: bool = False
+    path: Path,
+    *,
+    on_created: Callable[[str, Path], None] | None = None,
+    headed: bool = False,
+    language: Language | None = None,
 ) -> RunExecution:
     """Validate, probe, compose, execute, and read the committed report."""
     loaded = load_config_with_source_hash(path)
     config = loaded.config
+    if language is not None:
+        selected = require_language(language)
+        config = config.model_copy(
+            update={
+                "persona": config.persona.model_copy(
+                    update={
+                        "communication": config.persona.communication.model_copy(
+                            update={"language": selected}
+                        )
+                    }
+                )
+            }
+        )
     settings = prepare_settings(config)
     secrets = (
         settings.persona.credential.get_secret_value(),

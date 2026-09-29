@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from syntheticcx.config.loader import load_config, load_discovery_draft
 from syntheticcx.config.models import ChannelGuide, ReferencedProjectConfig
 from syntheticcx.errors import ConfigurationError
+from syntheticcx.language import Language
 
 
 def _write_new(path: Path, data: bytes) -> None:
@@ -49,7 +50,14 @@ def _replace(path: Path, data: bytes) -> None:
             Path(temporary).unlink(missing_ok=True)
 
 
-def publish_guide(source: Path, output: Path, guide: ChannelGuide, *, in_place: bool) -> Path:
+def publish_guide(
+    source: Path,
+    output: Path,
+    guide: ChannelGuide,
+    *,
+    in_place: bool,
+    language: Language | None = None,
+) -> Path:
     """Save verified controls, then a validated scenario copy or backed-up edit."""
     load_discovery_draft(source)
     destination = source if in_place else source.with_name(f"{source.stem}.completed.yaml")
@@ -63,6 +71,8 @@ def publish_guide(source: Path, output: Path, guide: ChannelGuide, *, in_place: 
     try:
         original = source.read_bytes()
         document: Any = yaml.safe_load(original)
+        if language is not None:
+            document["persona"]["communication"]["language"] = language
         document["channel_guide"] = reference
         ReferencedProjectConfig.model_validate(document)
         completed = yaml.safe_dump(document, sort_keys=False, allow_unicode=True).encode("utf-8")

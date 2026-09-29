@@ -21,6 +21,8 @@ from pydantic import (
     model_validator,
 )
 
+from syntheticcx.language import Language
+
 JsonObject: TypeAlias = dict[str, JsonValue]
 Normalized = Annotated[float, Field(ge=0, le=1)]
 PositiveSeconds = Annotated[float, Field(gt=0)]
@@ -36,6 +38,7 @@ class StrictModel(BaseModel):  # type: ignore[misc]
 class CommunicationConfig(StrictModel):
     tone: str = Field(min_length=1)
     style: str = Field(min_length=1)
+    language: Language = "en-US"
     typo_probability: Normalized = 0
     spelling_error_probability: Normalized = 0
     clarification_probability: Normalized = 0
@@ -211,6 +214,7 @@ class LocatorConfig(StrictModel):
     strategy: Literal["role", "label", "placeholder", "text", "test_id", "css"]
     value: str = Field(min_length=1)
     name: str | None = None
+    exact: bool = True
 
     @model_validator(mode="after")
     def forbid_xpath_fallback(self) -> LocatorConfig:

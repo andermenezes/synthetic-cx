@@ -114,6 +114,11 @@
     "LocatorConfig": {
       "additionalProperties": false,
       "properties": {
+        "exact": {
+          "default": true,
+          "title": "Exact",
+          "type": "boolean"
+        },
         "name": {
           "anyOf": [
             {

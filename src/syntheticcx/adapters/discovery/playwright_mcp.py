@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 
 from pydantic import AnyHttpUrl, TypeAdapter, ValidationError
 
+from syntheticcx.config.models import LocatorConfig
 from syntheticcx.errors import ChannelError, ConfigurationError
 
 SERVER_VERSION = "0.0.82"
@@ -131,6 +132,52 @@ def _unique_safe_launcher(snapshot: str, chat_hint: str | None) -> tuple[str, st
             continue
         candidates.append((ref, label))
     return candidates[0] if len(candidates) == 1 else None
+
+
+def _observed_opener(
+    snapshot: str, target: str, element: str, chat_hint: str | None
+) -> LocatorConfig | None:
+    """Derive an opener only from the safely clicked, labeled snapshot ref."""
+    _check_click(snapshot, target, element, chat_hint)
+    for line in snapshot.splitlines():
+        match = _LABELED_CONTROL.match(line)
+        if match is not None and match.group(3) == target:
+            label = match.group(2)
+            if _hint_matches(label, chat_hint):
+                return LocatorConfig(
+                    strategy="role", value=match.group(1).lower(), name=chat_hint, exact=False
+                )
+            return LocatorConfig(strategy="role", value=match.group(1).lower(), name=label)
+    return None
+
+
+_SEND_LABELS = frozenset({"send", "send message", "enviar", "enviar mensagem"})
+
+
+def _observed_send_control(before: str, after: str) -> LocatorConfig | None:
+    """Find one newly exposed, explicitly named chat send button; never click it here."""
+    before_labels = {
+        _normalized(match.group(2))
+        for line in before.splitlines()
+        if (match := _LABELED_CONTROL.match(line)) is not None
+        and match.group(1).lower() == "button"
+    }
+    lines = after.splitlines()
+    candidates = [
+        match.group(2)
+        for index, line in enumerate(lines)
+        if (match := _LABELED_CONTROL.match(line)) is not None
+        and match.group(1).lower() == "button"
+        and _normalized(match.group(2)) in _SEND_LABELS
+        and _normalized(match.group(2)) not in before_labels
+        and any(
+            re.match(r"^\s*-\s*textbox\b", nearby, re.I)
+            for nearby in lines[max(0, index - 12) : index + 13]
+        )
+    ]
+    if len(candidates) != 1:
+        return None
+    return LocatorConfig(strategy="role", value="button", name=candidates[0])
 
 
 class ManagedPlaywrightMCP:

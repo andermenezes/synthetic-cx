@@ -27,6 +27,7 @@ from syntheticcx.domain.models import (
     PersonaStateTransition,
 )
 from syntheticcx.errors import ModelError
+from syntheticcx.language import persona_instruction
 from syntheticcx.privacy.prompt_capture import PromptCapture
 
 T = TypeVar("T")
@@ -182,7 +183,8 @@ class TinyTroupePersonaSimulator:
                 "knowledge": scenario_context.knowledge,
                 "instructions": (
                     "Act as the customer. TALK once to customer support, or issue "
-                    "GOAL_COMPLETE / ABANDON explicitly. DONE only ends this action batch."
+                    "GOAL_COMPLETE / ABANDON explicitly. DONE only ends this action batch. "
+                    + persona_instruction(definition.communication.language)
                 ),
             },
             ensure_ascii=False,

@@ -483,7 +483,7 @@ def test_discovered_guide_runs_through_normal_cli(
         assert discovered.exit_code == 0, discovered.output
         completed = tmp_path / "draft.completed.yaml"
         assert guide.exists() and completed.exists()
-        output = CliRunner().invoke(app, ["run", str(completed)])
+        output = CliRunner().invoke(app, ["run", str(completed), "--language", "pt-BR"])
         assert output.exit_code == 0, output.output
     directory = next((tmp_path / "runs").iterdir())
     metadata, report = validate_artifacts(directory)
@@ -494,3 +494,4 @@ def test_discovered_guide_runs_through_normal_cli(
         == hashlib.sha256(guide.read_bytes()).hexdigest()
     )
     assert "channel_guide" not in config_artifact["effective_config"]
+    assert config_artifact["effective_config"]["persona"]["communication"]["language"] == "pt-BR"
