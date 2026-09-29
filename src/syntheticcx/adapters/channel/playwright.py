@@ -52,9 +52,12 @@ def locate(scope: Scope, config: LocatorConfig, *, include_hidden: bool = False)
 class PlaywrightChannel:
     """Own a browser/context/page and a cursor; never expose SDK objects to the domain."""
 
-    def __init__(self, config: ChannelConfig, limits: ExecutionLimits) -> None:
+    def __init__(
+        self, config: ChannelConfig, limits: ExecutionLimits, *, headed: bool = False
+    ) -> None:
         self._config = config
         self._limits = limits
+        self._headed = headed
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
@@ -109,7 +112,7 @@ class PlaywrightChannel:
             raise ChannelError("channel.start", "channel already started")
         try:
             self._playwright = await async_playwright().start()
-            self._browser = await self._playwright.chromium.launch(headless=True)
+            self._browser = await self._playwright.chromium.launch(headless=not self._headed)
             self._context = await self._browser.new_context()
             timeout_ms = self._limits.browser_action_timeout_seconds * 1000
             self._context.set_default_timeout(timeout_ms)
@@ -118,8 +121,12 @@ class PlaywrightChannel:
             response = await self._page.goto(
                 str(self._config.url), wait_until="load", timeout=timeout_ms
             )
-            if response is None or response.status >= 400:
-                raise ChannelError("channel.start", "target navigation failed")
+            if response is None:
+                raise ChannelError("channel.start", "target navigation returned no HTTP response")
+            if response.status >= 400:
+                raise ChannelError(
+                    "channel.start", f"target navigation returned HTTP {response.status}"
+                )
             if self._config.frame_locator is not None:
                 frame = locate(self._page, self._config.frame_locator)
                 await frame.wait_for(state="attached", timeout=timeout_ms)

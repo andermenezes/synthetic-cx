@@ -139,6 +139,8 @@ or from a checkout:
 uv run synthetic-cx run path/to/scenario.yaml
 ```
 
+Add `--headed` to `run` to display its native Chromium browser instead of running it headless. This requires a desktop display and does not change the scenario or its channel guide.
+
 Useful commands:
 
 ```bash
@@ -204,14 +206,15 @@ export OPENAI_API_KEY='your-credential'
 uv run --extra discovery synthetic-cx discover billing-draft.yaml \\
   --url 'http://127.0.0.1:<port>/?variant=success' \\
   --output billing-channel.yaml --verbose
-# Add --headed to watch MCP exploration in a visible browser window.
+# Add --headed to show both MCP exploration and native verification browsers.
 # Add --chat-hint 'Talk to an agent' to guide label/tooltip discovery.
 uv run synthetic-cx run billing-draft.completed.yaml
+# If verification required headed mode, use: uv run synthetic-cx run billing-draft.completed.yaml --headed
 ```
 
 Credentials are read from the selected model's explicitly named environment variable. An optional discovery-only model can be supplied with `--discovery-model-config path/to/model.yaml`; `--probe-message` changes the synthetic verification text.
 
-MCP exploration is headless by default; pass `--headed` to watch it in a visible browser window (a desktop display is required). Native verification remains headless in a separate session. Use `--chat-hint 'exact tooltip or button text'` when the launcher is ambiguous or its label appears only on hover. Hints must be 1–256 characters and do not bypass safe-control checks.
+Discovery and normal runs are headless by default. Pass `discover --headed` to show both MCP exploration and **fresh native verification** in separate visible browsers (a desktop display is required). For a guide that only verifies headed, pass `run --headed` as well; a headed verification result does not prove that headless runs will succeed. Neither option shares cookies or browser state between sessions. Use `--chat-hint 'exact tooltip or button text'` when the launcher is ambiguous or its label appears only on hover. Hints must be 1–256 characters and do not bypass safe-control checks.
 
 `--max-discovery-attempts` allows 1–5 model decisions per exploration step (default 3). When the model stops, discovery waits up to the remaining attempt count in seconds for a **changed** accessibility snapshot. It does not ask the model repeatedly about an unchanged snapshot. Schema-invalid or malformed channel proposals can be corrected within the configured budget. Hover and chat-opening actions have a separate three-step limit. A safe chat-opening click triggers a fixed, bounded, read-only inspection of DOM attributes that can help identify selectors. It does not collect input values or message text, and it cannot inspect a cross-origin frame's contents. The model cannot supply executable inspection code. Native verification and its synthetic probe messages are **never** automatically retried.
 
@@ -223,7 +226,7 @@ Add `--verbose` to report safe stage progress and the owned failure category, op
 | --- | --- |
 | `--url URL` | Required page URL to explore. |
 | `--output PATH` | Required destination for the verified channel guide; existing files are not overwritten. |
-| `--headed` | Show the MCP exploration browser. Requires a desktop/display. Native verification uses a separate headless browser. |
+| `--headed` | Show both MCP exploration and fresh native verification browsers. Requires a desktop/display; normal `run` needs its own `--headed` option if headless access is blocked. |
 | `--chat-hint TEXT` | Optional visible button or hover-tooltip text to search for; 1–256 characters. It guides discovery but does not bypass safe-control checks. |
 | `--max-discovery-attempts N` | Up to 1–5 model decisions per exploration step (default 3). A stop waits up to the remaining attempt count in seconds for a changed snapshot; invalid proposals can be corrected. Native verification and probe sends are never automatically retried. |
 | `--verbose` | Show stage progress and safe SyntheticCX error category, operation, and message on stderr. Invalid proposals include field paths and validation types, not values. Raw page content, prompts, probe text, credentials, and raw exceptions are not printed. |
@@ -240,7 +243,7 @@ Discovery currently targets text web chats with controls that can be identified 
 
 `stop` means the model did not identify a safe launcher in the available snapshot. With `--verbose`, a `page snapshot changed after bounded wait` line means it received new evidence; without that line, raising the attempt limit alone may not help. In `--headed` mode, check whether the launcher appears, whether it is represented as a button or link in the accessibility tree, and whether its visible or hover label matches `--chat-hint`. An icon without a recognizable label or a launcher hidden behind consent, login, a cross-origin frame, or another interaction may be unavailable under the safe-click policy. Do not rely on the model to guess a selector or click an unrelated control. Try an authorized staging page with accessible chat controls instead.
 
-`channel-control proposal passed schema validation` only confirms the configuration shape, not that the site works. A later `channel.start` navigation failure occurs in a **fresh, headless** browser and is not addressed by more model attempts. Check the exact target URL from a fresh browser session; authentication, redirects, HTTP errors, or browser restrictions may prevent native verification. No guide is published until verification succeeds.
+`channel-control proposal passed schema validation` only confirms the configuration shape, not that the site works. A later `channel.start` navigation failure occurs in a **fresh** browser (headless unless `discover --headed` is set) and is not addressed by more model attempts. In `--verbose` mode, `target navigation returned HTTP 403` means the server refused that browser session; a different HTTP status or `no HTTP response` likewise indicates navigation failed before control verification. The status is shown without page content or URLs. Check the exact target URL from a fresh browser session; authentication, redirects, HTTP errors, or browser restrictions may prevent native verification. If the site permits headed but not headless access, headed verification and `run --headed` may help on an authorized target; neither guarantees that the chat controls or probes will work. No guide is published until verification succeeds.
 
 ---
 
@@ -505,6 +508,7 @@ Runs are best-effort reproducible: model, sampling parameters, requested seed, c
 
 ## Further reference
 
+- Repository overview and commands: [`README.md`](README.md)
 - Canonical configuration: [`examples/telecom/scenario.yaml`](examples/telecom/scenario.yaml)
 - Generated contracts: [`schemas/`](schemas/)
 - License: [`LICENSE`](LICENSE)

@@ -20,6 +20,38 @@ def candidate() -> DiscoveryCandidate:
     return DiscoveryCandidate(channel=document["channel"], open_steps=1)
 
 
+def test_headed_verification_constructs_fresh_headed_channel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    options: list[bool] = []
+    progress: list[str] = []
+
+    class FailingChannel:
+        def __init__(self, *_args: Any, headed: bool = False) -> None:
+            options.append(headed)
+
+        async def start(self) -> None:
+            raise ChannelError("channel.start", "target navigation returned HTTP 403")
+
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(verify, "PlaywrightChannel", FailingChannel)
+    limits = yaml.safe_load(Path("examples/telecom/scenario.yaml").read_text())["execution"]
+    with pytest.raises(ChannelError, match="HTTP 403"):
+        asyncio.run(
+            verify.verify_candidate(
+                candidate(),
+                ExecutionLimits.model_validate(limits),
+                "Synthetic probe",
+                headed=True,
+                on_progress=progress.append,
+            )
+        )
+    assert options == [True]
+    assert "starting fresh native Playwright verification browser (headed)" in progress
+
+
 def test_late_greeting_does_not_verify_silent_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     class LateGreetingChannel:
         def __init__(self, *_args: Any) -> None:

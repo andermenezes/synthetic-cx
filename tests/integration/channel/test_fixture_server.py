@@ -223,6 +223,24 @@ def configured_channel(
     return PlaywrightChannel(ChannelConfig.model_validate(channel), limits)
 
 
+def test_navigation_failure_reports_http_status_without_page_content() -> None:
+    async def exercise() -> None:
+        with FixtureServer() as fixture:
+            config = load_config(Path("examples/telecom/scenario.yaml"))
+            channel_data = config.channel.model_dump(mode="json")
+            channel_data["url"] = f"{fixture.base_url}/missing.txt"
+            channel = PlaywrightChannel(
+                ChannelConfig.model_validate(channel_data), config.execution
+            )
+            try:
+                with pytest.raises(ChannelError, match=r"target navigation returned HTTP 404"):
+                    await channel.start()
+            finally:
+                await channel.close()
+
+    asyncio.run(exercise())
+
+
 @pytest.mark.parametrize("variant", ["success", "repeated_question", "streamed_response"])
 @pytest.mark.parametrize(
     "framed,enter", [(False, False), (False, True), (True, False), (True, True)]

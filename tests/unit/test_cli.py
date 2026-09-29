@@ -36,6 +36,57 @@ def test_discover_help_advertises_headed_mode() -> None:
     assert "does not retry" in help_text
 
 
+def test_run_help_advertises_headed_mode() -> None:
+    result = CliRunner().invoke(app, ["run", "--help"])
+    assert result.exit_code == 0
+    assert "--headed" in result.stdout
+
+
+def test_run_headed_forwards_mode_to_runtime(monkeypatch: Any) -> None:
+    received: list[bool] = []
+
+    async def execute(_scenario: Path, *, on_created: Any, headed: bool) -> None:
+        received.append(headed)
+        raise ChannelError("channel.start", "target navigation returned HTTP 403")
+
+    monkeypatch.setattr(cli, "execute_run", execute)
+    result = CliRunner().invoke(app, ["run", "draft.yaml", "--headed"])
+    assert result.exit_code == 3
+    assert received == [True]
+
+
+def test_discover_headed_forwards_mode_to_both_browser_sessions(monkeypatch: Any) -> None:
+    received: list[tuple[str, bool]] = []
+    monkeypatch.setattr(
+        cli, "load_discovery_draft", lambda _path: SimpleNamespace(execution=object())
+    )
+
+    async def candidate(*_args: Any, headed: bool, **_kwargs: Any) -> object:
+        received.append(("exploration", headed))
+        return object()
+
+    async def verify(*_args: Any, headed: bool, **_kwargs: Any) -> None:
+        received.append(("verification", headed))
+        raise ChannelError("channel.start", "target navigation returned HTTP 403")
+
+    monkeypatch.setattr(cli, "discover_candidate", candidate)
+    monkeypatch.setattr(cli, "verify_candidate", verify)
+    result = CliRunner().invoke(
+        app,
+        [
+            "discover",
+            "draft.yaml",
+            "--url",
+            "https://example.test/",
+            "--output",
+            "guide.yaml",
+            "--headed",
+        ],
+    )
+    assert result.exit_code == 3
+    assert received == [("exploration", True), ("verification", True)]
+
+
 def test_verbose_discovery_reports_safe_stage_and_owned_failure(
     monkeypatch: Any,
 ) -> None:

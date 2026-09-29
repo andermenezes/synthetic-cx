@@ -29,16 +29,22 @@ async def verify_candidate(
     limits: ExecutionLimits,
     probe_message: str,
     *,
+    headed: bool = False,
     on_progress: Callable[[str], None] | None = None,
 ) -> ChannelGuide:
     """Exercise the precise candidate that later runs will consume."""
     if not probe_message.strip():
         raise ChannelError("discover probe", "synthetic probe cannot be blank")
-    channel = PlaywrightChannel(candidate.channel, limits)
+    channel = (
+        PlaywrightChannel(candidate.channel, limits, headed=True)
+        if headed
+        else PlaywrightChannel(candidate.channel, limits)
+    )
     failed: BaseException | None = None
     try:
         if on_progress is not None:
-            on_progress("starting fresh native Playwright verification browser (headless)")
+            mode = "headed" if headed else "headless"
+            on_progress(f"starting fresh native Playwright verification browser ({mode})")
         await asyncio.wait_for(channel.start(), limits.browser_action_timeout_seconds)
         expected_origin = _origin(str(candidate.channel.url))
         _require_target_origin(channel, expected_origin)

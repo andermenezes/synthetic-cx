@@ -56,7 +56,7 @@ def discover(
     headed: bool = typer.Option(
         False,
         "--headed",
-        help="Show the browser during MCP exploration (native verification remains headless).",
+        help="Show both MCP exploration and fresh native verification browsers.",
     ),
     chat_hint: str | None = typer.Option(
         None,
@@ -121,6 +121,7 @@ def discover(
                 candidate,
                 draft.execution,
                 probe_message,
+                headed=headed,
                 on_progress=progress if verbose else None,
             )
         )
@@ -179,7 +180,10 @@ def main(
 
 
 @app.command()
-def run(scenario: Path = typer.Argument(..., help="Validated version-1 scenario YAML.")) -> None:
+def run(
+    scenario: Path = typer.Argument(..., help="Validated version-1 scenario YAML."),
+    headed: bool = typer.Option(False, "--headed", help="Show the native browser during the run."),
+) -> None:
     """Run one scenario and persona through a configured web chat."""
 
     def created(run_id: str, directory: Path) -> None:
@@ -187,7 +191,11 @@ def run(scenario: Path = typer.Argument(..., help="Validated version-1 scenario 
         typer.echo("Running conversation and evaluation...")
 
     try:
-        result = asyncio.run(execute_run(scenario, on_created=created))
+        result = asyncio.run(
+            execute_run(scenario, on_created=created, headed=True)
+            if headed
+            else execute_run(scenario, on_created=created)
+        )
     except ConfigurationError as error:
         typer.echo(f"Configuration error: {error}", err=True)
         raise typer.Exit(2) from None

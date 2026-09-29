@@ -131,7 +131,7 @@ def _initial_run(
 
 
 async def execute_run(
-    path: Path, *, on_created: Callable[[str, Path], None] | None = None
+    path: Path, *, on_created: Callable[[str, Path], None] | None = None, headed: bool = False
 ) -> RunExecution:
     """Validate, probe, compose, execute, and read the committed report."""
     loaded = load_config_with_source_hash(path)
@@ -226,7 +226,11 @@ async def execute_run(
             redactor=redactor,
             provider=provider,
         )
-        channel = PlaywrightChannel(config.channel, config.execution)
+        channel = (
+            PlaywrightChannel(config.channel, config.execution, headed=True)
+            if headed
+            else PlaywrightChannel(config.channel, config.execution)
+        )
         simulator = TinyTroupePersonaSimulator(
             config.model,
             settings.persona,
