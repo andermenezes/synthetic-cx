@@ -60,7 +60,12 @@ async def verify_candidate(
             if on_progress is not None:
                 on_progress("waiting briefly for an optional assistant greeting")
             try:
-                await asyncio.wait_for(channel.receive(), limits.greeting_grace_seconds)
+                await asyncio.wait_for(
+                    channel.receive(on_progress=on_progress)
+                    if on_progress is not None
+                    else channel.receive(),
+                    limits.greeting_grace_seconds,
+                )
             except TimeoutError:
                 pass
             except ChannelError as error:
@@ -76,13 +81,22 @@ async def verify_candidate(
             _require_target_origin(channel, expected_origin)
             if on_progress is not None:
                 on_progress(f"sending synthetic verification probe {index}/{len(probes)}")
-            await asyncio.wait_for(
+            receipt = await asyncio.wait_for(
                 channel.send(message, on_progress=on_progress)
                 if on_progress is not None
                 else channel.send(message),
                 limits.browser_action_timeout_seconds,
             )
-            response = await asyncio.wait_for(channel.receive(), limits.response_timeout_seconds)
+            if on_progress is not None:
+                on_progress(
+                    f"customer echo {receipt.evidence['echo']} after probe {index}/{len(probes)}"
+                )
+            response = await asyncio.wait_for(
+                channel.receive(on_progress=on_progress)
+                if on_progress is not None
+                else channel.receive(),
+                limits.response_timeout_seconds,
+            )
             _require_target_origin(channel, expected_origin)
             if not response.messages or any(not item.content.strip() for item in response.messages):
                 raise ChannelError("discover probe", "assistant response is incomplete")

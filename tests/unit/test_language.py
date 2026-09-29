@@ -13,6 +13,6 @@ def test_unsupported_language_is_rejected(value: str) -> None:
 
 
 def test_portuguese_probes_and_persona_instruction() -> None:
-    assert "saudação" in first_probe("pt-BR")
-    assert "respondendo" in second_probe("pt-BR")
+    assert first_probe("pt-BR") == second_probe("pt-BR") == "Olá"
+    assert first_probe("en-US") == second_probe("en-US") == "Hello"
     assert "Brazilian Portuguese" in persona_instruction("pt-BR")

@@ -9,12 +9,12 @@ from syntheticcx.errors import ConfigurationError
 Language = Literal["en-US", "pt-BR"]
 
 _FIRST_PROBES: dict[Language, str] = {
-    "en-US": "Synthetic test: please reply with a greeting.",
-    "pt-BR": "Teste sintético: por favor, responda com uma saudação.",
+    "en-US": "Hello",
+    "pt-BR": "Olá",
 }
 _SECOND_PROBES: dict[Language, str] = {
-    "en-US": "Synthetic test: please confirm the chat is responsive.",
-    "pt-BR": "Teste sintético: por favor, confirme que o chat está respondendo.",
+    "en-US": "Hello",
+    "pt-BR": "Olá",
 }
 _PERSONA_INSTRUCTIONS: dict[Language, str] = {
     "en-US": "Use English (United States) for every customer TALK message.",

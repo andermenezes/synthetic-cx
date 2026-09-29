@@ -149,7 +149,7 @@ def test_discover_language_localizes_default_first_probe(monkeypatch: Any) -> No
         ],
     )
     assert result.exit_code == 3
-    assert received == [("pt-BR", "Teste sintético: por favor, responda com uma saudação.")]
+    assert received == [("pt-BR", "Olá")]
 
 
 def test_invalid_discovery_language_stops_before_browser(monkeypatch: Any) -> None:

@@ -102,10 +102,11 @@ def test_late_greeting_does_not_verify_silent_probe(monkeypatch: pytest.MonkeyPa
         async def start(self, *, on_progress: Any = None) -> None:
             pass
 
-        async def send(self, message: str, *, on_progress: Any = None) -> None:
+        async def send(self, message: str, *, on_progress: Any = None) -> Any:
             self.submitted.append(message)
+            return type("Receipt", (), {"evidence": {"echo": "absent"}})()
 
-        async def receive(self) -> Any:
+        async def receive(self, *, on_progress: Any = None) -> Any:
             self.receives += 1
             if self.receives == 1:
                 raise ChannelError("channel.receive", "assistant response timed out")

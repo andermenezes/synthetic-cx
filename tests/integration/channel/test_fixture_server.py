@@ -466,6 +466,30 @@ def test_chromium_silent_response_is_classified(framed: bool, enter: bool) -> No
     asyncio.run(exercise())
 
 
+def test_wrong_assistant_selector_reports_missing_bubble_not_observation_failure() -> None:
+    async def exercise() -> None:
+        with FixtureServer() as fixture:
+            channel = configured_channel(fixture.base_url, response_timeout=0.35)
+            channel._config = channel._config.model_copy(
+                update={
+                    "assistant_message_locator": LocatorConfig(
+                        strategy="css", value="[data-testid='missing-assistant']"
+                    )
+                }
+            )
+            stages: list[str] = []
+            try:
+                await channel.start()
+                await channel.send("Hello")
+                with pytest.raises(ChannelError, match="assistant response timed out"):
+                    await channel.receive(on_progress=stages.append)
+                assert stages == ["assistant bubble not observed before response deadline"]
+            finally:
+                await channel.close()
+
+    asyncio.run(exercise())
+
+
 def test_completion_locator_reused_node_is_fresh_for_each_response() -> None:
     async def exercise() -> None:
         with FixtureServer() as fixture:

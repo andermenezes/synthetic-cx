@@ -19,6 +19,7 @@ from playwright.async_api import (
     async_playwright,
 )
 from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from syntheticcx.adapters.channel.cursor import Actor, Bubble, MessageCursor
 from syntheticcx.config.models import ChannelConfig, ExecutionLimits, LocatorConfig
@@ -316,13 +317,16 @@ class PlaywrightChannel:
         except (PlaywrightError, TimeoutError):
             raise ChannelError("channel.send", f"{stage} failed") from None
 
-    async def receive(self) -> CompletedResponse:
+    async def receive(
+        self, *, on_progress: Callable[[str], None] | None = None
+    ) -> CompletedResponse:
         scope = self._scope
         if scope is None or self._closing is not None:
             raise ChannelError("channel.receive", "channel is not available")
         if not self._awaiting_response and self._greeting_received:
             raise ChannelError("channel.receive", "no response is pending")
         completion = self._config.response_completion
+        bubble_attached = False
         try:
             async with asyncio.timeout(self._limits.response_timeout_seconds):
                 baseline = (
@@ -331,8 +335,13 @@ class PlaywrightChannel:
                 await (
                     locate(scope, self._config.assistant_message_locator, include_hidden=True)
                     .nth(baseline)
-                    .wait_for(state="attached")
+                    .wait_for(
+                        state="attached", timeout=self._limits.response_timeout_seconds * 1000
+                    )
                 )
+                bubble_attached = True
+                if on_progress is not None:
+                    on_progress("assistant bubble attached in native browser")
                 last_snapshot: tuple[tuple[str | None, str], ...] = ()
                 stable_since = time.monotonic()
                 fragments: dict[int, int] = {}
@@ -392,6 +401,16 @@ class PlaywrightChannel:
         except asyncio.CancelledError:
             raise
         except TimeoutError:
+            if on_progress is not None:
+                on_progress(
+                    "assistant completion not observed before response deadline"
+                    if bubble_attached
+                    else "assistant bubble not observed before response deadline"
+                )
+            raise ChannelError("channel.receive", "assistant response timed out") from None
+        except PlaywrightTimeoutError:
+            if on_progress is not None:
+                on_progress("assistant bubble not observed before response deadline")
             raise ChannelError("channel.receive", "assistant response timed out") from None
         except PlaywrightError:
             raise ChannelError("channel.receive", "assistant observation failed") from None
