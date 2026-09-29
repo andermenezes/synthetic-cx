@@ -15,6 +15,7 @@ from syntheticcx.adapters.discovery.playwright_mcp import (
     _check_hover,
     _check_page_origin,
     _origin,
+    _unique_safe_launcher,
 )
 from syntheticcx.config.models import ChannelConfig, PrivacyConfig
 from syntheticcx.discovery.explore import explore
@@ -25,7 +26,7 @@ from syntheticcx.privacy import Redactor
 URL = "http://127.0.0.1:8000/?variant=success"
 SNAPSHOT = "### Page\n- Page URL: " + URL + '\n### Snapshot\n- button "Open chat" [ref=e5]'
 OPENED = SNAPSHOT + '\n- textbox "Message" [ref=e6]'
-OPENED = SNAPSHOT + '\n- textbox "Message" [ref=e6]'
+ALREADY_OPEN = SNAPSHOT.replace('- button "Open chat" [ref=e5]', '- textbox "Message" [ref=e6]')
 HOVERED = "### Page\n- Page URL: " + URL + '\n### Snapshot\n- button "Talk to an agent" [ref=e5]'
 
 
@@ -63,6 +64,12 @@ class Browser:
         _check_hover(snapshot, target, element, self.chat_hint)
         self.hovers.append(target)
         return HOVERED
+
+
+class AlreadyOpenBrowser(Browser):
+    async def navigate(self, url: str) -> str:
+        assert url == URL
+        return ALREADY_OPEN
 
 
 class Provider:
@@ -122,6 +129,86 @@ def test_safe_open_then_typed_candidate() -> None:
     assert all(request.response_schema is not None for request in provider.requests)
 
 
+def test_valid_proposal_opens_unique_safe_launcher_before_publication() -> None:
+    browser = Browser()
+    provider = Provider(
+        decision("propose", channel=json.dumps(candidate())),
+        decision("propose", channel=json.dumps(candidate())),
+    )
+    progress: list[str] = []
+
+    result = run(browser, provider, on_progress=progress.append)
+
+    assert isinstance(result.channel, ChannelConfig)
+    assert browser.clicks == ["e5"]
+    assert browser.inspections == 1
+    assert result.open_steps == 1
+    assert "opened unique safe chat launcher; refreshed snapshot and selector inventory" in progress
+    assert "chat-input" in provider.requests[1].messages[-1].content
+
+
+def test_opened_chat_proposal_must_configure_opener() -> None:
+    proposal = candidate()
+    proposal["open_locator"] = None
+    browser = Browser()
+    provider = Provider(
+        decision("open_chat", target="e5", element="Open chat"),
+        decision("propose", channel=json.dumps(proposal)),
+        decision("propose", channel=json.dumps(candidate())),
+    )
+    result = run(browser, provider, max_discovery_attempts=2)
+    assert result.channel.open_locator is not None
+    assert browser.clicks == ["e5"]
+    assert "open_locator is missing" in provider.requests[2].messages[-1].content
+
+
+def test_ambiguous_or_unsafe_launchers_are_not_automatically_clicked() -> None:
+    assert _unique_safe_launcher(SNAPSHOT.replace("Open chat", "Buy chat"), None) is None
+    assert _unique_safe_launcher(SNAPSHOT + '\n- button "Help chat" [ref=e7]', None) is None
+
+
+def test_hint_identifies_unique_localized_launcher_without_relaxing_click_guard() -> None:
+    localized = SNAPSHOT.replace("Open chat", "Pergunte à Aura")
+    assert _unique_safe_launcher(localized, "Pergunte à Aura") == ("e5", "Pergunte à Aura")
+    assert _unique_safe_launcher(localized, None) is None
+
+
+def test_auto_open_still_requires_opener_locator_in_fresh_browser() -> None:
+    proposal = candidate()
+    proposal["open_locator"] = None
+    browser = Browser()
+    provider = Provider(
+        decision("propose", channel=json.dumps(proposal)),
+        decision("propose", channel=json.dumps(proposal)),
+    )
+    with pytest.raises(ModelError, match="lacks an opener locator"):
+        run(browser, provider, max_discovery_attempts=1)
+    assert browser.clicks == ["e5"]
+
+
+def test_click_without_new_chat_controls_does_not_publish_candidate(monkeypatch: Any) -> None:
+    async def no_wait(_seconds: float) -> None:
+        pass
+
+    monkeypatch.setattr("syntheticcx.discovery.explore.asyncio.sleep", no_wait)
+
+    class NoOpeningBrowser(Browser):
+        async def click(self, target: str, element: str, snapshot: str) -> str:
+            _check_click(snapshot, target, element, None)
+            self.clicks.append(target)
+            return snapshot
+
+        async def snapshot(self) -> str:
+            return SNAPSHOT
+
+    browser = NoOpeningBrowser()
+    provider = Provider(decision("propose", channel=json.dumps(candidate())))
+    with pytest.raises(ChannelError, match="did not reveal new controls"):
+        run(browser, provider)
+    assert browser.clicks == ["e5"]
+    assert browser.inspections == 0
+
+
 def test_chat_inventory_is_redacted_before_model_request() -> None:
     class SecretBrowser(Browser):
         async def inspect_chat(self) -> str:
@@ -170,7 +257,7 @@ def test_verbose_schema_diagnostic_reports_safe_field_path_only() -> None:
     provider = Provider(decision("propose", channel=json.dumps(proposal)), decision("stop"))
 
     with pytest.raises(ChannelError):
-        run(Browser(), provider, on_progress=progress.append, max_discovery_attempts=2)
+        run(AlreadyOpenBrowser(), provider, on_progress=progress.append, max_discovery_attempts=2)
 
     diagnostic = " ".join(progress)
     assert "input_locator.strategy [literal_error]" in diagnostic
@@ -187,7 +274,7 @@ def test_invalid_channel_proposal_gets_one_bounded_correction() -> None:
         decision("propose", channel=json.dumps(candidate())),
     )
 
-    result = run(Browser(), provider, on_progress=progress.append)
+    result = run(AlreadyOpenBrowser(), provider, on_progress=progress.append)
 
     assert isinstance(result.channel, ChannelConfig)
     assert len(provider.requests) == 2
@@ -202,7 +289,7 @@ def test_invalid_channel_proposals_stop_at_configured_attempt_limit() -> None:
     invalid["input_locator"] = {"strategy": "unknown", "value": "message"}
     provider = Provider(*[decision("propose", channel=json.dumps(invalid))] * 3)
     with pytest.raises(ModelError, match="remained invalid after configured attempts"):
-        run(Browser(), provider, max_discovery_attempts=3)
+        run(AlreadyOpenBrowser(), provider, max_discovery_attempts=3)
     assert len(provider.requests) == 3
 
 
@@ -214,7 +301,7 @@ def test_stop_refreshes_snapshot_before_reconsidering(monkeypatch: Any) -> None:
 
     class DelayedBrowser(Browser):
         async def snapshot(self) -> str:
-            return OPENED
+            return ALREADY_OPEN
 
     provider = Provider(decision("stop"), decision("propose", channel=json.dumps(candidate())))
 
@@ -249,7 +336,7 @@ def test_malformed_proposal_can_be_corrected(malformed: str) -> None:
         decision("propose", channel=malformed),
         decision("propose", channel=json.dumps(candidate())),
     )
-    result = run(Browser(), provider, max_discovery_attempts=2)
+    result = run(AlreadyOpenBrowser(), provider, max_discovery_attempts=2)
     assert isinstance(result.channel, ChannelConfig)
     assert "malformed or changed the target URL" in provider.requests[1].messages[-1].content
 
@@ -306,12 +393,12 @@ def test_invalid_decisions_do_not_publish_a_candidate(bad: dict[str, str]) -> No
         run(Browser(), Provider(*decisions), max_discovery_attempts=1)
 
 
-def test_exploration_limit_prevents_unbounded_clicks() -> None:
+def test_repeated_open_action_cannot_toggle_opened_chat() -> None:
     browser = Browser()
     provider = Provider(*[decision("open_chat", target="e5", element="Open chat")] * 3)
-    with pytest.raises(ChannelError, match="limit"):
+    with pytest.raises(ChannelError, match="already clicked"):
         run(browser, provider)
-    assert len(browser.clicks) == 2
+    assert len(browser.clicks) == 1
 
 
 def test_snapshot_is_redacted_before_model_call() -> None:
@@ -360,7 +447,7 @@ def test_page_url_and_sensitive_context_never_reach_model() -> None:
 def test_bare_host_url_is_normalized_after_model_proposal() -> None:
     class HostBrowser(Browser):
         async def navigate(self, url: str) -> str:
-            return SNAPSHOT.replace(URL, url)
+            return ALREADY_OPEN.replace(URL, url)
 
     result = asyncio.run(
         explore(

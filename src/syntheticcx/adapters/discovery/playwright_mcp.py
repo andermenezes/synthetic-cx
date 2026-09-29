@@ -24,6 +24,9 @@ _CHAT_WORDS = re.compile(r"\b(chat|support|help|contact|assistant|message)\b", r
 _UNSAFE_WORDS = re.compile(
     r"\b(pay|purchase|buy|order|submit|delete|confirm|login|log in|sign in)\b", re.I
 )
+_LABELED_CONTROL = re.compile(
+    r'^\s*-\s*(button|link)\s+"([^"\n]{1,256})"[^\n]*\[ref=(e\d+)\]', re.I
+)
 
 
 class DiscoveryBrowser(Protocol):
@@ -112,6 +115,22 @@ def _check_click(snapshot: str, target: str, element: str, chat_hint: str | None
     line = matching_lines[0].lower()
     if not any(f"{kind} " in line for kind in ("button", "link")):
         raise ChannelError("discover click", "chat control must be a button or link")
+
+
+def _unique_safe_launcher(snapshot: str, chat_hint: str | None) -> tuple[str, str] | None:
+    """Select only a unique, explicitly labeled control passing the regular click guard."""
+    candidates: list[tuple[str, str]] = []
+    for line in snapshot.splitlines():
+        match = _LABELED_CONTROL.match(line)
+        if match is None:
+            continue
+        label, ref = match.group(2), match.group(3)
+        try:
+            _check_click(snapshot, ref, label, chat_hint)
+        except ChannelError:
+            continue
+        candidates.append((ref, label))
+    return candidates[0] if len(candidates) == 1 else None
 
 
 class ManagedPlaywrightMCP:
