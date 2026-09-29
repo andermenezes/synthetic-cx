@@ -5,6 +5,19 @@
   "additionalProperties": false,
   "description": "Redacted evidence snapshot; redacted values are not replayable configuration.",
   "properties": {
+    "channel_guide_source_hash": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Channel Guide Source Hash"
+    },
     "effective_config": {
       "additionalProperties": {
         "$ref": "#/$defs/JsonValue"

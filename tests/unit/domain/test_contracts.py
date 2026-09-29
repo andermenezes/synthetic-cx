@@ -159,7 +159,7 @@ def test_all_eight_event_variants_round_trip_and_reject_untyped_payloads() -> No
 
 def test_artifact_schemas_match_generated_output(tmp_path: Path) -> None:
     paths = export_schemas(tmp_path)
-    assert len(paths) == 7
+    assert len(paths) == 9
     for path in paths:
         assert path.read_text() == (Path("schemas") / path.name).read_text()
     assert json.loads((tmp_path / "conversation.schema.json").read_text())["type"] == "array"

@@ -1,0 +1,279 @@
+{
+  "$defs": {
+    "ChannelConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "assistant_message_locator": {
+          "$ref": "#/$defs/LocatorConfig"
+        },
+        "customer_message_locator": {
+          "$ref": "#/$defs/LocatorConfig"
+        },
+        "frame_locator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocatorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "input_locator": {
+          "$ref": "#/$defs/LocatorConfig"
+        },
+        "message_identity": {
+          "$ref": "#/$defs/MessageIdentityConfig"
+        },
+        "open_locator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocatorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "response_completion": {
+          "$ref": "#/$defs/ResponseCompletionConfig"
+        },
+        "send_strategy": {
+          "$ref": "#/$defs/SendStrategyConfig"
+        },
+        "type": {
+          "const": "webchat_playwright",
+          "title": "Type",
+          "type": "string"
+        },
+        "url": {
+          "format": "uri",
+          "minLength": 1,
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "url",
+        "input_locator",
+        "customer_message_locator",
+        "assistant_message_locator",
+        "message_identity",
+        "send_strategy",
+        "response_completion"
+      ],
+      "title": "ChannelConfig",
+      "type": "object"
+    },
+    "GuideValidation": {
+      "additionalProperties": false,
+      "properties": {
+        "observed_behaviors": {
+          "items": {
+            "enum": [
+              "open",
+              "send",
+              "receive",
+              "completion"
+            ],
+            "type": "string"
+          },
+          "minItems": 4,
+          "title": "Observed Behaviors",
+          "type": "array"
+        },
+        "status": {
+          "const": "verified",
+          "title": "Status",
+          "type": "string"
+        },
+        "target_origin": {
+          "format": "uri",
+          "minLength": 1,
+          "title": "Target Origin",
+          "type": "string"
+        },
+        "verified_at": {
+          "format": "date-time",
+          "title": "Verified At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "verified_at",
+        "target_origin",
+        "observed_behaviors"
+      ],
+      "title": "GuideValidation",
+      "type": "object"
+    },
+    "LocatorConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "strategy": {
+          "enum": [
+            "role",
+            "label",
+            "placeholder",
+            "text",
+            "test_id",
+            "css"
+          ],
+          "title": "Strategy",
+          "type": "string"
+        },
+        "value": {
+          "minLength": 1,
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "strategy",
+        "value"
+      ],
+      "title": "LocatorConfig",
+      "type": "object"
+    },
+    "MessageIdentityConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "attribute_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Attribute Name"
+        },
+        "strategy": {
+          "enum": [
+            "attribute",
+            "actor_sequence_content_hash"
+          ],
+          "title": "Strategy",
+          "type": "string"
+        }
+      },
+      "required": [
+        "strategy"
+      ],
+      "title": "MessageIdentityConfig",
+      "type": "object"
+    },
+    "ResponseCompletionConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "locator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocatorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "quiet_interval_seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quiet Interval Seconds"
+        },
+        "strategy": {
+          "enum": [
+            "quiet_interval",
+            "streaming_indicator_disappears",
+            "completion_locator"
+          ],
+          "title": "Strategy",
+          "type": "string"
+        }
+      },
+      "required": [
+        "strategy"
+      ],
+      "title": "ResponseCompletionConfig",
+      "type": "object"
+    },
+    "SendStrategyConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "locator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocatorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "type": {
+          "enum": [
+            "press_enter",
+            "click"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "SendStrategyConfig",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Verified channel controls imported by a referenced run document.",
+  "properties": {
+    "channel": {
+      "$ref": "#/$defs/ChannelConfig"
+    },
+    "validation": {
+      "$ref": "#/$defs/GuideValidation"
+    },
+    "version": {
+      "const": "1",
+      "title": "Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "version",
+    "channel",
+    "validation"
+  ],
+  "title": "ChannelGuide",
+  "type": "object"
+}

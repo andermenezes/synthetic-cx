@@ -147,6 +147,7 @@ async def execute_run(
     )
     config_artifact = ConfigArtifact(
         source_content_hash=loaded.source_content_hash,
+        channel_guide_source_hash=loaded.guide_source_hash,
         effective_config=sanitized_effective_config(config, resolved_secrets=secrets),
     )
     preflight = await preflight_models(config, settings)

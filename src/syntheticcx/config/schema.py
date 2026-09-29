@@ -7,7 +7,12 @@ from pathlib import Path
 
 from pydantic import TypeAdapter
 
-from syntheticcx.config.models import ProjectConfig
+from syntheticcx.config.models import (
+    ChannelGuide,
+    DiscoveryDraft,
+    ProjectConfig,
+    ReferencedProjectConfig,
+)
 from syntheticcx.domain.artifacts import (
     ConfigArtifact,
     ConversationArtifact,
@@ -22,7 +27,12 @@ def export_project_schema(destination: Path) -> Path:
     """Write the canonical project schema with stable JSON formatting."""
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(
-        json.dumps(ProjectConfig.model_json_schema(), indent=2, sort_keys=True) + "\n",
+        json.dumps(
+            TypeAdapter(ProjectConfig | ReferencedProjectConfig).json_schema(),
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
         encoding="utf-8",
     )
     return destination
@@ -37,6 +47,8 @@ def export_schemas(destination: Path) -> list[Path]:
         "evaluation": EvaluationArtifact.model_json_schema(),
         "report": Report.model_json_schema(),
         "trace-event": TypeAdapter(TypedTraceEvent).json_schema(),
+        "discovery-draft": DiscoveryDraft.model_json_schema(),
+        "channel-guide": ChannelGuide.model_json_schema(),
     }
     paths = [export_project_schema(destination / "project.schema.json")]
     for name, schema in schemas.items():

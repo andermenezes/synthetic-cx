@@ -16,10 +16,12 @@ import yaml
 from jsonschema import Draft202012Validator
 from typer.testing import CliRunner
 
+from syntheticcx import cli as cli_module
 from syntheticcx.adapters.channel.playwright import PlaywrightChannel
 from syntheticcx.adapters.llm.preflight import CapabilityPreflight
 from syntheticcx.application import run as application
 from syntheticcx.cli import app
+from syntheticcx.discovery.explore import DiscoveryCandidate
 from syntheticcx.domain.models import (
     ConversationObservation,
     CustomerScenarioContext,
@@ -206,6 +208,7 @@ def test_cli_browser_fixture_produces_explained_schema_valid_runs(
     for label, value in expected_console.items():
         assert f"{label}: {value}\n" in output.output + "\n"
     assert "offline-test-secret" not in output.output
+
     for path in directory.rglob("*"):
         if path.is_file() and path.suffix in {".json", ".jsonl", ".yaml", ".txt"}:
             assert "offline-test-secret" not in path.read_text(), path
@@ -429,3 +432,65 @@ def test_cli_fixture_channel_failure_keeps_evidence_and_closes_browser(
     assert report["errors"]
     assert "channel" in json.dumps(report["errors"])
     assert "offline-test-secret" not in output.output
+
+
+def test_discovered_guide_runs_through_normal_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only discovery exploration is doubled; verification and execution use Chromium."""
+    monkeypatch.syspath_prepend(str(EXAMPLE))
+    demo = importlib.import_module("run_demo")
+    monkeypatch.setenv("OPENAI_API_KEY", "offline-test-secret")
+
+    async def proposed(scenario: Path, url: str, **_kwargs: Any) -> DiscoveryCandidate:
+        document = yaml.safe_load(scenario.read_text())
+        channel = yaml.safe_load((EXAMPLE / "scenario.yaml").read_text())["channel"]
+        channel["url"] = url
+        assert "channel" not in document
+        return DiscoveryCandidate(channel=channel, open_steps=1)
+
+    async def preflight(*_args: Any) -> CapabilityPreflight:
+        return CapabilityPreflight()
+
+    monkeypatch.setattr(cli_module, "discover_candidate", proposed)
+    monkeypatch.setattr(application, "preflight_models", preflight)
+    monkeypatch.setattr(
+        application, "TinyTroupePersonaSimulator", lambda *_args, **_kwargs: DeterministicPersona()
+    )
+    monkeypatch.setattr(
+        application, "OpenAIProvider", lambda *_args, **_kwargs: DeterministicJudge()
+    )
+    with demo.FixtureServer() as fixture:
+        document = demo.configured_example(
+            fixture.base_url, variant="success", persona="standard", run_root=tmp_path / "runs"
+        )
+        document.pop("channel")
+        document["execution"]["greeting_grace_seconds"] = 1
+        draft = tmp_path / "draft.yaml"
+        draft.write_text(yaml.safe_dump(document))
+        guide = tmp_path / "chat-guide.yaml"
+        discovered = CliRunner().invoke(
+            app,
+            [
+                "discover",
+                str(draft),
+                "--url",
+                f"{fixture.base_url}/?variant=success",
+                "--output",
+                str(guide),
+            ],
+        )
+        assert discovered.exit_code == 0, discovered.output
+        completed = tmp_path / "draft.completed.yaml"
+        assert guide.exists() and completed.exists()
+        output = CliRunner().invoke(app, ["run", str(completed)])
+        assert output.exit_code == 0, output.output
+    directory = next((tmp_path / "runs").iterdir())
+    metadata, report = validate_artifacts(directory)
+    assert metadata["outcome"] == report["outcome"] == "passed"
+    config_artifact = yaml.safe_load((directory / "config.yaml").read_text())
+    assert (
+        config_artifact["channel_guide_source_hash"]
+        == hashlib.sha256(guide.read_bytes()).hexdigest()
+    )
+    assert "channel_guide" not in config_artifact["effective_config"]

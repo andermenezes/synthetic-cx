@@ -751,6 +751,92 @@
       "title": "PrivacyConfig",
       "type": "object"
     },
+    "ProjectConfig": {
+      "additionalProperties": false,
+      "description": "Fully resolved configuration consumed by the existing run pipeline.",
+      "properties": {
+        "channel": {
+          "$ref": "#/$defs/ChannelConfig"
+        },
+        "evaluation_model": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "openai": "#/$defs/OpenAIModelConfig",
+                  "openai_compatible": "#/$defs/OpenAICompatibleModelConfig"
+                },
+                "propertyName": "provider"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/OpenAIModelConfig"
+                },
+                {
+                  "$ref": "#/$defs/OpenAICompatibleModelConfig"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evaluation Model"
+        },
+        "execution": {
+          "$ref": "#/$defs/ExecutionLimits"
+        },
+        "model": {
+          "discriminator": {
+            "mapping": {
+              "openai": "#/$defs/OpenAIModelConfig",
+              "openai_compatible": "#/$defs/OpenAICompatibleModelConfig"
+            },
+            "propertyName": "provider"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/OpenAIModelConfig"
+            },
+            {
+              "$ref": "#/$defs/OpenAICompatibleModelConfig"
+            }
+          ],
+          "title": "Model"
+        },
+        "persona": {
+          "$ref": "#/$defs/PersonaConfig"
+        },
+        "privacy": {
+          "$ref": "#/$defs/PrivacyConfig"
+        },
+        "scenario": {
+          "$ref": "#/$defs/ScenarioConfig"
+        },
+        "storage": {
+          "$ref": "#/$defs/StorageConfig"
+        },
+        "telemetry": {
+          "$ref": "#/$defs/TelemetryConfig"
+        },
+        "version": {
+          "const": "1",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "scenario",
+        "persona",
+        "execution",
+        "model",
+        "channel"
+      ],
+      "title": "ProjectConfig",
+      "type": "object"
+    },
     "ProviderCapabilities": {
       "additionalProperties": false,
       "properties": {
@@ -783,6 +869,95 @@
         "model_version"
       ],
       "title": "ProviderCapabilities",
+      "type": "object"
+    },
+    "ReferencedProjectConfig": {
+      "additionalProperties": false,
+      "description": "Run document with exactly one local channel-guide reference.",
+      "properties": {
+        "channel_guide": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Channel Guide",
+          "type": "string"
+        },
+        "evaluation_model": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "openai": "#/$defs/OpenAIModelConfig",
+                  "openai_compatible": "#/$defs/OpenAICompatibleModelConfig"
+                },
+                "propertyName": "provider"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/OpenAIModelConfig"
+                },
+                {
+                  "$ref": "#/$defs/OpenAICompatibleModelConfig"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evaluation Model"
+        },
+        "execution": {
+          "$ref": "#/$defs/ExecutionLimits"
+        },
+        "model": {
+          "discriminator": {
+            "mapping": {
+              "openai": "#/$defs/OpenAIModelConfig",
+              "openai_compatible": "#/$defs/OpenAICompatibleModelConfig"
+            },
+            "propertyName": "provider"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/OpenAIModelConfig"
+            },
+            {
+              "$ref": "#/$defs/OpenAICompatibleModelConfig"
+            }
+          ],
+          "title": "Model"
+        },
+        "persona": {
+          "$ref": "#/$defs/PersonaConfig"
+        },
+        "privacy": {
+          "$ref": "#/$defs/PrivacyConfig"
+        },
+        "scenario": {
+          "$ref": "#/$defs/ScenarioConfig"
+        },
+        "storage": {
+          "$ref": "#/$defs/StorageConfig"
+        },
+        "telemetry": {
+          "$ref": "#/$defs/TelemetryConfig"
+        },
+        "version": {
+          "const": "1",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "scenario",
+        "persona",
+        "execution",
+        "model",
+        "channel_guide"
+      ],
+      "title": "ReferencedProjectConfig",
       "type": "object"
     },
     "ResponseCompletionConfig": {
@@ -1014,87 +1189,12 @@
       "type": "object"
     }
   },
-  "additionalProperties": false,
-  "properties": {
-    "channel": {
-      "$ref": "#/$defs/ChannelConfig"
+  "anyOf": [
+    {
+      "$ref": "#/$defs/ProjectConfig"
     },
-    "evaluation_model": {
-      "anyOf": [
-        {
-          "discriminator": {
-            "mapping": {
-              "openai": "#/$defs/OpenAIModelConfig",
-              "openai_compatible": "#/$defs/OpenAICompatibleModelConfig"
-            },
-            "propertyName": "provider"
-          },
-          "oneOf": [
-            {
-              "$ref": "#/$defs/OpenAIModelConfig"
-            },
-            {
-              "$ref": "#/$defs/OpenAICompatibleModelConfig"
-            }
-          ]
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Evaluation Model"
-    },
-    "execution": {
-      "$ref": "#/$defs/ExecutionLimits"
-    },
-    "model": {
-      "discriminator": {
-        "mapping": {
-          "openai": "#/$defs/OpenAIModelConfig",
-          "openai_compatible": "#/$defs/OpenAICompatibleModelConfig"
-        },
-        "propertyName": "provider"
-      },
-      "oneOf": [
-        {
-          "$ref": "#/$defs/OpenAIModelConfig"
-        },
-        {
-          "$ref": "#/$defs/OpenAICompatibleModelConfig"
-        }
-      ],
-      "title": "Model"
-    },
-    "persona": {
-      "$ref": "#/$defs/PersonaConfig"
-    },
-    "privacy": {
-      "$ref": "#/$defs/PrivacyConfig"
-    },
-    "scenario": {
-      "$ref": "#/$defs/ScenarioConfig"
-    },
-    "storage": {
-      "$ref": "#/$defs/StorageConfig"
-    },
-    "telemetry": {
-      "$ref": "#/$defs/TelemetryConfig"
-    },
-    "version": {
-      "const": "1",
-      "title": "Version",
-      "type": "string"
+    {
+      "$ref": "#/$defs/ReferencedProjectConfig"
     }
-  },
-  "required": [
-    "version",
-    "scenario",
-    "persona",
-    "channel",
-    "execution",
-    "model"
-  ],
-  "title": "ProjectConfig",
-  "type": "object"
+  ]
 }

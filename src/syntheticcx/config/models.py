@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from pydantic import (
     AnyHttpUrl,
+    AwareDatetime,
     BaseModel,
     ConfigDict,
     Field,
@@ -401,11 +402,12 @@ class PrivacyConfig(StrictModel):
         return patterns
 
 
-class ProjectConfig(StrictModel):
+class ProjectSettings(StrictModel):
+    """Fields shared by inline runs, referenced runs, and discovery drafts."""
+
     version: Literal["1"]
     scenario: ScenarioConfig
     persona: PersonaConfig
-    channel: ChannelConfig
     execution: ExecutionLimits
     model: ModelConfig
     evaluation_model: ModelConfig | None = None
@@ -414,7 +416,7 @@ class ProjectConfig(StrictModel):
     privacy: PrivacyConfig = Field(default_factory=PrivacyConfig)
 
     @model_validator(mode="after")
-    def validate_capture_policy(self) -> ProjectConfig:
+    def validate_capture_policy(self) -> ProjectSettings:
         if self.storage.store_screenshots and not self.privacy.allow_screenshots:
             raise ValueError("storage cannot enable screenshots forbidden by privacy")
         if self.storage.store_screenshots and not self.privacy.confirm_screenshot_target_safe:
@@ -424,7 +426,7 @@ class ProjectConfig(StrictModel):
         return self
 
     @model_validator(mode="after")
-    def validate_criteria_limits(self) -> ProjectConfig:
+    def validate_criteria_limits(self) -> ProjectSettings:
         for criterion in self.scenario.success_criteria:
             if (
                 criterion.evaluator_type == "turn_count"
@@ -439,6 +441,61 @@ class ProjectConfig(StrictModel):
     def effective_evaluation_model(self) -> OpenAIModelConfig | OpenAICompatibleModelConfig:
         """Return the inherited persona model when no separate evaluator model is configured."""
         return self.evaluation_model or self.model
+
+
+class ProjectConfig(ProjectSettings):
+    """Fully resolved configuration consumed by the existing run pipeline."""
+
+    channel: ChannelConfig
+
+
+class ReferencedProjectConfig(ProjectSettings):
+    """Run document with exactly one local channel-guide reference."""
+
+    channel_guide: str = Field(min_length=1, pattern=r"\S")
+
+
+class DiscoveryDraft(ProjectSettings):
+    """Scenario and model settings validated without channel controls."""
+
+
+class GuideValidation(StrictModel):
+    status: Literal["verified"]
+    verified_at: AwareDatetime
+    target_origin: AnyHttpUrl
+    observed_behaviors: list[Literal["open", "send", "receive", "completion"]] = Field(min_length=4)
+
+    @model_validator(mode="after")
+    def validate_behaviors(self) -> GuideValidation:
+        if set(self.observed_behaviors) != {"open", "send", "receive", "completion"}:
+            raise ValueError("guide must verify open, send, receive, and completion")
+        return self
+
+
+class ChannelGuide(StrictModel):
+    """Verified channel controls imported by a referenced run document."""
+
+    version: Literal["1"]
+    channel: ChannelConfig
+    validation: GuideValidation
+
+    @model_validator(mode="after")
+    def validate_origin(self) -> ChannelGuide:
+        target = urlsplit(str(self.channel.url))
+        origin = urlsplit(str(self.validation.target_origin))
+        if (
+            (target.scheme, target.hostname, target.port)
+            != (
+                origin.scheme,
+                origin.hostname,
+                origin.port,
+            )
+            or origin.path not in {"", "/"}
+            or origin.query
+            or origin.fragment
+        ):
+            raise ValueError("validation.target_origin must match channel.url origin")
+        return self
 
 
 class ResolvedModelSettings(StrictModel):

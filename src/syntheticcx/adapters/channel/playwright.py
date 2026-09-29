@@ -72,6 +72,11 @@ class PlaywrightChannel:
         self._submission_uncertain = False
         self._submission_count = 0
 
+    @property
+    def current_url(self) -> str | None:
+        """Observed page URL, without exposing Playwright's page object."""
+        return self._page.url if self._page is not None else None
+
     async def _snapshot(self, actor: Actor) -> list[Bubble]:
         scope = self._scope
         if scope is None:

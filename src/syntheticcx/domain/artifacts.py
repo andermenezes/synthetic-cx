@@ -72,4 +72,5 @@ class ConfigArtifact(DomainModel):
     """Redacted evidence snapshot; redacted values are not replayable configuration."""
 
     source_content_hash: Identifier
+    channel_guide_source_hash: Identifier | None = None
     effective_config: JsonObject

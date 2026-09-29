@@ -32,6 +32,9 @@ dependencies = [
 
 [project.optional-dependencies]
 telemetry = ["opentelemetry-exporter-otlp==1.44.0"]
+discovery = [
+    "mcp==1.12.4",
+]
 
 [dependency-groups]
 dev = [

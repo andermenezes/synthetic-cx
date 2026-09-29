@@ -1,0 +1,100 @@
+"""Verify candidate controls with a fresh native Playwright browser."""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Callable
+from datetime import UTC, datetime
+from urllib.parse import urlsplit
+
+from syntheticcx.adapters.channel.playwright import PlaywrightChannel
+from syntheticcx.config.models import ChannelGuide, ExecutionLimits, GuideValidation
+from syntheticcx.discovery.explore import DiscoveryCandidate
+from syntheticcx.errors import ChannelError
+
+
+def _origin(url: str) -> str:
+    parsed = urlsplit(url)
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _require_target_origin(channel: PlaywrightChannel, expected: str) -> None:
+    actual = channel.current_url
+    if actual is None or _origin(actual) != expected:
+        raise ChannelError("discover navigation", "browser left the selected target origin")
+
+
+async def verify_candidate(
+    candidate: DiscoveryCandidate,
+    limits: ExecutionLimits,
+    probe_message: str,
+    *,
+    on_progress: Callable[[str], None] | None = None,
+) -> ChannelGuide:
+    """Exercise the precise candidate that later runs will consume."""
+    if not probe_message.strip():
+        raise ChannelError("discover probe", "synthetic probe cannot be blank")
+    channel = PlaywrightChannel(candidate.channel, limits)
+    failed: BaseException | None = None
+    try:
+        if on_progress is not None:
+            on_progress("starting fresh native Playwright verification browser (headless)")
+        await asyncio.wait_for(channel.start(), limits.browser_action_timeout_seconds)
+        expected_origin = _origin(str(candidate.channel.url))
+        _require_target_origin(channel, expected_origin)
+        if limits.greeting_grace_seconds > 0:
+            if on_progress is not None:
+                on_progress("waiting briefly for an optional assistant greeting")
+            try:
+                await asyncio.wait_for(channel.receive(), limits.greeting_grace_seconds)
+            except TimeoutError:
+                pass
+            except ChannelError as error:
+                if (
+                    error.operation != "channel.receive"
+                    or error.message != "assistant response timed out"
+                ):
+                    raise
+        # A late greeting can look like a response to the first probe. A second
+        # independent submission must also complete before the controls are trusted.
+        probes = (probe_message, "Synthetic test: please confirm the chat is responsive.")
+        for index, message in enumerate(probes, start=1):
+            _require_target_origin(channel, expected_origin)
+            if on_progress is not None:
+                on_progress(f"sending synthetic verification probe {index}/{len(probes)}")
+            await asyncio.wait_for(channel.send(message), limits.browser_action_timeout_seconds)
+            response = await asyncio.wait_for(channel.receive(), limits.response_timeout_seconds)
+            _require_target_origin(channel, expected_origin)
+            if not response.messages or any(not item.content.strip() for item in response.messages):
+                raise ChannelError("discover probe", "assistant response is incomplete")
+            if on_progress is not None:
+                on_progress(
+                    f"completed assistant response received for probe {index}/{len(probes)}"
+                )
+        _require_target_origin(channel, expected_origin)
+        if on_progress is not None:
+            on_progress("native channel verification passed")
+        return ChannelGuide(
+            version="1",
+            channel=candidate.channel,
+            validation=GuideValidation(
+                status="verified",
+                verified_at=datetime.now(UTC),
+                target_origin=_origin(str(candidate.channel.url)),
+                observed_behaviors=["open", "send", "receive", "completion"],
+            ),
+        )
+    except TimeoutError:
+        failed = ChannelError("discover probe", "native channel verification timed out")
+        raise failed from None
+    except BaseException as exc:
+        failed = exc
+        raise
+    finally:
+        if on_progress is not None:
+            on_progress("closing native verification browser")
+        try:
+            await asyncio.wait_for(channel.close(), limits.close_timeout_seconds)
+        except Exception:
+            if failed is None:
+                raise ChannelError("discover cleanup", "browser cleanup failed") from None
