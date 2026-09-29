@@ -22,8 +22,13 @@ jobs:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
 
+      - name: Install Node.js for discovery smoke tests
+        uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
+        with:
+          node-version: "22"
+
       - name: Install locked dependencies
-        run: uv sync --locked --group dev
+        run: uv sync --locked --group dev --extra discovery
 
       - name: Install matching Playwright Chromium and Linux dependencies
         run: uv run --no-sync playwright install --with-deps chromium
@@ -53,6 +58,11 @@ jobs:
           --deselect=tests/unit/config/test_phase2a.py::test_loads_the_canonical_example
           --deselect=tests/unit/config/test_validation.py::test_checked_in_schema_matches_generated_contract
           --deselect=tests/unit/domain/test_contracts.py::test_artifact_schemas_match_generated_output
+
+      - name: Smoke-test managed Playwright MCP discovery
+        env:
+          SYNTHETICCX_RUN_MCP_SMOKE: "1"
+        run: uv run --no-sync pytest -q tests/smoke/test_playwright_mcp.py
 
       - name: Build distributions
         run: uv build --clear --out-dir "$RUNNER_TEMP/syntheticcx-dist"
