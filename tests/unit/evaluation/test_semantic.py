@@ -110,6 +110,51 @@ def evaluate(evaluator: SemanticGoalEvaluator, evaluation: EvaluationContext):
     return asyncio.run(evaluator.evaluate(evaluation))
 
 
+def test_semantic_evidence_distinguishes_offered_options_from_customer_selection():
+    provider = FakeProvider(verdict(passed=False, explanation="Only a menu choice was made."))
+    evaluator = SemanticGoalEvaluator(
+        provider, Redactor(PrivacyConfig(), resolved_secrets=["secret-123"])
+    )
+    reply = observed(1, "assistant", "")
+    reply = reply.model_copy(
+        update={
+            "data": reply.data.model_copy(
+                update={
+                    "message": Message.model_validate(
+                        {
+                            **reply.data.message.model_dump(),
+                            "options": [
+                                {"id": "opaque-option", "label": "Information about secret-123"}
+                            ],
+                        }
+                    ),
+                }
+            )
+        }
+    )
+    choice = observed(2, "customer", "Information about secret-123")
+    choice = choice.model_copy(
+        update={
+            "data": choice.data.model_copy(
+                update={
+                    "message": choice.data.message.model_copy(
+                        update={"metadata": {"action_kind": "select_option"}}
+                    ),
+                }
+            )
+        }
+    )
+    result = evaluate(evaluator, context(reply, choice))
+    assert result.status == "failed"
+    prompt = provider.requests[0].messages[1].content
+    assert "secret-123" not in prompt
+    transcript = json.loads(prompt)["transcript"]
+    assert transcript[0]["content"] == ""
+    assert transcript[0]["options"] and "action_kind" not in transcript[0]
+    assert transcript[1]["action_kind"] == "select_option"
+    assert "options" not in transcript[1]
+
+
 def test_boolean_judgment_keeps_expected_facts_out_of_persona_and_redacts_prompt() -> None:
     provider = FakeProvider(verdict(explanation="A secret-123 plan change was explained."))
     redactor = Redactor(PrivacyConfig(), resolved_secrets=["secret-123"])

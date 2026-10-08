@@ -6,14 +6,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, TypeVar, cast
+from typing import Any, TypeVar, cast, overload
 
 import yaml
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from syntheticcx.config.models import (
-    ChannelGuide,
     DiscoveryDraft,
+    InterfaceChannelGuide,
     ProjectConfig,
     ReferencedProjectConfig,
 )
@@ -29,9 +29,7 @@ class LoadedConfig:
     guide_source_hash: str | None = None
 
 
-ConfigType = TypeVar(
-    "ConfigType", ProjectConfig, ReferencedProjectConfig, DiscoveryDraft, ChannelGuide
-)
+ConfigType = TypeVar("ConfigType")
 
 
 def _read_text(path: Path, operation: str) -> tuple[str, bytes]:
@@ -52,14 +50,35 @@ def _parse_mapping(source: str) -> Mapping[str, Any]:
     return cast(Mapping[str, Any], document)
 
 
-def _validate(document: Mapping[str, Any], model: type[ConfigType]) -> ConfigType:
+@overload
+def _validate(document: Mapping[str, Any], model: type[ConfigType]) -> ConfigType: ...
+
+
+@overload
+def _validate(document: Mapping[str, Any], model: object) -> Any: ...
+
+
+def _validate(document: Mapping[str, Any], model: Any) -> Any:
     try:
-        return cast(ConfigType, model.model_validate(document))
+        return TypeAdapter(model).validate_python(document)
     except ValidationError as error:
         details = error.errors(include_url=False, include_input=False, include_context=False)
         messages = []
         for detail in details:
-            location = ".".join(str(part) for part in detail["loc"]) or "configuration"
+            parts = list(detail["loc"])
+            # Keep legacy field paths stable despite the new tagged unions.
+            if (
+                len(parts) > 1
+                and parts[0] == "channel"
+                and parts[1] in {"webchat_playwright", "webchat_playwright_stateful"}
+            ):
+                parts.pop(1)
+            if detail["type"] in {"union_tag_invalid", "union_tag_not_found"}:
+                if parts == ["channel"]:
+                    parts.append("type")
+                elif not parts and model is InterfaceChannelGuide:
+                    parts.append("version")
+            location = ".".join(str(part) for part in parts) or "configuration"
             # Union-tag diagnostics include the supplied value in their message.
             message = (
                 "Unsupported or missing discriminator"
@@ -88,7 +107,7 @@ def load_config_with_source_hash(path: Path) -> LoadedConfig:
     if not location.is_file():
         raise ConfigurationError("resolve channel guide", "channel_guide must name a local file")
     guide_text, guide_source = _read_text(location, "read channel guide")
-    guide = _validate(_parse_mapping(guide_text), ChannelGuide)
+    guide = _validate(_parse_mapping(guide_text), InterfaceChannelGuide)
     resolved = _validate(
         {
             **reference.model_dump(mode="json", exclude={"channel_guide"}),

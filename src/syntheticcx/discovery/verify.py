@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 from syntheticcx.adapters.channel.playwright import PlaywrightChannel
 from syntheticcx.config.models import ChannelGuide, ExecutionLimits, GuideValidation
 from syntheticcx.discovery.explore import DiscoveryCandidate
+from syntheticcx.domain.models import SelectionReceipt
 from syntheticcx.errors import ChannelError
 from syntheticcx.language import Language, require_language, second_probe
 
@@ -44,6 +45,7 @@ async def verify_candidate(
         else PlaywrightChannel(candidate.channel, limits)
     )
     failed: BaseException | None = None
+    stage = "startup"
     try:
         if on_progress is not None:
             mode = "headed" if headed else "headless"
@@ -74,23 +76,51 @@ async def verify_candidate(
                     or error.message != "assistant response timed out"
                 ):
                     raise
-        # A late greeting can look like a response to the first probe. A second
-        # independent submission must also complete before the controls are trusted.
+        # A late greeting can look like a response to the first probe. Require a
+        # second independent interaction: one current guarded option, or text.
         probes = (probe_message, second_probe(language))
+        next_option_id: str | None = None
+        next_option_source: str | None = None
+        selected_option = False
         for index, message in enumerate(probes, start=1):
             _require_target_origin(channel, expected_origin)
-            if on_progress is not None:
-                on_progress(f"sending synthetic verification probe {index}/{len(probes)}")
-            receipt = await asyncio.wait_for(
-                channel.send(message, on_progress=on_progress)
-                if on_progress is not None
-                else channel.send(message),
-                limits.browser_action_timeout_seconds,
-            )
+            if index == 2 and next_option_id is not None:
+                stage = "select_option"
+                if on_progress is not None:
+                    on_progress("selecting one guarded informational option for verification 2/2")
+                # IDs are issued by the native guard for this exact current reply.
+                # Any failure is terminal, never a reason to try another ID or text.
+                receipt = await asyncio.wait_for(
+                    channel.select_option(next_option_id), limits.browser_action_timeout_seconds
+                )
+                if (
+                    not isinstance(receipt, SelectionReceipt)
+                    or receipt.selected_option_id != next_option_id
+                    or receipt.source_message_id != next_option_source
+                ):
+                    raise ChannelError("discover probe", "guarded option receipt is inconsistent")
+                selected_option = True
+            else:
+                stage = "send"
+                if on_progress is not None:
+                    if index == 2:
+                        on_progress(
+                            "no guarded options in latest reply; using second text probe"
+                            if candidate.channel.reply_options is not None
+                            else "reply options not configured; using second text probe"
+                        )
+                    on_progress(f"sending synthetic verification probe {index}/{len(probes)}")
+                receipt = await asyncio.wait_for(
+                    channel.send(message, on_progress=on_progress)
+                    if on_progress is not None
+                    else channel.send(message),
+                    limits.browser_action_timeout_seconds,
+                )
             if on_progress is not None:
                 on_progress(
                     f"customer echo {receipt.evidence['echo']} after probe {index}/{len(probes)}"
                 )
+            stage = "receive"
             response = await asyncio.wait_for(
                 channel.receive(on_progress=on_progress)
                 if on_progress is not None
@@ -98,8 +128,15 @@ async def verify_candidate(
                 limits.response_timeout_seconds,
             )
             _require_target_origin(channel, expected_origin)
-            if not response.messages or any(not item.content.strip() for item in response.messages):
+            if not response.messages or any(
+                not item.content.strip() and not getattr(item, "options", [])
+                for item in response.messages
+            ):
                 raise ChannelError("discover probe", "assistant response is incomplete")
+            if index == 1 and candidate.channel.reply_options is not None:
+                options = getattr(response.messages[-1], "options", [])
+                next_option_id = options[0].id if options else None
+                next_option_source = response.messages[-1].id if options else None
             if on_progress is not None:
                 on_progress(
                     f"completed assistant response received for probe {index}/{len(probes)}"
@@ -114,11 +151,31 @@ async def verify_candidate(
                 status="verified",
                 verified_at=datetime.now(UTC),
                 target_origin=_origin(str(candidate.channel.url)),
-                observed_behaviors=["open", "send", "receive", "completion"],
+                observed_behaviors=["open", "send", "receive", "completion"]
+                + (["select_option"] if selected_option else []),
             ),
         )
-    except TimeoutError:
-        failed = ChannelError("discover probe", "native channel verification timed out")
+    except (TimeoutError, ChannelError) as error:
+        if isinstance(error, ChannelError) and not (
+            stage == "receive"
+            and error.operation == "channel.receive"
+            and error.message == "assistant response timed out"
+        ):
+            failed = error
+            raise
+        message = "native channel verification timed out"
+        if stage == "select_option":
+            message = "guarded option verification timed out; action not retried"
+        if stage == "receive":
+            message = (
+                "assistant reply attached but completion was not observed before response deadline"
+                if channel.response_bubble_attached
+                else "assistant message locator did not observe a new bubble "
+                "before response deadline"
+            )
+            if on_progress is not None:
+                on_progress(message)
+        failed = ChannelError("discover probe", message)
         raise failed from None
     except BaseException as exc:
         failed = exc

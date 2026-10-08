@@ -9,12 +9,15 @@ from pydantic import AfterValidator, AwareDatetime, BaseModel, ConfigDict, Field
 
 from syntheticcx.config.models import (
     JsonObject,
+    ObservationTopic,
     PersonaConfig,
+    PersonaDescription,
     PersonaStateConfig,
     ProviderCapabilities,
     ScenarioConfig,
 )
-from syntheticcx.errors import ErrorCategory
+from syntheticcx.errors import ChannelFailureReason, ErrorCategory, ModelFailureReason
+from syntheticcx.language import Language
 
 Identifier = Annotated[str, Field(min_length=1)]
 UtcDatetime = Annotated[AwareDatetime, AfterValidator(lambda value: value.astimezone(UTC))]
@@ -48,6 +51,7 @@ class CustomerScenarioContext(DomainModel):
     goal: str
     starting_context: JsonObject
     knowledge: JsonObject
+    action_authorizations: list[JsonObject] = Field(default_factory=list)
 
     @classmethod
     def from_scenario(cls, scenario: ScenarioConfig) -> CustomerScenarioContext:
@@ -56,7 +60,18 @@ class CustomerScenarioContext(DomainModel):
             goal=scenario.goal,
             starting_context=scenario.model_copy(deep=True).starting_context,
             knowledge=scenario.model_copy(deep=True).knowledge,
+            action_authorizations=[
+                authorization.model_dump(mode="json")
+                for authorization in scenario.action_authorizations
+            ],
         )
+
+
+class ReplyOption(DomainModel):
+    """An adapter-owned opaque choice; no executable browser target crosses this seam."""
+
+    id: Identifier
+    label: str = Field(min_length=1, pattern=r"\S")
 
 
 class Message(DomainModel):
@@ -66,12 +81,28 @@ class Message(DomainModel):
     content: str
     observed_at: UtcDatetime
     metadata: JsonObject = Field(default_factory=dict)
+    options: list[ReplyOption] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_options(self) -> Message:
+        if self.options and self.actor != "assistant":
+            raise ValueError("reply options belong to assistant messages only")
+        ids = [option.id for option in self.options]
+        if len(ids) != len(set(ids)):
+            raise ValueError("reply option IDs must be unique")
+        return self
 
 
 class SendReceipt(DomainModel):
     message_id: Identifier
     submitted_at: UtcDatetime
     evidence: JsonObject = Field(default_factory=dict)
+
+
+class SelectionReceipt(SendReceipt):
+    selected_option_id: Identifier
+    selected_label: str = Field(min_length=1, pattern=r"\S")
+    source_message_id: Identifier
 
 
 class CompletedResponse(DomainModel):
@@ -98,9 +129,34 @@ class CompletedResponse(DomainModel):
         return self
 
 
+class ConversationCapabilities(DomainModel):
+    """Current customer controls, independent of historical assistant evidence."""
+
+    text_available: bool = True
+    options: list[ReplyOption] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_options(self) -> ConversationCapabilities:
+        ids = [option.id for option in self.options]
+        if len(ids) != len(set(ids)):
+            raise ValueError("current option IDs must be unique")
+        return self
+
+
 class ConversationObservation(DomainModel):
     kind: Literal["conversation_started", "assistant_response"]
     messages: list[Message] = Field(default_factory=list)
+    capabilities: ConversationCapabilities | None = None
+
+    @property
+    def text_available(self) -> bool:
+        return self.capabilities.text_available if self.capabilities is not None else True
+
+    @property
+    def current_options(self) -> list[ReplyOption]:
+        if self.capabilities is not None:
+            return self.capabilities.options
+        return self.messages[-1].options if self.messages else []
 
     @model_validator(mode="after")
     def validate_observation(self) -> ConversationObservation:
@@ -122,16 +178,22 @@ class PersonaStateTransition(DomainModel):
 
 class PersonaAction(DomainModel):
     message: str | None = None
+    selected_option_id: Identifier | None = None
     state: PersonaState
     signal: Literal["continue", "goal_believed_complete", "abandon"]
     transitions: list[PersonaStateTransition] = Field(default_factory=list)
+    discarded_action_count: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def validate_action(self) -> PersonaAction:
         if self.message is not None and not self.message.strip():
             raise ValueError("customer message cannot be blank")
-        if self.signal != "continue" and self.message is not None:
-            raise ValueError("terminal actions cannot send another message")
+        if self.message is not None and self.selected_option_id is not None:
+            raise ValueError("text and option selection are mutually exclusive")
+        if self.signal != "continue" and (
+            self.message is not None or self.selected_option_id is not None
+        ):
+            raise ValueError("terminal actions cannot send another message or select an option")
         if (self.signal == "abandon") != self.state.abandoned:
             raise ValueError("abandonment signal must agree with state")
         return self
@@ -207,6 +269,7 @@ class ErrorDetail(DomainModel):
     message: str
     retryable: bool = False
     causal_event_id: Identifier | None = None
+    reason_code: ChannelFailureReason | ModelFailureReason | None = None
 
 
 class RunOwner(DomainModel):
@@ -239,6 +302,69 @@ class RunMetadata(DomainModel):
     owner: RunOwner
 
 
+class TopicImpression(DomainModel):
+    topic_id: Identifier
+    status: Literal["observed", "not_observed"]
+    impression: PersonaDescription
+    evidence_message_ids: list[Identifier] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="after")
+    def validate_evidence(self) -> TopicImpression:
+        if (self.status == "observed") != bool(self.evidence_message_ids):
+            raise ValueError("observed impressions require evidence; not_observed forbids it")
+        if len(self.evidence_message_ids) != len(set(self.evidence_message_ids)):
+            raise ValueError("duplicate feedback evidence")
+        return self
+
+
+class PersonaFeedbackResponse(DomainModel):
+    summary: str = Field(min_length=1, max_length=4000, pattern=r"\S")
+    topics: list[TopicImpression] = Field(min_length=1, max_length=10)
+
+
+class PersonaReflectionRequest(DomainModel):
+    topics: list[ObservationTopic] = Field(min_length=1, max_length=10)
+    language: Language
+    final_state: PersonaState
+    messages: list[Message] = Field(max_length=100)
+    partial_experience: bool
+    experience_truncated: bool = False
+
+
+class PersonaFeedback(DomainModel):
+    status: Literal["available", "unavailable"]
+    language: Language
+    topics: list[ObservationTopic] = Field(min_length=1, max_length=10)
+    partial_experience: bool
+    experience_truncated: bool = False
+    response: PersonaFeedbackResponse | None = None
+    reason: (
+        Literal[
+            "cancelled",
+            "no_experience",
+            "unsupported",
+            "persona_unavailable",
+            "reflection_failed",
+            "reflection_timeout",
+            "invalid_feedback",
+        ]
+        | None
+    ) = None
+
+    @model_validator(mode="after")
+    def validate_status(self) -> PersonaFeedback:
+        if self.status == "available":
+            if self.response is None or self.reason is not None:
+                raise ValueError("available feedback requires a response and no reason")
+            requested = [topic.id for topic in self.topics]
+            actual = [topic.topic_id for topic in self.response.topics]
+            if len(actual) != len(set(actual)) or set(actual) != set(requested):
+                raise ValueError("feedback must cover each requested topic once")
+        elif self.response is not None or self.reason is None:
+            raise ValueError("unavailable feedback requires a reason and no response")
+        return self
+
+
 class Report(DomainModel):
     run_id: str
     outcome: Literal["passed", "failed", "error", "cancelled"] | None = None
@@ -252,3 +378,5 @@ class Report(DomainModel):
     artifact_location: str
     artifacts: list[ArtifactRecord] = Field(default_factory=list)
     omissions: list[str] = Field(default_factory=list)
+    persona_feedback: PersonaFeedback | None = None
+    conversation_duration_seconds: float | None = Field(default=None, ge=0)

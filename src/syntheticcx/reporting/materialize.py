@@ -18,6 +18,7 @@ from syntheticcx.domain.events import (
     ArtifactRecordedEvent,
     EvaluationCompletedEvent,
     MessageObservedEvent,
+    PersonaFeedbackRecordedEvent,
     RepeatedInformationEvent,
     RunLifecycleEvent,
     TypedTraceEvent,
@@ -77,6 +78,7 @@ def build_projections(
     result_criterion_ids: list[str] = []
     turn_count = 0
     repetition_count = 0
+    feedback = None
 
     for event in events:
         if isinstance(event, MessageObservedEvent):
@@ -89,6 +91,18 @@ def build_projections(
             messages.append(message.model_copy(deep=True))
             if message.actor == "customer":
                 turn_count += 1
+        elif isinstance(event, PersonaFeedbackRecordedEvent):
+            if feedback is not None:
+                raise PersistenceError("materialize evidence", "multiple feedback events")
+            feedback = event.data
+            if feedback.response and any(
+                ref not in message_ids
+                for topic in feedback.response.topics
+                for ref in topic.evidence_message_ids
+            ):
+                raise PersistenceError(
+                    "materialize evidence", "feedback references uncommitted messages"
+                )
         elif isinstance(event, RepeatedInformationEvent):
             repetition_count += 1
         elif isinstance(event, EvaluationCompletedEvent):
@@ -246,6 +260,23 @@ def _build_report(
         artifact_location=artifact_location,
         artifacts=[artifact.model_copy(deep=True) for artifact in artifacts],
         omissions=omissions,
+        persona_feedback=next(
+            (
+                event.data.model_copy(deep=True)
+                for event in events
+                if isinstance(event, PersonaFeedbackRecordedEvent)
+            ),
+            None,
+        ),
+        conversation_duration_seconds=next(
+            (
+                event.data.conversation_duration_seconds
+                for event in events
+                if isinstance(event, RunLifecycleEvent)
+                and event.data.conversation_duration_seconds is not None
+            ),
+            None,
+        ),
     )
 
 

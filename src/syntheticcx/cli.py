@@ -10,11 +10,11 @@ from pydantic import AnyHttpUrl, TypeAdapter, ValidationError
 from syntheticcx import __version__
 from syntheticcx.application.run import execute_run
 from syntheticcx.config.loader import load_discovery_draft
+from syntheticcx.discovery.hints import launcher_id
 from syntheticcx.discovery.publish import publish_guide
-from syntheticcx.discovery.run import discover_candidate
-from syntheticcx.discovery.verify import verify_candidate
+from syntheticcx.discovery.run import discover_guide
 from syntheticcx.errors import ConfigurationError, SyntheticCXError
-from syntheticcx.language import first_probe, require_language
+from syntheticcx.language import require_language
 from syntheticcx.reporting.console import render_partial, render_report
 
 app = typer.Typer(
@@ -49,7 +49,7 @@ def discover(
     probe_message: str | None = typer.Option(
         None,
         "--probe-message",
-        help="Override the first localized synthetic verification probe.",
+        help="Explicit text probe override, kept in memory for learning and exact replay.",
     ),
     language: str | None = typer.Option(
         None, "--language", help="Customer-facing language: en-US or pt-BR."
@@ -60,19 +60,19 @@ def discover(
     headed: bool = typer.Option(
         False,
         "--headed",
-        help="Show both MCP exploration and fresh native verification browsers.",
+        help="Show native learning and fresh recipe-replay browsers.",
     ),
     chat_hint: str | None = typer.Option(
         None,
         "--chat-hint",
-        help="Visible chat-button or hover-tooltip text to look for.",
+        help="Visible chat-button/tooltip text, or id=<DOM-ID> for an explicit launcher button.",
     ),
     max_discovery_attempts: int = typer.Option(
         3,
         "--max-discovery-attempts",
         min=1,
         max=5,
-        help="Model decisions per exploration snapshot (1–5; does not retry verification).",
+        help="Corrections per discovery decision (1–5); never retries conversational actions.",
     ),
     verbose: bool = typer.Option(
         False,
@@ -89,7 +89,9 @@ def discover(
         if verbose:
             progress("validating draft and command options")
         draft = load_discovery_draft(scenario)
-        TypeAdapter(AnyHttpUrl).validate_python(url)
+        target_url = TypeAdapter(AnyHttpUrl).validate_python(url)
+        if target_url.username is not None or target_url.password is not None:
+            raise ConfigurationError("discover URL", "URL credentials are not permitted")
         selected_language = (
             require_language(language)
             if language is not None
@@ -99,6 +101,7 @@ def discover(
             raise ConfigurationError("discover", "probe_message must not be empty")
         if chat_hint is not None and (not chat_hint.strip() or len(chat_hint) > 256):
             raise ConfigurationError("discover", "chat_hint must contain 1 to 256 characters")
+        launcher_id(chat_hint)
         if output == scenario:
             raise ConfigurationError("discover", "guide output must differ from scenario input")
         if discovery_model_config is not None and not discovery_model_config.is_file():
@@ -111,26 +114,16 @@ def discover(
         raise typer.Exit(2) from None
     try:
         if verbose:
-            progress("beginning discovery and control proposal")
-        candidate = asyncio.run(
-            discover_candidate(
+            progress("beginning stateful discovery and exact fresh replay")
+        guide = asyncio.run(
+            discover_guide(
                 scenario,
                 url,
                 discovery_model_config=discovery_model_config,
                 headed=headed,
                 chat_hint=chat_hint,
                 max_discovery_attempts=max_discovery_attempts,
-                on_progress=progress if verbose else None,
-            )
-        )
-        if verbose:
-            progress("discovery candidate ready; beginning native verification")
-        guide = asyncio.run(
-            verify_candidate(
-                candidate,
-                draft.execution,
-                probe_message if probe_message is not None else first_probe(selected_language),
-                headed=headed,
+                probe_message=probe_message,
                 language=selected_language,
                 on_progress=progress if verbose else None,
             )

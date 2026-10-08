@@ -7,19 +7,23 @@ from typing import Any
 
 from pydantic import JsonValue
 
-from syntheticcx.config.models import ScenarioConfig
+from syntheticcx.config.models import JsonObject, PersonaConfig, ScenarioConfig
 from syntheticcx.privacy.redaction import Redactor
 
 
 class PromptCapture:
     """Serialize prompts only after opt-in and redact before returning evidence."""
 
-    def __init__(self, redactor: Redactor, scenario: ScenarioConfig) -> None:
+    def __init__(
+        self, redactor: Redactor, scenario: ScenarioConfig, *, persona: PersonaConfig | None = None
+    ) -> None:
         self._redactor = redactor
-        self._context = {
+        self._context: JsonObject = {
             "starting_context": scenario.starting_context,
             "knowledge": scenario.knowledge,
         }
+        if persona is not None:
+            self._context["persona"] = persona.model_dump(mode="json")
 
     def sanitize(self, messages: Any) -> str:
         def redact(value: JsonValue) -> JsonValue:

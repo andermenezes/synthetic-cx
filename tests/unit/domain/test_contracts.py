@@ -24,7 +24,10 @@ from syntheticcx.domain.models import (
     PersonaAction,
     PersonaDefinition,
     PersonaState,
+    ReplyOption,
     Report,
+    SelectionReceipt,
+    SendReceipt,
     TokenUsage,
 )
 
@@ -87,6 +90,93 @@ def test_terminal_actions_cannot_send_another_message() -> None:
     assert action.message is None
     with pytest.raises(ValidationError):
         PersonaAction(state=state, signal="goal_believed_complete", message="another turn")
+
+
+def test_options_are_assistant_owned_unique_and_support_options_only_replies() -> None:
+    option = ReplyOption(id="opaque:1", label="Billing information")
+    payload = message().model_dump()
+    payload.update(content="", options=[option.model_dump()])
+    assistant = Message.model_validate(payload)
+    assert assistant.content == "" and assistant.options == [option]
+    assert message().options == []
+    for actor in ("customer", "system"):
+        with pytest.raises(ValidationError, match="assistant"):
+            Message.model_validate({**payload, "actor": actor})
+    with pytest.raises(ValidationError, match="unique"):
+        Message.model_validate({**payload, "options": [option, option]})
+
+
+def test_selection_action_and_receipt_contracts() -> None:
+    state = PersonaState()
+    selected = PersonaAction(selected_option_id="opaque:1", state=state, signal="continue")
+    assert selected.message is None
+    with pytest.raises(ValidationError, match="mutually exclusive"):
+        PersonaAction(
+            message="Billing", selected_option_id="opaque:1", state=state, signal="continue"
+        )
+    with pytest.raises(ValidationError, match="terminal"):
+        PersonaAction(selected_option_id="opaque:1", state=state, signal="goal_believed_complete")
+    receipt = SelectionReceipt(
+        message_id="customer-1",
+        submitted_at=NOW,
+        selected_option_id="opaque:1",
+        selected_label="Billing information",
+        source_message_id="assistant-1",
+    )
+    assert isinstance(receipt, SendReceipt)
+    assert SelectionReceipt.model_validate_json(receipt.model_dump_json()) == receipt
+
+
+def test_reply_options_config_is_optional_and_has_a_fixed_policy() -> None:
+    from syntheticcx.config.models import ChannelConfig, ReplyOptionsConfig
+
+    # Legacy options are an internal adapter contract, not the public interface.
+    channel = ChannelConfig.model_validate(
+        {
+            "type": "webchat_playwright",
+            "url": "http://127.0.0.1:8000/?variant=success",
+            "input_locator": {"strategy": "test_id", "value": "chat-input"},
+            "send_strategy": {"type": "press_enter"},
+            "customer_message_locator": {"strategy": "test_id", "value": "customer-message"},
+            "assistant_message_locator": {"strategy": "test_id", "value": "assistant-message"},
+            "message_identity": {"strategy": "attribute", "attribute_name": "data-message-id"},
+            "response_completion": {"strategy": "quiet_interval", "quiet_interval_seconds": 0.1},
+        }
+    )
+    assert channel.reply_options is None
+    options = ReplyOptionsConfig(
+        scope_locator={"strategy": "css", "value": ".conversation"},
+        option_locator={"strategy": "role", "value": "button"},
+    )
+    assert (
+        ChannelConfig.model_validate(
+            {**channel.model_dump(), "reply_options": options}
+        ).reply_options
+        == options
+    )
+    with pytest.raises(ValidationError):
+        ReplyOptionsConfig.model_validate({**options.model_dump(), "policy": "unrestricted"})
+
+
+def test_public_channel_is_dynamic_without_controls_states_or_recipe() -> None:
+    from syntheticcx.config.models import InterfaceChannelConfig, ProjectConfig
+
+    config = load_config(Path("examples/telecom/scenario.yaml"))
+    assert isinstance(config.channel, InterfaceChannelConfig)
+    assert ProjectConfig.model_validate_json(config.model_dump_json()) == config
+    channel = config.channel.model_dump()
+    for key in (
+        "input_locator",
+        "send_strategy",
+        "reply_options",
+        "states",
+        "transitions",
+        "initial_state_id",
+        "verification_recipe",
+    ):
+        assert key not in channel
+        with pytest.raises(ValidationError):
+            InterfaceChannelConfig.model_validate({**channel, key: []})
 
 
 def test_naive_timestamps_are_rejected() -> None:

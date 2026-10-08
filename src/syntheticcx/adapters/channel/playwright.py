@@ -12,6 +12,7 @@ from typing import Any, TypeAlias, cast
 from playwright.async_api import (
     Browser,
     BrowserContext,
+    ElementHandle,
     FrameLocator,
     Locator,
     Page,
@@ -22,8 +23,10 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from syntheticcx.adapters.channel.cursor import Actor, Bubble, MessageCursor
+from syntheticcx.adapters.channel.options import ReplyNodes, ReplyOptions
+from syntheticcx.adapters.channel.reading import READING_HELPERS
 from syntheticcx.config.models import ChannelConfig, ExecutionLimits, LocatorConfig
-from syntheticcx.domain.models import CompletedResponse, Message, SendReceipt
+from syntheticcx.domain.models import CompletedResponse, Message, SelectionReceipt, SendReceipt
 from syntheticcx.errors import ChannelError
 
 Scope: TypeAlias = Page | FrameLocator
@@ -76,6 +79,42 @@ class PlaywrightChannel:
         self._awaiting_response = False
         self._submission_uncertain = False
         self._submission_count = 0
+        self._response_bubble_attached = False
+        self._node_handles: dict[Actor, list[ElementHandle]] = {"customer": [], "assistant": []}
+        self._submission_lock = asyncio.Lock()
+        self._options: ReplyOptions | None = None
+        self._reply_snapshot: list[ReplyNodes] = []
+
+    async def _node_identities(self, actor: Actor, locator: Locator) -> list[dict[str, Any]]:
+        """Browser-owned node references, not attributes, hashes, or page-injected IDs."""
+        handles = await locator.element_handles()
+        known = self._node_handles[actor]
+        if len(handles) > 120:
+            raise ChannelError("channel.observe", "DOM node identity inspection limit exceeded")
+        if not handles:
+            return []
+        indices = await handles[0].evaluate(
+            "(_, options) => options.nodes.map(node => options.known.indexOf(node))",
+            {"nodes": handles, "known": known},
+        )
+        identities: list[dict[str, Any]] = []
+        for handle, index in zip(handles, indices, strict=True):
+            if index < 0:
+                if len(known) >= 120:
+                    raise ChannelError(
+                        "channel.observe", "DOM node identity history limit exceeded"
+                    )
+                index = len(known)
+                known.append(handle)
+            else:
+                await handle.dispose()
+            identities.append({"node": known[index], "identity": f"node-{index}"})
+        return identities
+
+    @property
+    def response_bubble_attached(self) -> bool:
+        """Value-free observation stage, including after an outer timeout cancels receive."""
+        return self._response_bubble_attached
 
     @property
     def current_url(self) -> str | None:
@@ -92,12 +131,27 @@ class PlaywrightChannel:
             else self._config.customer_message_locator
         )
         attribute = self._config.message_identity.attribute_name
+        identities = (
+            await self._node_identities(actor, locate(scope, selector, include_hidden=True))
+            if self._config.message_identity.strategy == "dom_node"
+            else []
+        )
+        separated = actor == "assistant" and self._config.reply_options is not None
+        if separated and self._options is not None:
+            self._reply_snapshot = await self._options.collect()
+        content_expression = "proseText(node)" if separated else "node.textContent ?? ''"
         raw: Any = await locate(scope, selector, include_hidden=True).evaluate_all(
-            """(nodes, attr) => nodes.map((node, ordinal) => ({
-                ordinal, content: node.textContent ?? '',
-                attribute_id: attr ? node.getAttribute(attr) : null
-            }))""",
-            attribute,
+            "(nodes, options) => {"
+            + (READING_HELPERS if separated else "")
+            + """
+              return nodes.map((node, ordinal) => ({
+                ordinal, content: """
+            + content_expression
+            + """,
+                attribute_id: options.attribute ? node.getAttribute(options.attribute) :
+                    (options.identities.find(entry => entry.node === node)?.identity ?? null)
+            })); }""",
+            {"attribute": attribute, "identities": identities},
         )
         return [
             Bubble(
@@ -108,6 +162,12 @@ class PlaywrightChannel:
             )
             for entry in raw
         ]
+
+    async def _capture_history(self) -> None:
+        for actor in ("customer", "assistant"):
+            self._cursor.observe(actor, await self._snapshot(actor), baseline=True)
+        self._history_count = len(await self._snapshot("assistant"))
+        await self._prepare_completion()
 
     async def start(self, *, on_progress: Callable[[str], None] | None = None) -> None:
         if self._playwright is not None or self._closing is not None:
@@ -131,20 +191,23 @@ class PlaywrightChannel:
                 )
             if on_progress is not None:
                 on_progress("native target navigation succeeded")
-            if self._config.frame_locator is not None:
+            deferred_frame = (
+                self._config.frame_locator is not None
+                and self._config.open_locator is not None
+                and await locate(self._page, self._config.frame_locator).count() == 0
+            )
+            if self._config.frame_locator is not None and not deferred_frame:
                 frame = locate(self._page, self._config.frame_locator)
                 await frame.wait_for(state="attached", timeout=timeout_ms)
                 if await frame.count() != 1:
                     raise ChannelError("channel.start", "configured frame is missing or ambiguous")
                 self._scope = frame.content_frame
                 await self._scope.locator("body").wait_for(state="attached", timeout=timeout_ms)
-            else:
+            elif not deferred_frame:
                 self._scope = self._page
             # Capture history in both actor streams before activating the opener.
-            for actor in ("customer", "assistant"):
-                self._cursor.observe(actor, await self._snapshot(actor), baseline=True)
-            self._history_count = len(await self._snapshot("assistant"))
-            await self._prepare_completion()
+            if not deferred_frame:
+                await self._capture_history()
             if self._config.open_locator is not None:
                 if on_progress is not None:
                     on_progress("waiting for configured chat opener in native browser")
@@ -162,12 +225,33 @@ class PlaywrightChannel:
                     ) from None
                 if on_progress is not None:
                     on_progress("configured chat opener clicked in native browser")
+            if deferred_frame:
+                assert self._config.frame_locator is not None
+                frame = locate(self._page, self._config.frame_locator)
+                await frame.wait_for(state="attached", timeout=timeout_ms)
+                if await frame.count() != 1:
+                    raise ChannelError("channel.start", "configured frame is missing or ambiguous")
+                self._scope = frame.content_frame
+                await self._scope.locator("body").wait_for(state="attached", timeout=timeout_ms)
+                # A newly created frame has no observable pre-open baseline. Treat
+                # its existing messages as history, never as replies to later probes.
+                await self._capture_history()
+            assert self._scope is not None
             chat_input = locate(self._scope, self._config.input_locator)
-            await chat_input.wait_for(state="visible", timeout=timeout_ms)
+            try:
+                await chat_input.wait_for(state="visible", timeout=timeout_ms)
+            except (PlaywrightError, TimeoutError):
+                raise ChannelError(
+                    "channel.start",
+                    "configured chat input could not be resolved in the selected scope",
+                ) from None
             if await chat_input.count() != 1:
                 raise ChannelError("channel.start", "configured chat input is missing or ambiguous")
             if on_progress is not None:
                 on_progress("configured chat input visible in native browser")
+            if self._config.reply_options is not None:
+                self._options = ReplyOptions(self._scope, self._config, locate)
+                await self._options.bind()
         except asyncio.CancelledError:
             raise
         except (PlaywrightError, TimeoutError):
@@ -243,6 +327,12 @@ class PlaywrightChannel:
     async def send(
         self, message: str, *, on_progress: Callable[[str], None] | None = None
     ) -> SendReceipt:
+        async with self._submission_lock:
+            return await self._send(message, on_progress=on_progress)
+
+    async def _send(
+        self, message: str, *, on_progress: Callable[[str], None] | None = None
+    ) -> SendReceipt:
         scope = self._scope
         if scope is None or self._closing is not None:
             raise ChannelError("channel.send", "channel is not available")
@@ -250,6 +340,8 @@ class PlaywrightChannel:
             raise ChannelError("channel.send", "previous submission is not resolved")
         if not message.strip():
             raise ChannelError("channel.send", "customer message is empty")
+        if self._options is not None:
+            self._options.invalidate()
         deadline = time.monotonic() + self._limits.browser_action_timeout_seconds
         stage = "customer message baseline observation"
         try:
@@ -259,7 +351,9 @@ class PlaywrightChannel:
                 if customer_before:
                     raise ChannelError("channel.send", "unexpected customer echo before submission")
                 stage = "assistant message baseline observation"
-                self._response_baseline = len(await self._snapshot("assistant"))
+                assistant_snapshot = await self._snapshot("assistant")
+                self._cursor.observe("assistant", assistant_snapshot, baseline=True)
+                self._response_baseline = len(assistant_snapshot)
                 stage = "response completion preparation"
                 await self._prepare_completion()
                 stage = "configured chat input fill"
@@ -317,6 +411,86 @@ class PlaywrightChannel:
         except (PlaywrightError, TimeoutError):
             raise ChannelError("channel.send", f"{stage} failed") from None
 
+    async def inspect_reply_options(self, config: ChannelConfig) -> list[dict[str, Any]]:
+        """Read-only native inspection for discovery; no IDs minted and no clicks."""
+        if self._scope is None or self._closing is not None:
+            raise ChannelError("channel.options", "channel is not available")
+        if config.reply_options is None:
+            return []
+        if self._options is not None and config == self._config:
+            return await self._options.inspect()
+        inspector = ReplyOptions(self._scope, config, locate)
+        try:
+            await inspector.bind()
+            return await inspector.inspect()
+        finally:
+            await inspector.dispose()
+
+    async def select_option(self, identifier: str) -> SelectionReceipt:
+        """Consume an opaque capability once, using only its retained native handle."""
+        async with self._submission_lock:
+            if self._scope is None or self._closing is not None or self._options is None:
+                raise ChannelError("channel.select_option", "reply options are not available")
+            if self._awaiting_response or self._submission_uncertain:
+                raise ChannelError("channel.select_option", "previous submission is not resolved")
+            deadline = time.monotonic() + self._limits.browser_action_timeout_seconds
+            try:
+                async with asyncio.timeout(self._limits.browser_action_timeout_seconds):
+                    await self._options.check_origin()
+                    capability = await self._options.validate(identifier)
+                    echoes = self._cursor.observe("customer", await self._snapshot("customer"))
+                    if echoes:
+                        raise ChannelError("channel.select_option", "unexpected customer echo")
+                    baseline = await self._snapshot("assistant")
+                    self._cursor.observe("assistant", baseline, baseline=True)
+                    self._response_baseline = len(baseline)
+                    await self._prepare_completion()
+                    # Validate again after watcher/baseline preparation, before activation.
+                    await self._options.validate(identifier)
+                    await self._options.check_origin()
+                    self._options.invalidate()
+                    self._submission_uncertain = True
+                    await capability.option.node.click(
+                        timeout=self._limits.browser_action_timeout_seconds * 1000
+                    )
+                    submitted = datetime.now(UTC)
+                    self._submission_count += 1
+                    await self._options.check_origin()
+                    remaining = max(0, deadline - time.monotonic())
+                    echo_window = min(
+                        self._limits.echo_observation_seconds,
+                        max(0, remaining - min(0.05, remaining * 0.2)),
+                    )
+                    if echo_window > 0:
+                        await asyncio.sleep(echo_window)
+                    await self._options.check_origin()
+                    echoes = self._cursor.observe("customer", await self._snapshot("customer"))
+                    await self._options.check_origin()
+                    if len(echoes) > 1:
+                        raise ChannelError("channel.select_option", "customer echo is ambiguous")
+                    receipt_id = f"customer:submitted-{self._submission_count}"
+                    evidence: dict[str, str] = {"echo": "absent"}
+                    if echoes:
+                        receipt_id = self._cursor.finalize("customer", echoes)[0]
+                        evidence = {"echo": "observed", "dom_message_id": receipt_id}
+                    # A UI may echo a canonical value unlike the display label. Observe,
+                    # consume and record it, but never claim textual equivalence.
+                    self._response_started = submitted
+                    self._awaiting_response = True
+                    self._submission_uncertain = False
+                    return SelectionReceipt(
+                        message_id=receipt_id,
+                        submitted_at=submitted,
+                        evidence=evidence,
+                        selected_option_id=identifier,
+                        selected_label=capability.option.label,
+                        source_message_id=capability.message_id,
+                    )
+            except (PlaywrightError, TimeoutError):
+                raise ChannelError(
+                    "channel.select_option", "reply option activation failed"
+                ) from None
+
     async def receive(
         self, *, on_progress: Callable[[str], None] | None = None
     ) -> CompletedResponse:
@@ -327,6 +501,7 @@ class PlaywrightChannel:
             raise ChannelError("channel.receive", "no response is pending")
         completion = self._config.response_completion
         bubble_attached = False
+        self._response_bubble_attached = False
         try:
             async with asyncio.timeout(self._limits.response_timeout_seconds):
                 baseline = (
@@ -340,20 +515,26 @@ class PlaywrightChannel:
                     )
                 )
                 bubble_attached = True
+                self._response_bubble_attached = True
                 if on_progress is not None:
                     on_progress("assistant bubble attached in native browser")
                 last_snapshot: tuple[tuple[str | None, str], ...] = ()
+                last_options: tuple[Any, ...] = ()
                 stable_since = time.monotonic()
                 fragments: dict[int, int] = {}
                 while True:
                     observed = self._cursor.observe("assistant", await self._snapshot("assistant"))
                     pending = [part for part in observed if part.ordinal >= baseline]
                     signature = tuple((part.attribute_id, part.content) for part in pending)
-                    if signature != last_snapshot:
+                    option_signature = (
+                        self._options.signature(self._reply_snapshot) if self._options else ()
+                    )
+                    if signature != last_snapshot or option_signature != last_options:
                         for part in pending:
                             if (part.attribute_id, part.content) not in last_snapshot:
                                 fragments[part.ordinal] = fragments.get(part.ordinal, 0) + 1
                         last_snapshot = signature
+                        last_options = option_signature
                         stable_since = time.monotonic()
                     if pending:
                         if completion.strategy == "quiet_interval":
@@ -371,9 +552,23 @@ class PlaywrightChannel:
                                 and task.result()
                                 and not await self._completion_locator().is_visible()
                             )
+                        if self._options is not None:
+                            quiet = completion.quiet_interval_seconds or 0.1
+                            ready = ready and time.monotonic() - stable_since >= quiet
                         if ready:
                             now = datetime.now(UTC)
                             ids = self._cursor.finalize("assistant", pending)
+                            options = (
+                                self._options.publish(
+                                    self._reply_snapshot,
+                                    {
+                                        part.ordinal: identifier
+                                        for identifier, part in zip(ids, pending)
+                                    },
+                                )
+                                if self._options is not None
+                                else {}
+                            )
                             self._greeting_received = True
                             self._awaiting_response = False
                             await self._clear_watchers()
@@ -385,6 +580,7 @@ class PlaywrightChannel:
                                         actor="assistant",
                                         content=part.content,
                                         observed_at=now,
+                                        options=options.get(part.ordinal, []),
                                     )
                                     for identifier, part in zip(ids, pending)
                                 ],
@@ -418,6 +614,8 @@ class PlaywrightChannel:
     async def close(self) -> None:
         """Start one bounded cleanup that continues after caller cancellation."""
         if self._closing is None:
+            if self._options is not None:
+                self._options.invalidate()
             self._closing = asyncio.create_task(self._close_resources())
         await asyncio.shield(self._closing)
 
@@ -443,6 +641,9 @@ class PlaywrightChannel:
         self._playwright = None
         self._page = None
         self._scope = None
+        self._node_handles = {"customer": [], "assistant": []}
+        self._options = None
+        self._reply_snapshot = []
         failed = False
         deadline = time.monotonic() + self._limits.close_timeout_seconds
         for resource in (context, browser, playwright):

@@ -98,6 +98,48 @@
           "title": "Operation",
           "type": "string"
         },
+        "reason_code": {
+          "anyOf": [
+            {
+              "enum": [
+                "channel.state",
+                "channel.reader",
+                "channel.reader_evidence",
+                "channel.ownership",
+                "channel.observe",
+                "channel.options",
+                "channel.select_option",
+                "channel.controls"
+              ],
+              "type": "string"
+            },
+            {
+              "enum": [
+                "provider_timeout",
+                "provider_connection",
+                "provider_http_4xx",
+                "provider_http_5xx",
+                "provider_error",
+                "invalid_structured_response",
+                "persona_timeout",
+                "persona_action_malformed",
+                "persona_action_unsupported",
+                "persona_action_missing",
+                "persona_action_ambiguous",
+                "persona_option_unavailable",
+                "persona_text_unavailable",
+                "persona_adapter_error",
+                "unknown_model_failure"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason Code"
+        },
         "retryable": {
           "default": false,
           "title": "Retryable",
@@ -213,7 +255,179 @@
       "title": "EvaluationResult",
       "type": "object"
     },
-    "JsonValue": {}
+    "JsonValue": {},
+    "ObservationTopic": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Description",
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "title": "Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "description"
+      ],
+      "title": "ObservationTopic",
+      "type": "object"
+    },
+    "PersonaFeedback": {
+      "additionalProperties": false,
+      "properties": {
+        "experience_truncated": {
+          "default": false,
+          "title": "Experience Truncated",
+          "type": "boolean"
+        },
+        "language": {
+          "enum": [
+            "en-US",
+            "pt-BR"
+          ],
+          "title": "Language",
+          "type": "string"
+        },
+        "partial_experience": {
+          "title": "Partial Experience",
+          "type": "boolean"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "cancelled",
+                "no_experience",
+                "unsupported",
+                "persona_unavailable",
+                "reflection_failed",
+                "reflection_timeout",
+                "invalid_feedback"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "response": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PersonaFeedbackResponse"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "status": {
+          "enum": [
+            "available",
+            "unavailable"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "topics": {
+          "items": {
+            "$ref": "#/$defs/ObservationTopic"
+          },
+          "maxItems": 10,
+          "minItems": 1,
+          "title": "Topics",
+          "type": "array"
+        }
+      },
+      "required": [
+        "status",
+        "language",
+        "topics",
+        "partial_experience"
+      ],
+      "title": "PersonaFeedback",
+      "type": "object"
+    },
+    "PersonaFeedbackResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "summary": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Summary",
+          "type": "string"
+        },
+        "topics": {
+          "items": {
+            "$ref": "#/$defs/TopicImpression"
+          },
+          "maxItems": 10,
+          "minItems": 1,
+          "title": "Topics",
+          "type": "array"
+        }
+      },
+      "required": [
+        "summary",
+        "topics"
+      ],
+      "title": "PersonaFeedbackResponse",
+      "type": "object"
+    },
+    "TopicImpression": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_message_ids": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 20,
+          "title": "Evidence Message Ids",
+          "type": "array"
+        },
+        "impression": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Impression",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "observed",
+            "not_observed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "topic_id": {
+          "minLength": 1,
+          "title": "Topic Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "topic_id",
+        "status",
+        "impression"
+      ],
+      "title": "TopicImpression",
+      "type": "object"
+    }
   },
   "additionalProperties": false,
   "properties": {
@@ -227,6 +441,19 @@
       },
       "title": "Artifacts",
       "type": "array"
+    },
+    "conversation_duration_seconds": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Conversation Duration Seconds"
     },
     "duration_seconds": {
       "minimum": 0,
@@ -282,6 +509,17 @@
       ],
       "default": null,
       "title": "Outcome"
+    },
+    "persona_feedback": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PersonaFeedback"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "repetition_count": {
       "minimum": 0,

@@ -1,5 +1,67 @@
 {
   "$defs": {
+    "ActionAuthorization": {
+      "additionalProperties": false,
+      "description": "Scenario-scoped permission for consequential customer choices.",
+      "properties": {
+        "action": {
+          "enum": [
+            "payment",
+            "purchase",
+            "account_change",
+            "consent",
+            "authentication",
+            "destructive"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "currency": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Z]{3}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Currency"
+        },
+        "environment": {
+          "anyOf": [
+            {
+              "const": "sandbox",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Environment"
+        },
+        "max_amount": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Amount"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "title": "ActionAuthorization",
+      "type": "object"
+    },
     "BehaviorRule": {
       "additionalProperties": false,
       "properties": {
@@ -54,72 +116,29 @@
       "title": "BehaviorRule",
       "type": "object"
     },
-    "ChannelConfig": {
+    "ChatOwnership": {
       "additionalProperties": false,
+      "description": "Independently attested chat root; child locators are root-relative.",
       "properties": {
-        "assistant_message_locator": {
-          "$ref": "#/$defs/LocatorConfig"
-        },
-        "customer_message_locator": {
-          "$ref": "#/$defs/LocatorConfig"
-        },
-        "frame_locator": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/LocatorConfig"
-            },
-            {
-              "type": "null"
-            }
+        "proof": {
+          "enum": [
+            "chat_dialog",
+            "chat_embed",
+            "opener_linked",
+            "chat_panel"
           ],
-          "default": null
-        },
-        "input_locator": {
-          "$ref": "#/$defs/LocatorConfig"
-        },
-        "message_identity": {
-          "$ref": "#/$defs/MessageIdentityConfig"
-        },
-        "open_locator": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/LocatorConfig"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "response_completion": {
-          "$ref": "#/$defs/ResponseCompletionConfig"
-        },
-        "send_strategy": {
-          "$ref": "#/$defs/SendStrategyConfig"
-        },
-        "type": {
-          "const": "webchat_playwright",
-          "title": "Type",
+          "title": "Proof",
           "type": "string"
         },
-        "url": {
-          "format": "uri",
-          "minLength": 1,
-          "title": "Url",
-          "type": "string"
+        "root_locator": {
+          "$ref": "#/$defs/LocatorConfig"
         }
       },
       "required": [
-        "type",
-        "url",
-        "input_locator",
-        "customer_message_locator",
-        "assistant_message_locator",
-        "message_identity",
-        "send_strategy",
-        "response_completion"
+        "root_locator",
+        "proof"
       ],
-      "title": "ChannelConfig",
+      "title": "ChatOwnership",
       "type": "object"
     },
     "CommunicationConfig": {
@@ -132,6 +151,13 @@
           "title": "Clarification Probability",
           "type": "number"
         },
+        "grammar_error_probability": {
+          "default": 0,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Grammar Error Probability",
+          "type": "number"
+        },
         "language": {
           "default": "en-US",
           "enum": [
@@ -140,6 +166,23 @@
           ],
           "title": "Language",
           "type": "string"
+        },
+        "message_length": {
+          "anyOf": [
+            {
+              "enum": [
+                "short",
+                "medium",
+                "long"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message Length"
         },
         "spelling_error_probability": {
           "default": 0,
@@ -164,6 +207,21 @@
           "minimum": 0,
           "title": "Typo Probability",
           "type": "number"
+        },
+        "writing_description": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Writing Description"
         }
       },
       "required": [
@@ -462,6 +520,109 @@
       "title": "ExecutionLimits",
       "type": "object"
     },
+    "InterfaceChannelConfig": {
+      "additionalProperties": false,
+      "description": "Fixed chat boundary and readers; interaction controls are discovered per turn.",
+      "properties": {
+        "assistant_message_locator": {
+          "$ref": "#/$defs/LocatorConfig"
+        },
+        "bootstrap_input_locator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocatorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "bootstrap_send_strategy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SendStrategyConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "customer_message_locator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocatorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "frame_locator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocatorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "message_identity": {
+          "$ref": "#/$defs/MessageIdentityConfig"
+        },
+        "open_locator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocatorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "ownership": {
+          "$ref": "#/$defs/ChatOwnership"
+        },
+        "reader_evidence": {
+          "default": "marked",
+          "enum": [
+            "marked",
+            "observed_exchange"
+          ],
+          "title": "Reader Evidence",
+          "type": "string"
+        },
+        "response_completion": {
+          "$ref": "#/$defs/ResponseCompletionConfig"
+        },
+        "type": {
+          "const": "webchat_playwright_dynamic",
+          "title": "Type",
+          "type": "string"
+        },
+        "url": {
+          "format": "uri",
+          "minLength": 1,
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "url",
+        "ownership",
+        "assistant_message_locator",
+        "message_identity",
+        "response_completion"
+      ],
+      "title": "InterfaceChannelConfig",
+      "type": "object"
+    },
     "JsonValue": {},
     "LocatorConfig": {
       "additionalProperties": false,
@@ -508,6 +669,18 @@
       "title": "LocatorConfig",
       "type": "object"
     },
+    "MarkdownReportingConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        }
+      },
+      "title": "MarkdownReportingConfig",
+      "type": "object"
+    },
     "MessageIdentityConfig": {
       "additionalProperties": false,
       "properties": {
@@ -526,6 +699,7 @@
         "strategy": {
           "enum": [
             "attribute",
+            "dom_node",
             "actor_sequence_content_hash"
           ],
           "title": "Strategy",
@@ -536,6 +710,31 @@
         "strategy"
       ],
       "title": "MessageIdentityConfig",
+      "type": "object"
+    },
+    "ObservationTopic": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Description",
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "title": "Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "description"
+      ],
+      "title": "ObservationTopic",
       "type": "object"
     },
     "OpenAICompatibleModelConfig": {
@@ -654,6 +853,21 @@
         "communication": {
           "$ref": "#/$defs/CommunicationConfig"
         },
+        "description": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
         "id": {
           "minLength": 1,
           "title": "Id",
@@ -770,7 +984,7 @@
       "description": "Fully resolved configuration consumed by the existing run pipeline.",
       "properties": {
         "channel": {
-          "$ref": "#/$defs/ChannelConfig"
+          "$ref": "#/$defs/InterfaceChannelConfig"
         },
         "evaluation_model": {
           "anyOf": [
@@ -824,6 +1038,9 @@
         },
         "privacy": {
           "$ref": "#/$defs/PrivacyConfig"
+        },
+        "reporting": {
+          "$ref": "#/$defs/ReportingConfig"
         },
         "scenario": {
           "$ref": "#/$defs/ScenarioConfig"
@@ -948,6 +1165,9 @@
         "privacy": {
           "$ref": "#/$defs/PrivacyConfig"
         },
+        "reporting": {
+          "$ref": "#/$defs/ReportingConfig"
+        },
         "scenario": {
           "$ref": "#/$defs/ScenarioConfig"
         },
@@ -972,6 +1192,32 @@
         "channel_guide"
       ],
       "title": "ReferencedProjectConfig",
+      "type": "object"
+    },
+    "ReportingConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "language": {
+          "anyOf": [
+            {
+              "enum": [
+                "en-US",
+                "pt-BR"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Language"
+        },
+        "markdown": {
+          "$ref": "#/$defs/MarkdownReportingConfig"
+        }
+      },
+      "title": "ReportingConfig",
       "type": "object"
     },
     "ResponseCompletionConfig": {
@@ -1020,6 +1266,14 @@
     "ScenarioConfig": {
       "additionalProperties": false,
       "properties": {
+        "action_authorizations": {
+          "items": {
+            "$ref": "#/$defs/ActionAuthorization"
+          },
+          "maxItems": 8,
+          "title": "Action Authorizations",
+          "type": "array"
+        },
         "description": {
           "minLength": 1,
           "title": "Description",
@@ -1048,6 +1302,14 @@
           },
           "title": "Knowledge",
           "type": "object"
+        },
+        "observation_topics": {
+          "items": {
+            "$ref": "#/$defs/ObservationTopic"
+          },
+          "maxItems": 10,
+          "title": "Observation Topics",
+          "type": "array"
         },
         "starting_context": {
           "additionalProperties": {

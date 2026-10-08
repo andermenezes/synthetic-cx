@@ -3,14 +3,17 @@
 import json
 import traceback
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
+from syntheticcx.config.loader import load_config
 from syntheticcx.config.models import PrivacyConfig
 from syntheticcx.domain.events import MessageObserved, MessageObservedEvent
 from syntheticcx.domain.models import ErrorDetail, Message
 from syntheticcx.errors import ConfigurationError
 from syntheticcx.privacy import Redactor
+from syntheticcx.privacy.prompt_capture import PromptCapture
 
 
 def test_nested_fields_are_redacted_without_mutating_input() -> None:
@@ -23,6 +26,57 @@ def test_nested_fields_are_redacted_without_mutating_input() -> None:
     }
     assert value["rows"][0]["account_number"] == {"raw": "sensitive"}
     assert redactor.redact_value(result) == result
+
+
+def test_offered_options_and_click_labels_share_the_message_redaction_boundary():
+    now = datetime.now(UTC)
+    redactor = Redactor(PrivacyConfig(), resolved_secrets=["private-option"])
+    message = Message.model_validate(
+        {
+            "id": "reply",
+            "sequence": 0,
+            "actor": "assistant",
+            "content": "",
+            "observed_at": now,
+            "options": [
+                {"id": "opaque-one", "label": "Information private-option"},
+                {"id": "opaque-two", "label": "Support private-option"},
+            ],
+        }
+    )
+    safe = redactor.redact_model(message)
+    assert "private-option" not in safe.model_dump_json()
+    assert [option.id for option in safe.options] == ["opaque-one", "opaque-two"]
+    assert "private-option" in message.options[0].label
+    click = Message(
+        id="choice",
+        sequence=1,
+        actor="customer",
+        content=message.options[0].label,
+        observed_at=now,
+        metadata={
+            "action_kind": "select_option",
+            "option_id": "opaque-one",
+            "source_assistant_message_id": "reply",
+        },
+    )
+    safe_click = redactor.redact_model(click)
+    assert "private-option" not in safe_click.model_dump_json()
+    assert safe_click.content == safe.options[0].label
+    assert safe_click.metadata["action_kind"] == "select_option"
+
+
+def test_option_labels_are_redacted_inside_nested_persona_prompt_capture():
+    config = load_config(Path("examples/telecom/scenario.yaml"))
+    capture = PromptCapture(
+        Redactor(config.privacy, resolved_secrets=['private-"option"']), config.scenario
+    )
+    stimulus = json.dumps(
+        {"options": [{"id": "opaque-option", "label": 'Information private-"option"'}]}
+    )
+    result = capture.sanitize([{"role": "user", "content": stimulus}])
+    assert "private-" not in result
+    assert "opaque-option" in result
 
 
 @pytest.mark.parametrize(
@@ -159,3 +213,132 @@ def test_safe_error_and_simulated_textual_boundaries_share_redaction() -> None:
         redactor.redact_text(error.message),
     ]
     assert all("api-key" not in output and "ACCOUNT-123" not in output for output in outputs)
+
+
+@pytest.mark.parametrize("encoded_layers", [0, 1, 2, 3])
+def test_persona_sensitive_prose_is_redacted_in_captured_prompts(encoded_layers: int) -> None:
+    config = load_config(Path("examples/telecom/scenario.yaml"))
+    narrative = 'private-persona-"João\\profile"'
+    writing = 'private-writing-"voice\\style"'
+    persona = config.persona.model_copy(
+        update={
+            "description": narrative,
+            "communication": config.persona.communication.model_copy(
+                update={"writing_description": writing}
+            ),
+        }
+    )
+    redactor = Redactor(PrivacyConfig(redaction_keys=["description", "writing_description"]))
+    capture = PromptCapture(redactor, config.scenario, persona=persona)
+    content = narrative + " " + writing
+    for _ in range(encoded_layers):
+        content = json.dumps(content, ensure_ascii=True)
+    prompt = [{"role": "user", "content": content}]
+    result = capture.sanitize(prompt)
+    assert "private-persona" not in result and "private-writing" not in result
+    assert "private-persona" in prompt[0]["content"]
+    assert persona.description == narrative
+
+
+def test_sensitive_persona_values_protect_echoes_and_snapshot_without_capture() -> None:
+    context = {"persona": {"description": 'private-"narrative"'}}
+    policy = PrivacyConfig(redaction_keys=["description"])
+    redactor = Redactor(policy, sensitive_context=context)
+    policy.redaction_keys.clear()
+    context["persona"]["description"] = "changed after construction"
+    assert redactor.redact_text('private-"narrative"') == "<redacted:field>"
+    assert redactor.redact_text("changed after construction") == "changed after construction"
+    assert redactor.redact_text("ordinary writing preference") == "ordinary writing preference"
+    assert redactor.redact_text(redactor.redact_text('private-"narrative"')) == "<redacted:field>"
+
+
+@pytest.mark.parametrize("key", ["communication", "persona"])
+def test_sensitive_parent_fields_protect_descendant_prompt_values_and_echoes(key: str) -> None:
+    config = load_config(Path("examples/telecom/scenario.yaml"))
+    writing = 'PRIVATE-VOICE-"escaped\\text"'
+    persona = config.persona.model_copy(
+        update={
+            "communication": config.persona.communication.model_copy(
+                update={"writing_description": writing}
+            ),
+        }
+    )
+    context = {"persona": persona.model_dump(mode="json")}
+    policy = PrivacyConfig(redaction_keys=[key])
+    redactor = Redactor(policy, sensitive_context=context)
+    assert "PRIVATE-VOICE" not in json.dumps(redactor.redact_value(context))
+    assert redactor.redact_text(writing) == "<redacted:field>"
+    # PromptCapture also protects parent-selected fields with an unbound redactor.
+    capture = PromptCapture(Redactor(policy), config.scenario, persona=persona)
+    prompt = [{"role": "user", "content": json.dumps({"echo": writing})}]
+    safe = capture.sanitize(prompt)
+    assert "PRIVATE-VOICE" not in safe
+    assert json.loads(prompt[0]["content"])["echo"] == writing
+
+
+@pytest.mark.parametrize("narrative", ["secret", "redacted", "description", "field"])
+def test_sensitive_narrative_placeholder_substrings_are_valid_and_idempotent(
+    narrative: str,
+) -> None:
+    config = load_config(Path("examples/telecom/scenario.yaml"))
+    persona = config.persona.model_copy(update={"description": narrative})
+    redactor = Redactor(
+        PrivacyConfig(redaction_keys=["description"]),
+        sensitive_context={"persona": persona.model_dump(mode="json")},
+    )
+    assert redactor.redact_text(narrative) == "<redacted:field>"
+    assert redactor.redact_text("<redacted:field>") == "<redacted:field>"
+    capture = PromptCapture(redactor, config.scenario, persona=persona)
+    first = capture.sanitize([{"role": "user", "content": narrative}])
+    assert "<redacted:description>" in first
+    assert capture.sanitize(json.loads(first)) == first
+
+
+def test_contextual_field_labels_preserve_legacy_provenance_for_matching_credentials() -> None:
+    redactor = Redactor(
+        PrivacyConfig(redaction_keys=["account_number"]), resolved_secrets=["secret-marker"]
+    )
+    assert redactor.redact_text("secret-marker") == "<redacted:secret>"
+    assert (
+        redactor.redact_text_with_field_values(
+            "The plan changed for secret-marker.", {"account_number": "secret-marker"}
+        )
+        == "The plan changed for <redacted:account_number>."
+    )
+
+
+@pytest.mark.parametrize("encoded_layers", [0, 1, 2])
+@pytest.mark.parametrize("ensure_ascii", [False, True])
+def test_constructor_sensitive_context_is_redacted_in_escaped_observations(
+    encoded_layers: int,
+    ensure_ascii: bool,
+) -> None:
+    persona = 'CANARY-PERSONA-"João\\profile"'
+    knowledge = 'CANARY-KNOWLEDGE-"私人\\account"'
+    context = {"persona": {"description": persona}, "knowledge": {"private_fact": knowledge}}
+    redactor = Redactor(
+        PrivacyConfig(redaction_keys=["description", "private_fact"]),
+        sensitive_context=context,
+    )
+    content = f"Echo {persona} and {knowledge}"
+    for _ in range(encoded_layers):
+        content = json.dumps(content, ensure_ascii=ensure_ascii)[1:-1]
+    observation = {"assistant_prose": content, "options": [{"id": "current", "label": content}]}
+    payload = json.dumps(redactor.redact_value(observation), ensure_ascii=ensure_ascii)
+    safe = redactor.redact_prompt_text(payload, observation)
+    assert "CANARY-PERSONA" not in safe
+    assert "CANARY-KNOWLEDGE" not in safe
+    assert "current" in safe
+    assert redactor.redact_prompt_text(safe, observation) == safe
+    assert observation["assistant_prose"] == content
+
+
+def test_constructor_context_prompt_placeholders_remain_atomic() -> None:
+    redactor = Redactor(
+        PrivacyConfig(redaction_keys=["description"]),
+        sensitive_context={"description": "field"},
+    )
+    prompt = "field <redacted:field> <redacted:secret>"
+    safe = redactor.redact_prompt_text(prompt, {"unrelated": "ordinary"})
+    assert safe == "<redacted:field> <redacted:field> <redacted:secret>"
+    assert redactor.redact_prompt_text(safe, {}) == safe

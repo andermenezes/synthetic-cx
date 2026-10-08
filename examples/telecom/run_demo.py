@@ -21,7 +21,8 @@ def configured_example(
 ) -> dict[str, object]:
     """Derive one strict v1 document without altering the authoritative example."""
     source = yaml.safe_load(CANONICAL.read_text(encoding="utf-8"))
-    source["channel"]["url"] = f"{fixture_url}/?variant={variant}"
+    # The named iframe is the fixture's independently attested chat boundary.
+    source["channel"]["url"] = f"{fixture_url}/?variant={variant}&view=frame"
     source["storage"]["run_root"] = str(run_root)
     if persona == "impatient":
         source["persona"]["id"] = "impatient-customer"

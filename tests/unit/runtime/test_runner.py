@@ -32,7 +32,9 @@ from syntheticcx.domain.models import (
     PersonaAction,
     PersonaDefinition,
     PersonaState,
+    ReplyOption,
     Scenario,
+    SelectionReceipt,
     SendReceipt,
     TokenUsage,
 )
@@ -44,7 +46,7 @@ from syntheticcx.runtime.clock import ManualClock, ManualWaitController
 from syntheticcx.runtime.journal import RunJournal
 from syntheticcx.runtime.owner import run_evaluated
 from syntheticcx.runtime.result import RuntimeResult
-from syntheticcx.runtime.runner import run_conversation
+from syntheticcx.runtime.runner import _failure, run_conversation
 
 
 class GoalEvaluator:
@@ -670,6 +672,153 @@ def test_owner_semantic_provider_persists_usage_and_redacted_fact(tmp_path: Path
 
 
 NOW = datetime(2026, 9, 24, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    "mode", ["success", "failure", "invalid", "timeout", "unsupported", "partial", "cancelled"]
+)
+def test_persona_feedback_is_supplemental_and_markdown_is_independent(tmp_path, mode):
+    from syntheticcx.domain.models import PersonaFeedbackResponse
+
+    async def exercise_feedback():
+        data = load_config(Path("examples/telecom/scenario.yaml")).model_dump()
+        data["scenario"]["observation_topics"] = [{"id": "clarity", "description": "Was it clear?"}]
+        data["reporting"] = {"language": "pt-BR", "markdown": {"enabled": True}}
+        config = ProjectConfig.model_validate(data)
+        clock = ManualClock(NOW)
+        wait = ManualWaitController(clock)
+        channel = Channel()
+
+        class ReflectingPersona(Persona):
+            reflection_available = True
+
+            def __init__(self):
+                super().__init__(complete=mode != "partial")
+                self.reflections = 0
+                self.closed = False
+
+            async def close(self):
+                self.closed = True
+
+            async def reflect(self, request):
+                assert channel.closed == 1 and not self.closed
+                self.reflections += 1
+                assert request.language == "pt-BR"
+                assert "success_criteria" not in request.model_dump_json()
+                await clock.advance(2)
+                if mode == "failure":
+                    raise ModelError("persona.reflect", "sensitive-token")
+                if mode == "timeout":
+                    raise TimeoutError
+                if mode == "cancelled":
+                    raise asyncio.CancelledError
+                ref = request.messages[-1].id if mode != "invalid" else "invented-message"
+                return PersonaFeedbackResponse.model_validate(
+                    {
+                        "summary": "Eu entendi a explicação.",
+                        "topics": [
+                            {
+                                "topic_id": "clarity",
+                                "status": "observed",
+                                "impression": "Achei claro, mas não é um resultado formal.",
+                                "evidence_message_ids": [ref],
+                            }
+                        ],
+                    }
+                )
+
+            def take_interactions(self):
+                if not self.reflections:
+                    return ()
+                return (
+                    ModelInteraction(
+                        id="reflection-call",
+                        identity=run().metadata.persona_model,
+                        started_at=NOW,
+                        ended_at=clock.now(),
+                        usage=TokenUsage(input_tokens=2, output_tokens=3),
+                    ),
+                )
+
+        class IsolatedEvaluator(GoalEvaluator):
+            async def evaluate(self, context):
+                assert not any(
+                    event.type == "persona_feedback_recorded" for event in context.sanitized_trace
+                )
+                assert not any(
+                    event.type == "model_interaction_completed"
+                    and event.data.id == "reflection-call"
+                    for event in context.sanitized_trace
+                )
+                return await super().evaluate(context)
+
+        simulator = ReflectingPersona() if mode != "unsupported" else Persona()
+        redactor = Redactor(config.privacy)
+        storage = FilesystemStorage(
+            tmp_path,
+            redactor,
+            timeout_seconds=5,
+            project_config=config,
+            materialize_report=False,
+            materialize_conversation=False,
+        )
+        journal = RunJournal("run-1", storage, redactor, clock)
+        evaluation = EvaluationService(
+            journal=journal,
+            wait=wait,
+            evaluator_timeout_seconds=5,
+            redactor=redactor,
+            evaluators={"semantic_goal_completion": IsolatedEvaluator()},
+        )
+        result = await run_evaluated(
+            run=run(),
+            config_artifact=ConfigArtifact(source_content_hash="hash", effective_config={}),
+            scenario=Scenario.model_validate(config.scenario.model_dump()),
+            persona=PersonaDefinition.model_validate(config.persona.model_dump()),
+            channel=channel,
+            simulator=simulator,
+            storage=storage,
+            journal=journal,
+            clock=clock,
+            wait=wait,
+            limits=config.execution.model_copy(
+                update={"greeting_grace_seconds": 0, "max_turns": 1 if mode == "partial" else 2}
+            ),
+            evaluation=evaluation,
+            redactor=redactor,
+            project_config=config,
+        )
+        assert result.finalized
+        assert result.outcome == ("cancelled" if mode == "cancelled" else "passed")
+        assert len(channel.sent) == 1
+        feedback_event = next(
+            event for event in journal.committed_events if event.type == "persona_feedback_recorded"
+        )
+        feedback = feedback_event.data
+        assert feedback.status == ("available" if mode in {"success", "partial"} else "unavailable")
+        assert feedback.partial_experience == (mode == "partial")
+        assert not (tmp_path / "run-1/report.json").exists()
+        assert not (tmp_path / "run-1/conversation.json").exists()
+        markdown = (tmp_path / "run-1/report.md").read_text()
+        assert "Impressões do cliente" in markdown
+        assert "Conclusões formais do teste" in markdown
+        assert "sensitive-token" not in markdown
+        metadata = json.loads((tmp_path / "run-1/metadata.json").read_text())
+        assert any(item["path"] == "report.md" for item in metadata["artifacts"])
+        stop = next(
+            event
+            for event in journal.committed_events
+            if isinstance(event, RunLifecycleEvent)
+            and event.data.conversation_duration_seconds is not None
+        )
+        assert (
+            stop.data.conversation_duration_seconds < (clock.now() - NOW).total_seconds()
+            or mode == "unsupported"
+        )
+
+    asyncio.run(exercise_feedback())
+
+
 PNG = b"\x89PNG\r\n\x1a\nsynthetic-fixture-bytes"
 
 
@@ -859,10 +1008,11 @@ async def exercise(
     greeting_grace: float = 0,
     definition: PersonaDefinition | None = None,
     project_config: ProjectConfig | None = None,
+    redactor: Redactor | None = None,
 ) -> RuntimeResult:
     config = load_config(Path("examples/telecom/scenario.yaml"))
     logical_clock = clock or ManualClock(NOW)
-    journal = RunJournal("run-1", storage, Redactor(PrivacyConfig()), logical_clock)
+    journal = RunJournal("run-1", storage, redactor or Redactor(PrivacyConfig()), logical_clock)
     result = await run_conversation(
         run=run(),
         config_artifact=ConfigArtifact(source_content_hash="hash", effective_config={}),
@@ -904,6 +1054,293 @@ def test_success_returns_detached_evidence_without_finalizing() -> None:
         assert result.committed_events[2].data.message.id == "sent-1"
         assert result.committed_events[2].data.message.content == "My account number is 123"
         assert not hasattr(result, "outcome")
+
+    asyncio.run(scenario())
+
+
+class SelectingChannel(Channel):
+    def __init__(self, *, uncertain: bool = False, bad_receipt: bool = False) -> None:
+        super().__init__()
+        self.selected: list[str] = []
+        self.uncertain = uncertain
+        self.bad_receipt = bad_receipt
+
+    async def select_option(self, option_id: str) -> SelectionReceipt:
+        self.selected.append(option_id)
+        if self.uncertain:
+            raise OSError("uncertain sensitive click result")
+        return SelectionReceipt(
+            message_id="selected-1",
+            submitted_at=NOW,
+            selected_option_id=option_id,
+            selected_label="Account number information",
+            source_message_id="wrong" if self.bad_receipt else "assistant-1",
+            evidence={"activation": "native_click"},
+        )
+
+    async def receive(self) -> CompletedResponse:
+        if self.selected:
+            result = reply("Please provide your account number")
+            return result.model_copy(
+                update={
+                    "messages": [
+                        result.messages[0].model_copy(update={"id": "assistant-2", "sequence": 2})
+                    ]
+                }
+            )
+        result = reply("")
+        return result.model_copy(
+            update={
+                "messages": [
+                    result.messages[0].model_copy(
+                        update={"options": [ReplyOption(id="opaque:1", label="Displayed label")]}
+                    )
+                ]
+            }
+        )
+
+
+class SelectingPersona(Persona):
+    def __init__(self, option_id: str | None = "opaque:1") -> None:
+        super().__init__()
+        self.option_id = option_id
+
+    async def respond(
+        self, observation: ConversationObservation, state: PersonaState
+    ) -> PersonaAction:
+        self.calls += 1
+        if state.turn_number:
+            return PersonaAction(state=state, signal="goal_believed_complete")
+        return PersonaAction(selected_option_id=self.option_id, state=state, signal="continue")
+
+
+def test_selection_is_one_turn_with_adapter_label_evidence_and_no_information_supply() -> None:
+    async def scenario() -> None:
+        channel = SelectingChannel()
+        persona = SelectingPersona()
+        result = await exercise(channel, persona, Storage(), greeting_grace=1)
+        assert result.error is None and result.termination_reason == "goal_believed_complete"
+        assert result.turn_count == result.persona_state.turn_number == 1
+        assert channel.selected == ["opaque:1"] and channel.sent == []
+        assert persona.calls == 2
+        customer = next(
+            e
+            for e in result.committed_events
+            if e.type == "message_observed" and e.data.message.actor == "customer"
+        )
+        assert customer.data.message.content == "Account number information"
+        assert customer.data.message.metadata == {
+            "action_kind": "select_option",
+            "option_id": "opaque:1",
+            "source_assistant_message_id": "assistant-1",
+        }
+        assert customer.data.identity_evidence == {"activation": "native_click"}
+        assert not any(e.type == "repeated_information_observed" for e in result.committed_events)
+        assert result.persona_state.frustration == 0.1
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("option_id", [None, "unknown", "opaque:old"])
+def test_graph_rejects_missing_unknown_or_stale_selection_before_dispatch(
+    option_id: str | None,
+) -> None:
+    async def scenario() -> None:
+        channel = SelectingChannel()
+        result = await exercise(channel, SelectingPersona(option_id), Storage(), greeting_grace=1)
+        assert result.termination_reason == "model_error" and result.turn_count == 0
+        assert channel.selected == channel.sent == []
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("bad_receipt", [False, True])
+def test_failed_selection_never_retries_or_falls_back_to_text(bad_receipt: bool) -> None:
+    async def scenario() -> None:
+        channel = SelectingChannel(uncertain=not bad_receipt, bad_receipt=bad_receipt)
+        result = await exercise(channel, SelectingPersona(), Storage(), greeting_grace=1)
+        assert result.termination_reason == "channel_error"
+        assert result.error is not None and result.error.operation == "channel.send"
+        assert channel.selected == ["opaque:1"] and channel.sent == []
+        assert "sensitive" not in result.model_dump_json()
+
+    asyncio.run(scenario())
+
+
+def test_selection_requires_optional_channel_capability_without_text_fallback() -> None:
+    class MenuTextChannel(Channel):
+        async def receive(self) -> CompletedResponse:
+            return await SelectingChannel().receive()
+
+    async def scenario() -> None:
+        channel = MenuTextChannel()
+        result = await exercise(channel, SelectingPersona(), Storage(), greeting_grace=1)
+        assert result.termination_reason == "channel_error" and result.turn_count == 0
+        assert channel.sent == []
+
+    asyncio.run(scenario())
+
+
+def test_selection_label_uses_committed_redaction_not_persona_display_text() -> None:
+    class PrivateMenu(SelectingChannel):
+        async def receive(self) -> CompletedResponse:
+            result = await super().receive()
+            if not self.selected:
+                result = result.model_copy(
+                    update={
+                        "messages": [
+                            result.messages[0].model_copy(
+                                update={
+                                    "options": [
+                                        ReplyOption(
+                                            id="opaque:1", label="Account number information"
+                                        )
+                                    ],
+                                }
+                            )
+                        ]
+                    }
+                )
+            return result
+
+    class RedactedPersona(SelectingPersona):
+        async def respond(
+            self, observation: ConversationObservation, state: PersonaState
+        ) -> PersonaAction:
+            if not state.turn_number:
+                assert observation.messages[-1].options[0].label == "<redacted:secret>"
+            return await super().respond(observation, state)
+
+    async def scenario() -> None:
+        channel = PrivateMenu()
+        result = await exercise(
+            channel,
+            RedactedPersona(),
+            Storage(),
+            greeting_grace=1,
+            redactor=Redactor(PrivacyConfig(), resolved_secrets=["Account number information"]),
+        )
+        assert result.error is None and result.turn_count == 1
+        customer = next(
+            e.data.message
+            for e in result.committed_events
+            if e.type == "message_observed" and e.data.message.actor == "customer"
+        )
+        assert customer.content == "<redacted:secret>"
+        assert customer.metadata["action_kind"] == "select_option"
+        assert "Account number information" not in result.model_dump_json()
+        assert channel.sent == [] and channel.selected == ["opaque:1"]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("bad_source", [False, True])
+def test_selection_receipt_binds_to_redacted_committed_source(bad_source: bool) -> None:
+    class PrivateSourceChannel(SelectingChannel):
+        async def receive(self) -> CompletedResponse:
+            response = await super().receive()
+            if not self.selected:
+                response = response.model_copy(
+                    update={
+                        "messages": [
+                            response.messages[0].model_copy(
+                                update={"id": "assistant-private-secret"}
+                            )
+                        ]
+                    }
+                )
+            return response
+
+        async def select_option(self, option_id: str) -> SelectionReceipt:
+            receipt = await super().select_option(option_id)
+            return receipt.model_copy(
+                update={
+                    "source_message_id": "wrong-source"
+                    if bad_source
+                    else "assistant-private-secret",
+                }
+            )
+
+    class CommittedSourcePersona(SelectingPersona):
+        async def respond(
+            self, observation: ConversationObservation, state: PersonaState
+        ) -> PersonaAction:
+            if not state.turn_number:
+                assert observation.messages[-1].id == "assistant-<redacted:secret>"
+            return await super().respond(observation, state)
+
+    async def scenario() -> None:
+        channel = PrivateSourceChannel()
+        result = await exercise(
+            channel,
+            CommittedSourcePersona(),
+            Storage(),
+            greeting_grace=1,
+            redactor=Redactor(PrivacyConfig(), resolved_secrets=["private-secret"]),
+        )
+        assert channel.selected == ["opaque:1"] and channel.sent == []
+        assert "private-secret" not in result.model_dump_json()
+        customers = [
+            e.data.message
+            for e in result.committed_events
+            if e.type == "message_observed" and e.data.message.actor == "customer"
+        ]
+        if bad_source:
+            assert result.termination_reason == "channel_error" and result.turn_count == 0
+            assert customers == []
+        else:
+            assert result.error is None and result.termination_reason == "goal_believed_complete"
+            assert result.turn_count == result.persona_state.turn_number == 1
+            assert len(customers) == 1
+            source = next(
+                e.data.message
+                for e in result.committed_events
+                if e.type == "message_observed" and e.data.message.options
+            )
+            assert customers[0].metadata["source_assistant_message_id"] == source.id
+            assert source.id == "assistant-<redacted:secret>"
+            assert customers[0].content == "Account number information"
+            assert customers[0].metadata["action_kind"] == "select_option"
+
+    asyncio.run(scenario())
+
+
+def test_selection_acknowledged_before_journal_failure_still_counts_one_turn() -> None:
+    async def scenario() -> None:
+        channel = SelectingChannel()
+        result = await exercise(
+            channel, SelectingPersona(), Storage(fail_at_sequence=3), greeting_grace=1
+        )
+        assert result.termination_reason == "persistence_error"
+        assert result.turn_count == result.persona_state.turn_number == 1
+        assert channel.selected == ["opaque:1"] and channel.sent == []
+
+    asyncio.run(scenario())
+
+
+def test_graph_rejects_reusing_option_from_previous_observation() -> None:
+    class ReusingPersona(SelectingPersona):
+        async def respond(
+            self, observation: ConversationObservation, state: PersonaState
+        ) -> PersonaAction:
+            return PersonaAction(selected_option_id="opaque:1", state=state, signal="continue")
+
+    async def scenario() -> None:
+        channel = SelectingChannel()
+        result = await exercise(channel, ReusingPersona(), Storage(), greeting_grace=1)
+        assert result.termination_reason == "model_error" and result.turn_count == 1
+        assert channel.selected == ["opaque:1"] and channel.sent == []
+
+    asyncio.run(scenario())
+
+
+def test_selection_obeys_existing_max_turn_limit() -> None:
+    async def scenario() -> None:
+        channel = SelectingChannel()
+        persona = SelectingPersona()
+        result = await exercise(channel, persona, Storage(), greeting_grace=1, max_turns=1)
+        assert result.termination_reason == "max_turns" and result.turn_count == 1
+        assert persona.calls == 1 and channel.selected == ["opaque:1"] and channel.sent == []
 
     asyncio.run(scenario())
 
@@ -1123,12 +1560,31 @@ def test_channel_and_model_failures_are_sanitized_and_closed() -> None:
             assert channel.closed == 1
             assert result.error is not None
             assert "sensitive" not in str(result.model_dump())
+            if expected == "model_error":
+                assert result.error.reason_code == "unknown_model_failure"
             assert [event.type for event in result.committed_events][-2:] == [
                 "operation_failed",
                 "run_lifecycle_changed",
             ]
 
     asyncio.run(scenario())
+
+
+def test_model_failure_diagnostic_preserves_only_allowlisted_code() -> None:
+    from syntheticcx.adapters.persona.tinytroupe import _model_failure_reason
+
+    assert _model_failure_reason(TimeoutError("credential-bearing text")) == "provider_timeout"
+    assert _model_failure_reason(ValueError("private response text")) == "persona_adapter_error"
+    _, detail = _failure(
+        ModelError(
+            "persona.respond",
+            "persona operation failed",
+            reason_code="provider_http_4xx",
+        ),
+        "runtime.execute",
+    )
+    assert detail.reason_code == "provider_http_4xx"
+    assert "private" not in str(detail.model_dump())
 
 
 def test_screenshot_capture_requires_policy_and_is_acknowledged_before_event() -> None:

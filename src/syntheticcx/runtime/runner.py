@@ -18,12 +18,20 @@ from syntheticcx.domain.protocols import (
     StorageBackend,
     WaitController,
 )
-from syntheticcx.errors import ErrorCategory, SyntheticCXError
+from syntheticcx.errors import (
+    CHANNEL_FAILURE_REASONS,
+    MODEL_FAILURE_REASONS,
+    ChannelFailureReason,
+    ErrorCategory,
+    ModelError,
+    SyntheticCXError,
+)
 from syntheticcx.runtime.capture import (
     FailureScreenshotSource,
     ScreenshotArtifactWriter,
     ScreenshotPolicy,
 )
+from syntheticcx.runtime.feedback import collect_feedback
 from syntheticcx.runtime.graph import build_graph
 from syntheticcx.runtime.journal import RunJournal
 from syntheticcx.runtime.result import RuntimeResult, TerminationReason
@@ -50,7 +58,8 @@ def _failure(exc: Exception, stage: str) -> tuple[TerminationReason, ErrorDetail
         category = exc.category
         operation = (
             exc.operation
-            if exc.operation
+            if exc.operation in CHANNEL_FAILURE_REASONS
+            or exc.operation
             in {
                 "persona.initialize",
                 "persona.respond",
@@ -75,7 +84,27 @@ def _failure(exc: Exception, stage: str) -> tuple[TerminationReason, ErrorDetail
         if category == "channel"
         else "model_error"
     )
-    return reason, _error(category, operation)
+    detail = _error(category, operation)
+    if category == "channel" and operation in CHANNEL_FAILURE_REASONS:
+        detail = detail.model_copy(
+            update={
+                "reason_code": cast(ChannelFailureReason, operation),
+                "retryable": exc.retryable if isinstance(exc, SyntheticCXError) else False,
+            }
+        )
+    elif category == "model":
+        code = (
+            exc.reason_code
+            if isinstance(exc, ModelError) and exc.reason_code in MODEL_FAILURE_REASONS
+            else "unknown_model_failure"
+        )
+        detail = detail.model_copy(
+            update={
+                "reason_code": code,
+                "retryable": exc.retryable if isinstance(exc, SyntheticCXError) else False,
+            }
+        )
+    return reason, detail
 
 
 async def run_conversation(
@@ -109,7 +138,8 @@ async def run_conversation(
     cleanup_completed = True
     channel_attempted = False
     stage = "storage.create_run"
-    deadline = clock.now() + timedelta(seconds=limits.journey_timeout_seconds)
+    journey_started = clock.now()
+    deadline = journey_started + timedelta(seconds=limits.journey_timeout_seconds)
     secondary_errors: list[ErrorDetail] = []
     screenshot_policy = ScreenshotPolicy.from_config(project_config) if project_config else None
 
@@ -257,6 +287,7 @@ async def run_conversation(
     except Exception as exc:
         reason, error = _failure(exc, stage)
     finally:
+        conversation_duration = max(0.0, (clock.now() - journey_started).total_seconds())
         try:
             if channel_attempted and reason in {"channel_error", "journey_timeout"}:
                 await record_failure_screenshot()
@@ -272,6 +303,29 @@ async def run_conversation(
                     if error is None:
                         error = secondary
                     secondary_errors.append(secondary)
+            if (
+                project_config is not None
+                and project_config.scenario.observation_topics
+                and reason != "persistence_error"
+                and journal.available
+            ):
+                try:
+                    await collect_feedback(
+                        simulator=simulator,
+                        journal=journal,
+                        wait=wait,
+                        topics=project_config.scenario.observation_topics,
+                        language=project_config.report_language,
+                        final_state=progress.persona_state,
+                        termination_reason=reason or "model_error",
+                        timeout=limits.model_timeout_seconds,
+                    )
+                except asyncio.CancelledError:
+                    reason = "cancelled"
+                    error = _error("cancelled", "runtime.cancelled")
+                except Exception:
+                    reason = "persistence_error"
+                    error = _error("persistence", "journal.append")
             if isinstance(simulator, AsyncCloseable):
                 try:
                     with span("resource.cleanup", operation="persona.close"):
@@ -297,6 +351,7 @@ async def run_conversation(
                                 previous="in_progress" if journal.committed_events else None,
                                 current="in_progress" if retain_storage else "incomplete",
                                 termination_reason=reason,
+                                conversation_duration_seconds=conversation_duration,
                             )
                         ),
                         terminal_record=True,

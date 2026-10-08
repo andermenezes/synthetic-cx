@@ -64,7 +64,8 @@ def test_referenced_guide_materializes_existing_run_config(tmp_path: Path) -> No
 
     loaded = load_config_with_source_hash(path)
     assert str(loaded.config.channel.url) == channel["url"]
-    assert loaded.config.channel.input_locator.value == "chat-input"
+    assert loaded.config.channel.type == "webchat_playwright_dynamic"
+    assert loaded.config.channel.ownership.root_locator.value == "chat-widget"
     assert loaded.source_content_hash == sha256(path.read_bytes()).hexdigest()
     assert loaded.guide_source_hash == sha256(location.read_bytes()).hexdigest()
 
@@ -72,12 +73,15 @@ def test_referenced_guide_materializes_existing_run_config(tmp_path: Path) -> No
 @pytest.mark.parametrize(
     ("change", "error"),
     [
-        ({"version": "2"}, "version"),
+        ({"version": "3"}, "version"),
         ({"unexpected": "value"}, "unexpected"),
         ({"validation": {"status": "draft"}}, "validation.status"),
         ({"validation": {"target_origin": "https://other.example"}}, "target_origin"),
         ({"validation": {"observed_behaviors": ["open", "send"]}}, "observed_behaviors"),
-        ({"channel": {"input_locator": {"strategy": "css", "value": "//input"}}}, "XPath"),
+        (
+            {"channel": {"bootstrap_input_locator": {"strategy": "css", "value": "//input"}}},
+            "XPath",
+        ),
     ],
 )
 def test_guide_rejects_unverified_or_invalid_controls(
@@ -146,16 +150,11 @@ def test_discover_cli_never_publishes_after_failed_verification(
     output = tmp_path / "chat.yaml"
     runner = CliRunner()
     from syntheticcx import cli as cli_module
-    from syntheticcx.discovery.explore import DiscoveryCandidate
-
-    async def candidate(*_args: Any, **_kwargs: Any) -> DiscoveryCandidate:
-        return DiscoveryCandidate(channel=example()["channel"], open_steps=1)
 
     async def failed_verification(*_args: Any, **_kwargs: Any) -> None:
         raise RuntimeError("controlled verification failure")
 
-    monkeypatch.setattr(cli_module, "discover_candidate", candidate)
-    monkeypatch.setattr(cli_module, "verify_candidate", failed_verification)
+    monkeypatch.setattr(cli_module, "discover_guide", failed_verification)
     valid = runner.invoke(
         app, ["discover", str(path), "--url", "https://example.com", "--output", str(output)]
     )

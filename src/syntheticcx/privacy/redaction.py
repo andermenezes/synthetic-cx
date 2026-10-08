@@ -1,7 +1,8 @@
 """Per-run, detached redaction of text, JSON values, and owned models.
 
 Field-name rules apply to structured fields. Free-text values require an exact
-secret or configured pattern. Capture permissions are enforced by callers.
+secret, a supplied sensitive field value, or a configured pattern. Capture permissions
+are enforced by callers.
 """
 
 from __future__ import annotations
@@ -22,6 +23,20 @@ _PATTERN = "<redacted:synthetic_id>"
 _FIELD = "<redacted:field>"
 
 
+def _string_values(value: JsonValue) -> set[str]:
+    """Collect descendant string values when a whole field/container is sensitive."""
+    values: set[str] = set()
+    if isinstance(value, str) and value:
+        values.add(value)
+    elif isinstance(value, dict):
+        for item in value.values():
+            values.update(_string_values(item))
+    elif isinstance(value, list):
+        for item in value:
+            values.update(_string_values(item))
+    return values
+
+
 class Redactor:
     """Snapshot privacy rules and explicitly supplied credentials for one run.
 
@@ -31,7 +46,13 @@ class Redactor:
     with stable placeholder output. Instances must never be logged or persisted.
     """
 
-    def __init__(self, privacy: PrivacyConfig, *, resolved_secrets: Sequence[str] = ()) -> None:
+    def __init__(
+        self,
+        privacy: PrivacyConfig,
+        *,
+        resolved_secrets: Sequence[str] = (),
+        sensitive_context: JsonValue = None,
+    ) -> None:
         self._keys = frozenset(privacy.redaction_keys)
         secrets = sorted({secret for secret in resolved_secrets if secret}, key=len, reverse=True)
         self._secrets = tuple(secrets)
@@ -46,10 +67,12 @@ class Redactor:
             )
             for key in self._keys
         }
+        # Narrative values use field redaction, not credential collision constraints.
+        self._sensitive_strings = tuple(self._field_value_replacements(sensitive_context))
         tokens = {_SECRET, _PATTERN, _FIELD, *self._labels.values()}
         if any(secret in token for secret in secrets for token in tokens):
             raise ConfigurationError(
-                "prepare redaction", "a resolved secret conflicts with reserved redaction tokens"
+                "prepare redaction", "a sensitive value conflicts with reserved redaction tokens"
             )
         self._tokens = re.compile(
             "(" + "|".join(re.escape(token) for token in sorted(tokens)) + ")"
@@ -95,40 +118,45 @@ class Redactor:
         values under configured redaction keys are replaced before normal exact
         secret and pattern redaction runs.
         """
-        replacements = self._field_value_replacements(values)
-        for value, replacement in sorted(
-            replacements.items(), key=lambda item: len(item[0]), reverse=True
-        ):
-            text = text.replace(value, replacement)
-        return self.redact_text(text)
+        return self._redact_with_replacements(text, self._field_value_replacements(values))
 
     def redact_prompt_text(self, text: str, values: JsonValue) -> str:
         """Redact raw and JSON-escaped values in nested, text-encoded prompts."""
         replacements = {
+            **{value: _FIELD for value in self._sensitive_strings},
             **self._field_value_replacements(values),
             **{secret: _SECRET for secret in self._secrets},
         }
         encoded: dict[str, str] = {}
         for value, replacement in replacements.items():
             encoded[value] = replacement
-            for ascii_mode in (False, True):
-                escaped = value
-                # TinyTroupe may embed a JSON document in another JSON message.
-                for _ in range(3):
-                    escaped = json.dumps(escaped, ensure_ascii=ascii_mode)[1:-1]
+            variants = {value}
+            # Nested serializers can independently choose ASCII escaping.
+            # TinyTroupe may embed a JSON document in another JSON message.
+            for _ in range(3):
+                variants = {
+                    json.dumps(escaped, ensure_ascii=ascii_mode)[1:-1]
+                    for escaped in variants
+                    for ascii_mode in (False, True)
+                }
+                for escaped in variants:
                     encoded[escaped] = replacement
-        for value, replacement in sorted(
-            encoded.items(), key=lambda item: len(item[0]), reverse=True
-        ):
-            text = text.replace(value, replacement)
-        return self.redact_text(text)
+        return self._redact_with_replacements(text, encoded)
+
+    def _redact_with_replacements(self, text: str, replacements: dict[str, str]) -> str:
+        """Apply contextual matches without rewriting atomic redaction placeholders."""
+        while True:
+            result = self._redact_segment(text, replacements)
+            if result == text:
+                return result
+            text = result
 
     def _field_value_replacements(self, value: JsonValue) -> dict[str, str]:
         replacements: dict[str, str] = {}
         if isinstance(value, dict):
             for key, item in value.items():
-                if key in self._keys and isinstance(item, str) and item:
-                    replacements[item] = self._labels[key]
+                if key in self._keys:
+                    replacements.update({text: self._labels[key] for text in _string_values(item)})
                 else:
                     replacements.update(self._field_value_replacements(item))
         elif isinstance(value, list):
@@ -136,15 +164,25 @@ class Redactor:
                 replacements.update(self._field_value_replacements(item))
         return replacements
 
-    def _redact_segment(self, text: str) -> str:
+    def _redact_segment(self, text: str, replacements: dict[str, str] | None = None) -> str:
         # Collect all spans before replacing, so regexes never consume newly
         # generated placeholders and overlapping matches cannot expose suffixes.
-        spans: list[tuple[int, int, bool]] = []
+        spans: list[tuple[int, int, str]] = []
         tokens = [(match.start(), match.end()) for match in self._tokens.finditer(text)]
         for secret in self._secrets:
             start = 0
             while (position := text.find(secret, start)) != -1:
-                spans.append((position, position + len(secret), True))
+                spans.append((position, position + len(secret), _SECRET))
+                start = position + 1
+        for value in self._sensitive_strings:
+            start = 0
+            while (position := text.find(value, start)) != -1:
+                spans.append((position, position + len(value), _FIELD))
+                start = position + 1
+        for value, label in (replacements or {}).items():
+            start = 0
+            while (position := text.find(value, start)) != -1:
+                spans.append((position, position + len(value), label))
                 start = position + 1
         for pattern in self._patterns:
             position = 0
@@ -153,27 +191,36 @@ class Redactor:
                 if match is None:
                     break
                 if match.start() != match.end():
-                    spans.append((match.start(), match.end(), False))
+                    spans.append((match.start(), match.end(), _PATTERN))
                 position = match.start() + 1
-        expanded: list[tuple[int, int, bool]] = []
-        for start, end, is_secret in spans:
+        expanded: list[tuple[int, int, str]] = []
+        for start, end, label in spans:
             if any(left <= start and end <= right for left, right in tokens):
                 continue
             for left, right in tokens:
                 if start < right and left < end:
                     start, end = min(start, left), max(end, right)
-            expanded.append((start, end, is_secret))
-        merged: list[tuple[int, int, bool]] = []
-        for start, end, is_secret in sorted(expanded):
+            expanded.append((start, end, label))
+        merged: list[tuple[int, int, str]] = []
+        # Explicit contextual labels retain legacy diagnostic provenance;
+        # overlapping ranges still merge in full, preventing exposed suffixes.
+        priority = {_SECRET: 2, _FIELD: 1, _PATTERN: 0}
+        for start, end, label in sorted(expanded):
             if merged and start < merged[-1][1]:
-                previous_start, previous_end, previous_secret = merged[-1]
-                merged[-1] = (previous_start, max(end, previous_end), is_secret or previous_secret)
+                previous_start, previous_end, previous_label = merged[-1]
+                merged[-1] = (
+                    previous_start,
+                    max(end, previous_end),
+                    label
+                    if priority.get(label, 3) > priority.get(previous_label, 3)
+                    else previous_label,
+                )
             else:
-                merged.append((start, end, is_secret))
+                merged.append((start, end, label))
         output: list[str] = []
         cursor = 0
-        for start, end, is_secret in merged:
-            output.extend((text[cursor:start], _SECRET if is_secret else _PATTERN))
+        for start, end, label in merged:
+            output.extend((text[cursor:start], label))
             cursor = end
         output.append(text[cursor:])
         return "".join(output)

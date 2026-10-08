@@ -27,6 +27,7 @@ JsonObject: TypeAlias = dict[str, JsonValue]
 Normalized = Annotated[float, Field(ge=0, le=1)]
 PositiveSeconds = Annotated[float, Field(gt=0)]
 EnvironmentVariable = Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
+PersonaDescription = Annotated[str, Field(min_length=1, max_length=2000, pattern=r"\S")]
 
 
 class StrictModel(BaseModel):  # type: ignore[misc]
@@ -39,6 +40,9 @@ class CommunicationConfig(StrictModel):
     tone: str = Field(min_length=1)
     style: str = Field(min_length=1)
     language: Language = "en-US"
+    writing_description: PersonaDescription | None = None
+    message_length: Literal["short", "medium", "long"] | None = None
+    grammar_error_probability: Normalized = 0
     typo_probability: Normalized = 0
     spelling_error_probability: Normalized = 0
     clarification_probability: Normalized = 0
@@ -180,6 +184,32 @@ class ScenarioInformation(StrictModel):
         return value
 
 
+class ObservationTopic(StrictModel):
+    id: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
+    description: PersonaDescription
+
+
+class ActionAuthorization(StrictModel):
+    """Scenario-scoped permission for consequential customer choices."""
+
+    action: Literal[
+        "payment", "purchase", "account_change", "consent", "authentication", "destructive"
+    ]
+    # Payment authorization is intentionally bounded and sandbox-only in this MVP.
+    environment: Literal["sandbox"] | None = None
+    max_amount: Annotated[float, Field(gt=0)] | None = None
+    currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$")
+
+    @model_validator(mode="after")
+    def validate_payment_bounds(self) -> ActionAuthorization:
+        payment_fields = (self.environment, self.max_amount, self.currency)
+        if self.action == "payment" and any(value is None for value in payment_fields):
+            raise ValueError("payment authorization requires sandbox, max_amount, and currency")
+        if self.action != "payment" and any(value is not None for value in payment_fields):
+            raise ValueError("payment bounds apply only to payment authorization")
+        return self
+
+
 class ScenarioConfig(StrictModel):
     id: str = Field(min_length=1)
     description: str = Field(min_length=1)
@@ -187,18 +217,25 @@ class ScenarioConfig(StrictModel):
     starting_context: JsonObject = Field(default_factory=dict)
     knowledge: JsonObject = Field(default_factory=dict)
     information: list[ScenarioInformation] = Field(default_factory=list)
+    observation_topics: list[ObservationTopic] = Field(default_factory=list, max_length=10)
+    action_authorizations: list[ActionAuthorization] = Field(default_factory=list, max_length=8)
     success_criteria: list[Criterion] = Field(min_length=1)
 
     @model_validator(mode="after")
     def require_unique_criteria(self) -> ScenarioConfig:
         _require_unique_ids(self.success_criteria, "success_criteria")
         _require_unique_ids(self.information, "information")
+        _require_unique_ids(self.observation_topics, "observation_topics")
+        actions = [authorization.action for authorization in self.action_authorizations]
+        if len(actions) != len(set(actions)):
+            raise ValueError("scenario action authorizations must be unique")
         return self
 
 
 class PersonaConfig(StrictModel):
     id: str = Field(min_length=1)
     name: str | None = None
+    description: PersonaDescription | None = None
     traits: dict[str, Normalized] = Field(default_factory=dict)
     communication: CommunicationConfig
     initial_state: PersonaStateConfig
@@ -224,7 +261,7 @@ class LocatorConfig(StrictModel):
 
 
 class MessageIdentityConfig(StrictModel):
-    strategy: Literal["attribute", "actor_sequence_content_hash"]
+    strategy: Literal["attribute", "dom_node", "actor_sequence_content_hash"]
     attribute_name: str | None = None
 
     @model_validator(mode="after")
@@ -232,7 +269,7 @@ class MessageIdentityConfig(StrictModel):
         if self.strategy == "attribute" and not self.attribute_name:
             raise ValueError("attribute strategy requires attribute_name")
         if self.strategy != "attribute" and self.attribute_name is not None:
-            raise ValueError("actor_sequence_content_hash forbids attribute_name")
+            raise ValueError("non-attribute identity strategies forbid attribute_name")
         return self
 
 
@@ -264,6 +301,12 @@ class ResponseCompletionConfig(StrictModel):
         return self
 
 
+class ReplyOptionsConfig(StrictModel):
+    policy: Literal["guarded_informational_menu"] = "guarded_informational_menu"
+    scope_locator: LocatorConfig
+    option_locator: LocatorConfig
+
+
 class ChannelConfig(StrictModel):
     type: Literal["webchat_playwright"]
     url: AnyHttpUrl
@@ -275,6 +318,7 @@ class ChannelConfig(StrictModel):
     message_identity: MessageIdentityConfig
     send_strategy: SendStrategyConfig
     response_completion: ResponseCompletionConfig
+    reply_options: ReplyOptionsConfig | None = None
 
     @model_validator(mode="after")
     def restrict_content_hash_fallback(self) -> ChannelConfig:
@@ -302,6 +346,218 @@ class ChannelConfig(StrictModel):
         ):
             raise ValueError("content-hash identity fallback requires a controlled fixture URL")
         return self
+
+
+class ChatOwnership(StrictModel):
+    """Independently attested chat root; child locators are root-relative."""
+
+    root_locator: LocatorConfig
+    proof: Literal["chat_dialog", "chat_embed", "opener_linked", "chat_panel"]
+
+    @field_validator("root_locator")
+    @classmethod
+    def require_scoped_root(cls, value: LocatorConfig) -> LocatorConfig:
+        if value.strategy == "css" and value.value.strip().lower() in {
+            "body",
+            "html",
+            "*",
+            ":root",
+        }:
+            raise ValueError("ownership requires a pinned chat root, not a document root")
+        return value
+
+
+ContractId = Annotated[str, Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")]
+OptionLabel = Annotated[str, Field(min_length=1, max_length=200, pattern=r"\S")]
+
+
+def _normalized_label(value: str) -> str:
+    return " ".join(unicodedata.normalize("NFKC", value).split()).casefold()
+
+
+class ChatState(StrictModel):
+    id: ContractId
+    kind: Literal["menu", "composer", "mixed", "terminal"]
+    input_locator: LocatorConfig | None = None
+    send_strategy: SendStrategyConfig | None = None
+    option_locator: LocatorConfig | None = None
+    option_labels: list[OptionLabel] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="after")
+    def validate_controls(self) -> ChatState:
+        composer = self.input_locator is not None
+        options = self.option_locator is not None
+        if composer != (self.send_strategy is not None):
+            raise ValueError("input_locator and send_strategy must be paired")
+        if options != bool(self.option_labels):
+            raise ValueError("option_locator and option_labels must be paired")
+        if (composer, options) != {
+            "menu": (False, True),
+            "composer": (True, False),
+            "mixed": (True, True),
+            "terminal": (False, False),
+        }[self.kind]:
+            raise ValueError("state controls must match kind")
+        labels = [_normalized_label(label) for label in self.option_labels]
+        if len(labels) != len(set(labels)):
+            raise ValueError("option_labels must be unique after normalization")
+        return self
+
+
+class ChatTransition(StrictModel):
+    id: ContractId
+    from_state: ContractId
+    to_state: ContractId
+    action_kind: Literal["probe", "select_option"]
+    probe_id: Literal["first", "second", "third", "explicit"] | None = None
+    option_label: OptionLabel | None = None
+
+    @model_validator(mode="after")
+    def validate_descriptor(self) -> ChatTransition:
+        if self.action_kind == "probe":
+            valid = self.probe_id is not None and self.option_label is None
+        else:
+            valid = self.option_label is not None and self.probe_id is None
+        if not valid:
+            raise ValueError("transition requires exactly its matching action descriptor")
+        return self
+
+
+class RecipeStep(StrictModel):
+    transition_id: ContractId
+
+
+class StatefulChannelConfig(StrictModel):
+    type: Literal["webchat_playwright_stateful"]
+    url: AnyHttpUrl
+    open_locator: LocatorConfig | None = None
+    frame_locator: LocatorConfig | None = None
+    ownership: ChatOwnership
+    assistant_message_locator: LocatorConfig
+    customer_message_locator: LocatorConfig | None = None
+    reader_evidence: Literal["marked", "observed_exchange"] = "marked"
+    message_identity: MessageIdentityConfig
+    response_completion: ResponseCompletionConfig
+    initial_state_id: ContractId
+    states: list[ChatState] = Field(min_length=1, max_length=4)
+    transitions: list[ChatTransition] = Field(min_length=1, max_length=3)
+    verification_recipe: list[RecipeStep] = Field(min_length=1, max_length=3)
+
+    @field_validator("url")
+    @classmethod
+    def forbid_url_credentials(cls, value: AnyHttpUrl) -> AnyHttpUrl:
+        if value.username is not None or value.password is not None:
+            raise ValueError("stateful channel URL must not contain credentials")
+        return value
+
+    @model_validator(mode="after")
+    def validate_graph(self) -> StatefulChannelConfig:
+        if self.reader_evidence == "observed_exchange" and self.customer_message_locator is None:
+            raise ValueError("observed exchange readers require a separated customer locator")
+        _require_unique_ids(self.states, "states")
+        _require_unique_ids(self.transitions, "transitions")
+        states = {state.id: state for state in self.states}
+        transitions = {transition.id: transition for transition in self.transitions}
+        if self.initial_state_id not in states:
+            raise ValueError("initial_state_id must reference a configured state")
+        for transition in self.transitions:
+            if transition.from_state not in states or transition.to_state not in states:
+                raise ValueError("transition endpoints must reference configured states")
+            source = states[transition.from_state]
+            if transition.action_kind == "probe" and source.input_locator is None:
+                raise ValueError("probe transition requires a composer in its source state")
+            if transition.action_kind == "select_option" and (
+                transition.option_label not in source.option_labels
+            ):
+                raise ValueError("option transition must reference a canonical source option label")
+        current = self.initial_state_id
+        visited_states = {current}
+        visited_transitions: set[str] = set()
+        for step in self.verification_recipe:
+            recipe_transition = transitions.get(step.transition_id)
+            if recipe_transition is None:
+                raise ValueError("recipe transition_id must reference a configured transition")
+            if recipe_transition.from_state != current:
+                raise ValueError(
+                    "verification_recipe must form a contiguous path from initial_state_id"
+                )
+            current = recipe_transition.to_state
+            visited_states.add(current)
+            visited_transitions.add(recipe_transition.id)
+        if visited_states != set(states) or visited_transitions != set(transitions):
+            raise ValueError("verification_recipe must cover every configured state and transition")
+        if self.reader_evidence == "observed_exchange" and (
+            states[self.initial_state_id].kind != "composer"
+            or transitions[self.verification_recipe[0].transition_id].action_kind != "probe"
+        ):
+            raise ValueError(
+                "observed exchange readers require a first composer probe in the recipe"
+            )
+        # Preserve the legacy restriction on content-hash identity fallback.
+        if self.message_identity.strategy == "actor_sequence_content_hash":
+            ChannelConfig.model_validate(
+                {
+                    "type": "webchat_playwright",
+                    "url": self.url,
+                    "input_locator": {"strategy": "css", "value": "input"},
+                    "customer_message_locator": self.customer_message_locator
+                    or self.assistant_message_locator,
+                    "assistant_message_locator": self.assistant_message_locator,
+                    "message_identity": self.message_identity,
+                    "send_strategy": {"type": "press_enter"},
+                    "response_completion": self.response_completion,
+                }
+            )
+        return self
+
+
+class InterfaceChannelConfig(StrictModel):
+    """Fixed chat boundary and readers; interaction controls are discovered per turn."""
+
+    type: Literal["webchat_playwright_dynamic"]
+    url: AnyHttpUrl
+    open_locator: LocatorConfig | None = None
+    frame_locator: LocatorConfig | None = None
+    ownership: ChatOwnership
+    assistant_message_locator: LocatorConfig
+    customer_message_locator: LocatorConfig | None = None
+    reader_evidence: Literal["marked", "observed_exchange"] = "marked"
+    message_identity: MessageIdentityConfig
+    response_completion: ResponseCompletionConfig
+    bootstrap_input_locator: LocatorConfig | None = None
+    bootstrap_send_strategy: SendStrategyConfig | None = None
+
+    @field_validator("url")
+    @classmethod
+    def forbid_url_credentials(cls, value: AnyHttpUrl) -> AnyHttpUrl:
+        if value.username is not None or value.password is not None:
+            raise ValueError("interface channel URL must not contain credentials")
+        return value
+
+    @model_validator(mode="after")
+    def validate_boundary(self) -> InterfaceChannelConfig:
+        if (self.bootstrap_input_locator is None) != (self.bootstrap_send_strategy is None):
+            raise ValueError("bootstrap_input_locator and bootstrap_send_strategy must be paired")
+        if self.reader_evidence == "observed_exchange" and self.customer_message_locator is None:
+            raise ValueError("observed exchange readers require a separated customer locator")
+        if self.message_identity.strategy == "actor_sequence_content_hash":
+            ChannelConfig.model_validate(
+                {
+                    "type": "webchat_playwright",
+                    "url": self.url,
+                    "input_locator": {"strategy": "css", "value": "input"},
+                    "customer_message_locator": self.customer_message_locator
+                    or self.assistant_message_locator,
+                    "assistant_message_locator": self.assistant_message_locator,
+                    "message_identity": self.message_identity,
+                    "send_strategy": {"type": "press_enter"},
+                    "response_completion": self.response_completion,
+                }
+            )
+        return self
+
+
+ResolvedChannelConfig = InterfaceChannelConfig
 
 
 class ExecutionLimits(StrictModel):
@@ -406,6 +662,15 @@ class PrivacyConfig(StrictModel):
         return patterns
 
 
+class MarkdownReportingConfig(StrictModel):
+    enabled: bool = False
+
+
+class ReportingConfig(StrictModel):
+    language: Language | None = None
+    markdown: MarkdownReportingConfig = Field(default_factory=MarkdownReportingConfig)
+
+
 class ProjectSettings(StrictModel):
     """Fields shared by inline runs, referenced runs, and discovery drafts."""
 
@@ -418,6 +683,11 @@ class ProjectSettings(StrictModel):
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     privacy: PrivacyConfig = Field(default_factory=PrivacyConfig)
+    reporting: ReportingConfig = Field(default_factory=ReportingConfig)
+
+    @property
+    def report_language(self) -> Language:
+        return self.reporting.language or self.persona.communication.language
 
     @model_validator(mode="after")
     def validate_capture_policy(self) -> ProjectSettings:
@@ -450,7 +720,7 @@ class ProjectSettings(StrictModel):
 class ProjectConfig(ProjectSettings):
     """Fully resolved configuration consumed by the existing run pipeline."""
 
-    channel: ChannelConfig
+    channel: ResolvedChannelConfig
 
 
 class ReferencedProjectConfig(ProjectSettings):
@@ -467,11 +737,13 @@ class GuideValidation(StrictModel):
     status: Literal["verified"]
     verified_at: AwareDatetime
     target_origin: AnyHttpUrl
-    observed_behaviors: list[Literal["open", "send", "receive", "completion"]] = Field(min_length=4)
+    observed_behaviors: list[Literal["open", "send", "receive", "completion", "select_option"]] = (
+        Field(min_length=4)
+    )
 
     @model_validator(mode="after")
     def validate_behaviors(self) -> GuideValidation:
-        if set(self.observed_behaviors) != {"open", "send", "receive", "completion"}:
+        if not {"open", "send", "receive", "completion"}.issubset(self.observed_behaviors):
             raise ValueError("guide must verify open, send, receive, and completion")
         return self
 
@@ -485,6 +757,11 @@ class ChannelGuide(StrictModel):
 
     @model_validator(mode="after")
     def validate_origin(self) -> ChannelGuide:
+        if (
+            "select_option" in self.validation.observed_behaviors
+            and self.channel.reply_options is None
+        ):
+            raise ValueError("verified option selection requires configured reply options")
         target = urlsplit(str(self.channel.url))
         origin = urlsplit(str(self.validation.target_origin))
         if (
@@ -500,6 +777,129 @@ class ChannelGuide(StrictModel):
         ):
             raise ValueError("validation.target_origin must match channel.url origin")
         return self
+
+
+class StatefulGuideValidation(StrictModel):
+    status: Literal["verified"]
+    verified_at: AwareDatetime
+    target_origin: AnyHttpUrl
+    observed_behaviors: list[Literal["open", "send", "select_option", "receive", "completion"]] = (
+        Field(min_length=3, max_length=5)
+    )
+    verified_state_ids: list[ContractId] = Field(min_length=1, max_length=4)
+    verified_transition_ids: list[ContractId] = Field(min_length=1, max_length=3)
+
+    @field_validator("target_origin")
+    @classmethod
+    def forbid_origin_credentials(cls, value: AnyHttpUrl) -> AnyHttpUrl:
+        if value.username is not None or value.password is not None:
+            raise ValueError("stateful target origin must not contain credentials")
+        return value
+
+    @model_validator(mode="after")
+    def validate_evidence(self) -> StatefulGuideValidation:
+        if not {"open", "receive", "completion"}.issubset(self.observed_behaviors):
+            raise ValueError("guide must verify open, receive, and completion")
+        for values in (
+            self.observed_behaviors,
+            self.verified_state_ids,
+            self.verified_transition_ids,
+        ):
+            if len(values) != len(set(values)):
+                raise ValueError("verification evidence must not contain duplicates")
+        return self
+
+
+class StatefulChannelGuide(StrictModel):
+    version: Literal["2"]
+    channel: StatefulChannelConfig
+    validation: StatefulGuideValidation
+
+    @model_validator(mode="after")
+    def validate_evidence(self) -> StatefulChannelGuide:
+        if set(self.validation.verified_state_ids) != {state.id for state in self.channel.states}:
+            raise ValueError("verified_state_ids must exactly cover configured states")
+        if set(self.validation.verified_transition_ids) != {
+            item.id for item in self.channel.transitions
+        }:
+            raise ValueError("verified_transition_ids must exactly cover configured transitions")
+        actions = {
+            "send" if item.action_kind == "probe" else "select_option"
+            for item in self.channel.transitions
+        }
+        if set(self.validation.observed_behaviors) != {"open", "receive", "completion"} | actions:
+            raise ValueError("observed_behaviors must exactly cover verified actions")
+        target = urlsplit(str(self.channel.url))
+        origin = urlsplit(str(self.validation.target_origin))
+        if (
+            (target.scheme, target.hostname, target.port)
+            != (origin.scheme, origin.hostname, origin.port)
+            or origin.path not in {"", "/"}
+            or origin.query
+            or origin.fragment
+        ):
+            raise ValueError("validation.target_origin must match channel.url origin")
+        return self
+
+
+class InterfaceGuideValidation(StrictModel):
+    """Content-free evidence from a complete fresh replay, without its private graph."""
+
+    status: Literal["verified"]
+    verified_at: AwareDatetime
+    target_origin: AnyHttpUrl
+    observed_behaviors: list[Literal["open", "send", "select_option", "receive", "completion"]] = (
+        Field(min_length=4, max_length=5)
+    )
+
+    @field_validator("target_origin")
+    @classmethod
+    def forbid_origin_credentials(cls, value: AnyHttpUrl) -> AnyHttpUrl:
+        if value.username is not None or value.password is not None:
+            raise ValueError("interface target origin must not contain credentials")
+        return value
+
+    @model_validator(mode="after")
+    def validate_evidence(self) -> InterfaceGuideValidation:
+        behaviors = set(self.observed_behaviors)
+        if not {"open", "receive", "completion"}.issubset(behaviors) or not behaviors & {
+            "send",
+            "select_option",
+        }:
+            raise ValueError("guide must verify open, an interaction, receive, and completion")
+        if len(behaviors) != len(self.observed_behaviors):
+            raise ValueError("verification evidence must not contain duplicates")
+        return self
+
+
+class InterfaceChannelGuide(StrictModel):
+    """Public dynamic interface contract; legacy guide versions are not converted."""
+
+    version: Literal["1"]
+    channel: InterfaceChannelConfig
+    validation: InterfaceGuideValidation
+
+    @model_validator(mode="after")
+    def validate_origin(self) -> InterfaceChannelGuide:
+        target = urlsplit(str(self.channel.url))
+        origin = urlsplit(str(self.validation.target_origin))
+        if (
+            (target.scheme, target.hostname, target.port)
+            != (origin.scheme, origin.hostname, origin.port)
+            or origin.path not in {"", "/"}
+            or origin.query
+            or origin.fragment
+        ):
+            raise ValueError("validation.target_origin must match channel.url origin")
+        if self.channel.reader_evidence == "observed_exchange" and (
+            "send" not in self.validation.observed_behaviors
+        ):
+            raise ValueError("observed exchange readers require verified send evidence")
+        return self
+
+
+# Compatibility import name only: this no longer accepts either legacy guide shape.
+AnyChannelGuide = InterfaceChannelGuide
 
 
 class ResolvedModelSettings(StrictModel):

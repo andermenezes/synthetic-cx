@@ -115,6 +115,35 @@ Each run that reaches acknowledged creation receives its own directory under `.r
 
 Start with `report.json` for the summary and findings, then use `trace.jsonl` for the append-only evidence referenced by each finding. `config.yaml` is an effective **redacted** snapshot and cannot be used as a credential source.
 
+### Customer impressions and optional Markdown reports
+
+Add observation topics to request first-person feedback from the **same simulated customer** after the conversation. Topics are separate from `success_criteria` and are only shown during reflection—not while the persona is chatting.
+
+```yaml
+scenario:
+  # Keep the existing scenario fields and success_criteria.
+  observation_topics:
+    - id: clarity
+      description: Were the options and prices understandable?
+    - id: usability
+      description: What felt easy, confusing, or frustrating?
+
+reporting:
+  language: pt-BR  # Optional: en-US or pt-BR; defaults to effective persona language.
+  markdown:
+    enabled: true  # Default: false.
+```
+
+Topics independently enable one bounded reflection even when Markdown is off. Configure at most 10 unique IDs (`A–Z`, `a–z`, digits, `_`, `-`; up to 80 characters), each with a nonblank description up to 2,000 characters. Empty topics make no additional persona model call. Enabling Markdown without topics produces a report with customer feedback marked **not requested**.
+
+Reflection happens after the channel closes and before the persona closes. It retains that customer's history, characteristics, writing voice, and final owned emotional state; it never sends another chat message or adds a turn. The request includes only customer-visible experience and topics, not hidden criteria, evaluator explanations, or verdicts. Feedback and its model records are excluded from evaluator input. These are **subjective impressions, not formal usability measurements**, and never determine pass/fail.
+
+Healthy personas can reflect on partial experiences, including abandonment, turn limits, or channel failures. Cancellation, unavailable original sessions, missing experience, unsupported adapters, timeout, and invalid output are explicitly recorded as unavailable—never as dissatisfaction. There is no replacement persona or reflection retry. Reflection uses `execution.model_timeout_seconds` separately from the journey deadline; model/output failures are supplemental, while evidence/report persistence failures retain the normal storage-failure behavior. Each topic distinguishes observed from not observed and validates references against recorded conversation messages.
+
+When enabled, `<storage.run_root>/<run_id>/report.md` uses fixed sections: context, execution summary, customer impressions, formal test conclusions, source conversation evidence, and limitations/artifacts. Markdown works independently of `storage.materialize_report` (which still controls `report.json`) and conversation/evaluation JSON flags. The template and feedback use `reporting.language`, falling back to the effective persona language including `run --language` overrides. Original topic wording, conversation quotations, and evaluator explanations are preserved and labeled as source material; they are not translated. No report-generation model is called. Untrusted content is escaped, and only redacted committed evidence is rendered.
+
+Requested feedback is always in `trace.jsonl` and appears in `report.json` when enabled. New reports separately record `conversation_duration_seconds` (before cleanup/reflection/evaluation) and the existing full-trace `duration_seconds`; older traces have no separate conversation-duration measurement. Metadata is published only after enabled report artifacts are written.
+
 ---
 
 ## Run lifecycle
@@ -165,9 +194,9 @@ An infrastructure error takes precedence over evaluation findings. A journey tim
 
 ## Discover a web-chat channel
 
-`synthetic-cx discover` can explore a text web chat and generate a reusable channel guide for a scenario draft. It uses a managed local Playwright MCP process to inspect the page and propose controls, then verifies those controls in a **fresh native Playwright session** before writing anything. Ordinary `synthetic-cx run` loads the saved guide as configuration and does not start MCP.
+`synthetic-cx discover` uses bounded, model-planned native Playwright exploration to learn an interface guide. One browser retains state while discovering controls and completing interactions; **one separate fresh browser replays the same successful interactions** before publication. Ordinary `synthetic-cx run` resolves current safe controls natively inside the verified conversation root, without a browser-planning model. The private discovery sample graph is replay evidence, not runtime authority.
 
-Discovery requires the optional Python `discovery` extra, Node.js with `npx`, and Chromium. The MCP package is launched as a local subprocess; its first use may download the pinned package from npm:
+Install the Python `discovery` extra and Chromium. The CLI opens native Playwright directly; it does not launch a Playwright MCP server or require Node.js/`npx`:
 
 ```bash
 uv sync --locked --group dev --extra discovery
@@ -203,29 +232,51 @@ PY
 
 ```bash
 export OPENAI_API_KEY='your-credential'
-uv run --extra discovery synthetic-cx discover billing-draft.yaml \\
-  --url 'http://127.0.0.1:<port>/?variant=success' \\
+uv run --extra discovery synthetic-cx discover billing-draft.yaml \
+  --url 'http://127.0.0.1:<port>/?variant=success&view=frame' \
   --output billing-channel.yaml --verbose
-# Add --headed to show both MCP exploration and native verification browsers.
+# Add --headed to show native learning and fresh recipe-replay browsers.
 # Add --chat-hint 'Talk to an agent' to guide label/tooltip discovery.
-# For a Portuguese chat, add --language pt-BR to localize both verification probes.
+# For a Portuguese chat, add --language pt-BR to localize owned text probes.
 uv run synthetic-cx run billing-draft.completed.yaml
 # If verification required headed mode, use: uv run synthetic-cx run billing-draft.completed.yaml --headed
 ```
 
-Credentials are read from the selected model's explicitly named environment variable. An optional discovery-only model can be supplied with `--discovery-model-config path/to/model.yaml`; `--probe-message` overrides only the first synthetic verification message.
+Credentials are read from the selected model's explicitly named environment variable. An optional discovery-only model can be supplied with `--discovery-model-config path/to/model.yaml`. Text comes from owned localized probes or an explicit `--probe-message`, not arbitrary model-written requests. When supplied, the explicit message is the only available text probe; the model can still choose safe menu options instead.
 
-Supported customer-facing languages are `en-US` and `pt-BR`. Pass `discover --language pt-BR` when the target chat uses Brazilian Portuguese. The two default verification messages are each just **`Olá`** for `pt-BR` or **`Hello`** for `en-US`: two separate submissions are still required to rule out a delayed greeting. The selected language is saved in the completed scenario's `persona.communication.language` for later runs. If `--language` is omitted, discovery uses the draft's `persona.communication.language`, or `en-US` if it is absent. A custom `--probe-message` is sent exactly as written for the first submission and is **not** translated; supply it in the selected language. Language is chosen explicitly, not inferred from the chat page. Normal `run` uses the completed scenario's language unless overridden by `run --language`.
+Discovery allows **at most three conversational actions while learning and replays those same one-to-three actions once in a fresh session**. An action is one text submission or one guarded informational option selection. Observations, waits and model corrections are separately bounded. Uncertain submissions are never retried, replaced with another option, or followed by a text fallback. Use only an authorized synthetic target.
 
-Discovery and normal runs are headless by default. Pass `discover --headed` to show both MCP exploration and **fresh native verification** in separate visible browsers (a desktop display is required). For a guide that only verifies headed, pass `run --headed` as well; a headed verification result does not prove that headless runs will succeed. Neither option shares cookies or browser state between sessions. Use `--chat-hint 'exact tooltip or button text'` when the launcher is ambiguous or its label appears only on hover. Hints must be 1–256 characters and do not bypass safe-control checks.
+The agent learns the interaction in this order:
 
-`--max-discovery-attempts` allows 1–5 model decisions per exploration step (default 3). When the model stops, discovery waits up to the remaining attempt count in seconds for a **changed** accessibility snapshot. It does not ask the model repeatedly about an unchanged snapshot. Schema-invalid or malformed channel proposals can be corrected within the configured budget. Hover and chat-opening actions have a separate three-step limit. A safe chat-opening click triggers a fixed, bounded, read-only inspection of DOM attributes that can help identify selectors. It does not collect input values or message text, and it cannot inspect a cross-origin frame's contents. The model cannot supply executable inspection code. Native verification and its synthetic probe messages are **never** automatically retried.
+1. Navigate, activate a safe launcher if needed, and wait for usable chat controls inside a proven conversation root.
+2. Bind observed controls and readers. A composer without marked readers can submit its first owned probe to learn them from an actual exchange.
+3. Observe a completed reply and explicitly bind the resulting composer, menu, mixed or terminal state. Continue exploring within the action budget, or finish after a complete verified interaction.
+4. Close the learning browser and replay the exact recorded actions in one fresh browser, using native checks without model planning.
+5. Publish the version-1 `InterfaceChannelGuide` and completed scenario only after replay and privacy validation succeed. The public guide contains fixed interface/readers and content-free validation evidence, not sample states, edges or a replay recipe.
 
-When `--chat-hint` is supplied, discovery waits up to five seconds for a **unique, safely labeled launcher matching that hint** to appear in the accessibility snapshot. It can then click it before asking the model for its first decision, without submitting a message. After a model `stop`, unrelated page changes do not count as evidence that the hinted launcher appeared. Before accepting a proposal, discovery also checks whether the chat is still closed and the current snapshot contains **exactly one** safely labeled chat launcher. If so, it clicks that control under the same safe-click rules, waits briefly for new chat controls, and requests a fresh proposal based on the opened chat. Ambiguous or unsafe controls are never clicked automatically. A safely clicked labeled launcher supplies an observed role/name `open_locator` for the separate native verification browser, replacing any model guess. When the label matches a supplied hint, native lookup may use a partial name match, but only a **unique visible** match can be clicked. Other locators stay exact by default. A click that reveals no new controls cannot produce a verified guide.
+Learning permits at most 24 model cycles, 24 observations and four explicit waits, plus one launcher activation per session. These limits share the configured journey deadline and operation timeouts; replay and cleanup retain reserved time. `--max-discovery-attempts` does not enlarge these limits.
 
-If opening the chat newly reveals exactly one nearby, explicitly labeled **Send message** or **Enviar mensagem** button, discovery records its observed role/name as the verification send control instead of trusting the model's send-selector guess. It only reads the snapshot at this stage; it does **not** click Send or transmit a message during MCP exploration. An ambiguous, pre-existing, or unlabeled send control is not automatically selected. Native verification still requires a visible, unique send control and runs the synthetic probe only once per verification step.
+The browser generates bounded, revision-scoped control/reader candidates. The model selects opaque IDs; owned code compiles locators, proves conversation ownership and executes actions against actual nodes. It cannot provide executable JavaScript, arbitrary CSS or unrestricted browser commands. Redacted bounded observations remain in memory, not in the guide or progress output. Origin checks, private handles, latest-reply option ownership and one-use capabilities remain enforced.
 
-Add `--verbose` to report safe stage progress and the owned failure category, operation, and message. Invalid channel proposals report field paths and validation types, without proposed values. Page snapshots, prompts, DOM inventory, probes, credentials, and raw exception details are not printed. MCP exploration is limited to navigation, snapshots, safe hovers, labeled chat-opening clicks, and the fixed read-only inspection after opening the chat; it does **not** send messages. Before publication, native Playwright checks the target origin, sends two synthetic probe messages, and requires completed assistant replies. The origin is checked again before each send and after each response. These probes reach the configured target: use only a site and account you are authorized to test. Target URL and known sensitive scenario values are redacted from model prompts. Discovery does not authenticate, complete business goals, or automatically repair guides during ordinary runs.
+Supported languages are `en-US` and `pt-BR`. `--language` selects owned probe wording and is saved in the completed scenario. Without it, discovery uses the persona language, otherwise `en-US`. Explicit probe text is not translated and stays in memory for exact replay; neither it nor the private sample recipe is published in the guide. Normal runs retain the persona language unless overridden with `run --language`.
+
+Discovery and normal runs are headless by default. `discover --headed` shows learning and fresh replay in separate browsers; no cookies/storage are shared. Headed success does not prove headless compatibility; use `run --headed` when needed. A `--chat-hint` helps identify a launcher but never bypasses safe-control checks.
+
+`--max-discovery-attempts` bounds invalid-decision corrections, not browser retries. This includes premature `finish` requests: a completed interaction, learned reader and bound resulting state are required before finishing. The planner receives next actions and concrete current-ID choices supported by native evidence; native guards still authorize execution. Already bound controls are offered again only when learning a resulting state. Opening has its own one-activation-per-session bound; planning, observation and waiting share the overall discovery deadline. A claim of missing controls/readers is corrected when current evidence offers a composer or reader-learning path. Unsafe or ambiguous evidence still permits immediate stop, and rejected decisions never force a probe. The model must choose observed, safe controls and cannot infer missing authorization from a hint.
+
+Add `--verbose` for safe stage progress and owned failure categories. Inventory, prompts, probe contents, credentials and raw browser exceptions are not printed. Origin is checked around conversational actions. Discovery does not authenticate, complete business goals, or repair guides automatically during ordinary runs.
+
+### Discovery update status (2026-10-05)
+
+The approved interface-bootstrap/native-runtime replacement is implemented; **local implementation, regression and review gates are complete; overall user/live acceptance remains open**. Runtime follows current eligible menus and safe replacement composers independently of the discovery sample, while retaining the pinned root/frame/origin, fixed readers, transaction guards and no-retry rules. Current typing availability and opaque option IDs are supplied to the same customer persona. Missing controls wait within existing deadlines and then fail with safe reason codes, never imply goal completion.
+
+The final local suite passed **1,303 tests, with 4 opt-in skips and 3 dependency warnings**, in **405.99 seconds**, including parity for all nine schemas. Ruff lint, CI-scope mypy (94 files), formatting (175 files) and diff checks are clean. Functional, conventions and simplicity reviewers examined the replacement; disabled-until-filled send handling, handle accumulation, no-greeting fallback and completion-marker handle-leak findings were repaired with regression tests. This final suite also includes cancellation-safe handle cleanup with parameterized tests and the ownership origin-count race classification repair.
+
+The user reported that prior live SKY discovery succeeded but customer runtime failed. That report motivated this redesign; it is not validation of the new implementation. **No live-target or configured-model validation of this redesign has been performed.** Earlier 1,213-test and synthetic `gpt-5.4-mini` loopback checkpoints belong to the superseded stateful implementation, not the replacement's final results.
+
+The approved replacement supersedes the prior no-unvisited-branches/state-graph runtime policy. Remaining gates are overall user/live acceptance, authorized live discovery/replay/runtime validation, configured-model loopback validation and hosted Linux/Python 3.13 evidence. Passing local regressions does not establish live compatibility.
+
+Internal documentation and historical checkpoints are indexed in [DOCUMENTATION_INDEX.md](/Users/andermenezes/Documents/SyntheticCX/DOCUMENTATION_INDEX.md). The current evidence and completion checklist are in [autonomous_discovery_progress.md](/Users/andermenezes/Documents/SyntheticCX/autonomous_discovery_progress.md).
 
 ### Discovery command options
 
@@ -233,33 +284,87 @@ Add `--verbose` to report safe stage progress and the owned failure category, op
 | --- | --- |
 | `--url URL` | Required page URL to explore. |
 | `--output PATH` | Required destination for the verified channel guide; existing files are not overwritten. |
-| `--headed` | Show both MCP exploration and fresh native verification browsers. Requires a desktop/display; normal `run` needs its own `--headed` option if headless access is blocked. |
-| `--chat-hint TEXT` | Optional visible button or hover-tooltip text to search for; 1–256 characters. It guides discovery but does not bypass safe-control checks. |
-| `--language en-US\|pt-BR` | Customer-facing language for both default verification probes; an explicit choice is persisted in the completed scenario for future runs. Defaults to the draft's persona language, otherwise `en-US`. |
-| `--max-discovery-attempts N` | Up to 1–5 model decisions per exploration step (default 3). A stop waits up to the remaining attempt count in seconds for a changed snapshot; invalid proposals can be corrected. Native verification and probe sends are never automatically retried. |
-| `--verbose` | Show stage progress and safe SyntheticCX error category, operation, and message on stderr. Invalid proposals include field paths and validation types, not values. Raw page content, prompts, probe text, credentials, and raw exceptions are not printed. |
-| `--probe-message TEXT` | Override the first greeting without translating it; the second remains `Olá` or `Hello` in the selected language. |
+| `--headed` | Show native learning and fresh replay browsers; requires a desktop/display. |
+| `--chat-hint TEXT` | Optional observed launcher label or exact `id=<DOM-ID>` hint; 1–256 characters. Does not bypass safe-control checks. |
+| `--language en-US\|pt-BR` | Owned probe language, persisted in the completed scenario. Defaults to the persona language, otherwise `en-US`. |
+| `--max-discovery-attempts N` | Up to 1–5 corrections per invalid model decision (default 3), never conversational retries. |
+| `--verbose` | Show safe stage progress, readiness counts, allowlisted decision-rejection reasons and SyntheticCX error category/operation. Raw page content, prompts, probe text, credentials and raw exceptions are not printed. |
+| `--probe-message TEXT` | Explicit owned text override, kept in memory for exact replay and never translated. |
 | `--discovery-model-config PATH` | Optional separate `openai` or `openai_compatible` discovery model configuration, using its explicitly named credential environment variable. |
 
-Example: append `--headed --chat-hint 'Talk to an agent' --verbose` to the discover command to watch exploration and search for a hover-only chat label.
+Example: append `--headed --chat-hint 'Talk to an agent' --verbose` to watch exploration and identify an observed launcher label.
 
 On an interactive terminal, choose to save a completed copy or edit the draft in place; in-place editing creates a `.bak` backup. Non-interactive execution always creates `<draft-name>.completed.yaml`. The completed scenario refers to the guide by a relative `channel_guide` path. Guide loading validates the guide before model or browser activity, and run artifacts include the guide's source hash. Existing output paths are not overwritten; failed or ambiguous verification publishes no guide.
 
-Discovery currently targets text web chats with controls that can be identified and verified by the supported locators and completion strategies. Some sites lack stable message identity or response-completion signals and will not pass verification. If the target interface changes, run discovery explicitly again and review the generated guide.
+Discovery targets inspectable text/menu chats with independently verifiable ownership, actors, identity and completion. Ownership can come from a named chat dialog, marked embed, observed opener/root relationship, or a structurally identified chat panel after opening a launcher. The `chat_panel` proof requires the smallest rendered container containing one safe composer, a named chat control, and a named send control; it does not rely on a brand, domain, or hard-coded widget selector. The root's actual DOM identity and origin stay pinned while composer availability may change. Actors need native marker evidence or the witnessed-exchange evidence described below; the model cannot invent attribution for arbitrary regions or ambiguous messages. Inventories are bounded to 2,000 candidates/nodes within inspected scopes and expose at most 160 candidates with bounded descriptions. Pre-ownership inspection targets chat controls and root evidence, not every element of a large landing page. Insufficient evidence still fails safely. If the interface changes, explicitly rediscover and review the guide.
 
 #### If discovery stops before finding chat
 
-`stop` means the model did not identify a safe launcher in the available snapshot. With `--verbose`, a `page snapshot changed after bounded wait` line means it received new evidence; without that line, raising the attempt limit alone may not help. In `--headed` mode, check whether the launcher appears, whether it is represented as a button or link in the accessibility tree, and whether its visible or hover label matches `--chat-hint`. An icon without a recognizable label or a launcher hidden behind consent, login, a cross-origin frame, or another interaction may be unavailable under the safe-click policy. Do not rely on the model to guess a selector or click an unrelated control. Try an authorized staging page with accessible chat controls instead.
+Model/provider failures, rejected decisions, missing ownership/reader evidence and fresh replay drift are distinct from successful browser interactions. A failed decision may occur after earlier actions; sanitized progress is not a transcript. Increasing correction limits cannot fix an unsafe menu, ambiguous composer or missing chat proof.
 
-With `--verbose`, `waiting briefly for hinted chat launcher` means discovery is taking fresh snapshots before the first model call; `opening unique safely labeled hinted chat launcher` means it is clicking the observed hint match. `opened unique safe chat launcher` confirms the fallback after a model proposal. If neither opening line appears, the model may choose `open_chat`, the chat may already be open, or no unique safe launcher was identified. Watching a headed browser alone does not prove that a click was issued: check these lines or `discovery decision: open_chat`.
+Scope candidates are offered only after native ownership and uniqueness checks; binding rechecks the selected node. With `--verbose`, an exact-ID launcher reports successful activation and learning reports how many proven chat roots are available. If an activated launcher has not produced a proven root yet, discovery observes again using its existing finite wait and journey budgets. Missing proof ends discovery without another launcher click, probe or guide publication. An ID-bearing page region alone is not chat ownership evidence.
 
-`channel-control proposal passed schema validation` only confirms the configuration shape, not that the site works. A later `channel.start` navigation failure occurs in a **fresh** browser (headless unless `discover --headed` is set) and is not addressed by more model attempts. In `--verbose` mode, `target navigation returned HTTP 403` means the server refused that browser session; a different HTTP status or `no HTTP response` likewise indicates navigation failed before control verification. The status is shown without page content or URLs. Check the exact target URL from a fresh browser session; authentication, redirects, HTTP errors, or browser restrictions may prevent native verification. If the site permits headed but not headless access, headed verification and `run --headed` may help on an authorized target; neither guarantees that the chat controls or probes will work. No guide is published until verification succeeds.
+Opening a panel is separate from interaction readiness. Native startup observation waits within the existing browser and journey deadlines for a lazily rendered launcher or root, then for one available safe composer or an assistant-owned menu. Visible native buttons and non-navigating `<a role="button">` launchers are supported. Accessible labels, titles, and the user-supplied text hint are rechecked at activation; ordinary links, forms, disabled controls and consequential actions are not launchers. Header/settings buttons and loading panels do not establish readiness, and the planner is not asked to stop while that bounded startup wait is in progress.
 
-If navigation succeeds but the native chat window stays closed, verification now reports `configured chat opener could not be activated` when its observed locator does not become visible/clickable within the browser action timeout. In `--verbose` mode, `waiting for configured chat opener in native browser`, `configured chat opener clicked in native browser`, and `configured chat input visible in native browser` identify the last completed startup stage without printing page content. This distinguishes a failed opener from an input-control failure after the click. A successful headed exploration click does not share browser state with the fresh native session.
+For composer chats without actor markers, the agent can learn readers after one owned probe. Native code retains the pre-send node baseline and exposes compiled, opaque reader candidates only when it observes a fresh exact customer echo and a distinct response outside that customer's newly appended message container. When the fresh response also appends control buttons, assistant reader candidates are restricted to containers that own those controls, so a learned reader can never exclude its reply's menu. The agent selects candidate IDs; native checks reject overlap, headers, controls, notifications, incomplete formatted fragments, customer delivery metadata and conflicting actor markers. Reader attribution and response completion share the original response deadline. During attribution no second submission, option selection, state binding or finish is allowed.
 
-If the opener clicks and the input is visible but probe 1 fails during `channel.send`, `--verbose` now distinguishes input fill, send-control activation, and customer-echo observation. Progress reports the stage only, never the probe text or locator value. A `configured send control activation failed` error points to the proposed send strategy or its control; `customer echo observation failed` points to observing the submitted message. Verification does not retry a failed send, because the probe may already have reached the target.
+Interface guides record `reader_evidence: observed_exchange` for this path; marked readers use `marked`. Observed-exchange evidence requires a separated customer reader and verified send evidence. A fresh exchange row may contain separate customer and assistant branches; their common row is not treated as entirely customer-owned. Nested response fragments or footers are withheld when a corroborated enclosing response carries additional prose. The private discovery recipe starts with a composer probe, and fresh replay corroborates the readers before publication. Normal runtime applies the same per-action evidence checks without a discovery model or startup probing. Unmarked attribution requires a unique exact echo and separated message branches; absent/transformed echoes, indistinguishable actor structure and reused/virtualized message containers may remain unsupported. Unmarked menu-only startup requires additional ownership evidence; this composer-probe path does not authorize speculative menu clicks.
 
-After a send, `--verbose` reports whether the optional customer echo matched or was absent, and whether an assistant bubble attached. If no bubble attaches before the response deadline, check the assistant-message locator and whether the site responded. If a bubble attaches but completion times out, check the response-completion strategy. These value-free markers never trigger another probe; a timed-out probe may already have reached the site.
+Readiness progress reports the state kind, reader status, input/assistant/option candidate counts, current usable option count, completed steps, pending result binding and remaining conversational actions. Stop reasons distinguish unsupported controls/interfaces, missing readers, ambiguous evidence, unsafe interfaces and exhausted budgets. These are model-reported reasons, not an independently verified diagnosis of the website. Raw labels, selector values and rejected model content are excluded from progress. A premature finish is corrected without browser action; an uncertain submission or response failure still terminates without retries.
+
+After reader binding, option proposals come only from the latest assistant reply; header and historical buttons are excluded. Click-send proposals must satisfy the existing safe-send check and have a unique native locator. The opt-in real-planner regression uses the configured model on a synthetic loopback widget with delayed startup and unmarked messages, then performs fresh replay and publication. Run it with `SYNTHETICCX_RUN_DISCOVERY_PLANNER_SMOKE=1 .venv/bin/python -m pytest -q -s tests/smoke/test_live_discovery_planner.py`; it reads model/execution settings from `sky_scenario.yaml` (override with `SYNTHETICCX_PLANNER_SCENARIO`) and never contacts SKY.
+
+A structurally valid candidate is not a verified guide. Fresh browser navigation, opener activation, state binding and every recorded completed response must succeed. Navigation restrictions, login/consent gates, cross-origin embeds and changed states can prevent replay. No alternative action or reset is attempted after uncertain submission, and no guide is published after failed replay.
+
+For icon-only launchers without accessible text, use an explicit DOM ID hint:
+
+```bash
+uv run --extra discovery synthetic-cx discover sky_scenario.yaml \
+  --url 'https://www.skymais.com.br/faq' --output site-sky.yaml \
+  --headed --chat-hint 'id=ovc-btn-chat-widget' --verbose \
+  --max-discovery-attempts 5 --language pt-BR
+```
+
+`id=<DOM-ID>` is an exact-ID hint, not arbitrary CSS. IDs must start with a letter and contain only letters, digits, `_`, `:`, or `-`, up to 128 characters. Explicit IDs authorize only unique, visible, enabled safe launcher controls outside forms. Normal Playwright actionability is required—never forced or JavaScript-dispatched clicks. Hints do not authorize conversational options, transactions or unrelated page controls.
+
+Authorized headed validation on 2026-10-06 completed discovery, exact fresh replay, and normal persona runs against both SKY and Vivo. Neither final runtime run had model/channel errors; Vivo reached its five-turn limit, and SKY stopped when the persona believed its goal was complete. Both independent evaluations marked the information goal unmet. Working integration is not guaranteed customer-goal success, headless compatibility, or permanent support for a changing public site.
+
+Verified copies, commands, reports, limitations, and the project review are in [`verification/2026-10-06/`](verification/2026-10-06/README.md). Your original scenario and guide files are not replaced.
+
+For Vivo discovery, use the canonical origin and a fresh output path:
+
+```bash
+uv run --extra discovery synthetic-cx discover vivo_scenario.yaml \
+  --url 'https://vivo.com.br/para-voce' --output site-vivo.yaml \
+  --headed --chat-hint 'Pergunte à Aura' --verbose \
+  --max-discovery-attempts 5 --language pt-BR
+```
+
+If the guide, completed-scenario output, or backup already exists, preserve it and discover from a new draft copy with a new guide path. An `output or backup already exists` error is a publication conflict, not a chat-control failure.
+
+Inspection traverses nested **open Shadow DOM** generically. CSS/semantic locators pierce open roots; XPath does not. Inventories and node traversal are bounded, incomplete scans cannot establish uniqueness, and root/frame identity remains pinned. Closed roots, inaccessible/cross-origin frames, uncertain actor attribution and insufficient completion evidence remain unsupported. Runtime may resolve a new safe composer within the pinned root; it never searches globally or repairs the fixed reader/root contract.
+
+Malformed decisions receive bounded, value-free corrections without browser actions. Provider failures/refusals are not treated as schema-correction retries. Reading must distinguish actual assistant/customer nodes from shared transcript/status/control containers. Completion requires new witnessed assistant evidence, not merely a successful click or an old greeting. Unknown ownership, identity or state evidence fails closed.
+
+#### Conversational menu options
+
+Option-enabled channels represent an assistant reply as **prose plus offered options**, or as an options-only reply. The same customer persona chooses either typed text or one current option; it cannot do both in a turn. A successful selection counts as one customer turn and is recorded as a selected option, not a typed message or supplied account information.
+
+The current guide is version-1 `InterfaceChannelGuide` with channel type `webchat_playwright_dynamic`. Old version-1 text/option guides and version-2 stateful guides are rejected: regenerate through discovery; there is no conversion. A verified interface can begin with a menu-only chat root. Detached/global button bars remain unsupported. Startup menus are presented to the persona even with zero greeting grace; discovery probes and recipes never autoplay during customer startup.
+
+Ordinary current assistant-owned choices are offered to the scenario-driven persona without an informational-label or prompt-keyword whitelist. The browser still checks reply ownership, actual node identity, visibility, enabled state, uniqueness and current capability identity before one normal click. Utility controls, links, forms and controls outside the pinned widget are not conversation options. Stale, replaced or consumed options cannot be retried or substituted with typed labels after an uncertain click. These guards cannot prove the semantics of opaque website event handlers; run only on authorized targets.
+
+Consequential actions require explicit scenario `action_authorizations`; assistant prose or a persona goal alone does not grant permission. Sandbox payments must declare `environment: sandbox`, `max_amount`, and ISO currency. Payment controls with an unparseable amount, an amount above the limit or a conflicting currency are withheld. This MVP does not authorize live payments. Other categories (`purchase`, `account_change`, `consent`, `authentication`, `destructive`) can be explicitly authorized. Timestamps (`<time>`) are delivery metadata and never enter message content. New discovery catalogs currently offer quiet-interval completion; inline interface configuration also supports completion-marker and streaming-indicator rules.
+
+Compound consequential choices require every detected category's permission. Payment bounds use the selected control's single monetary amount, or one unambiguous contextual amount if the control has none; ambiguous grouping and conflicting currency evidence are rejected. Consequential detection is conservative native classification, not proof of arbitrary website handler semantics or universal language understanding. Prose extraction intentionally excludes control labels, including embedded links; links are not followed or treated as current reply options.
+
+Multiple assistant bubbles in one completed response are all supplied together to the persona. If the persona emits multiple external actions in a single batch, the runtime records a `persona_output_ambiguity_observed` event, executes only the first external action, and discards the rest; no second click/message is dispatched from the same batch. An empty or malformed action batch still fails with a specific model diagnostic.
+
+The TinyTroupe adapter supplies the scenario goal and a reachable, non-executing customer-support peer in the pinned library's actual prompt fields. Real chat delivery stays in SyntheticCX. Before any dispatch, an internal-only THINK/DONE batch, unavailable option ID, or unavailable text action may receive one model-only correction using the same current observation and persona, within the original model timeout. This never manufactures a decision or repeats a browser action; a second invalid decision, malformed/empty batch, or provider failure still ends with a sanitized model diagnostic.
+
+Learning may select a currently issued guarded informational option. Every recorded action must yield a completed response and a witnessed resulting state; fresh replay must verify the exact sequence. Publication records only actually observed behaviors, not coverage of all branches.
+
+**Approved runtime boundary:** customer runtime may follow an unsampled branch, new conversational choices or a replacement composer when current native evidence authorizes them within the fixed interface. It does not match results against sample states or edges. Runtime uses its own turn/journey budget and may exceed discovery's three-action limit. Unsafe, stale or outside-root controls, unauthorized consequential choices, ownership loss and fixed-reader failures still terminate safely; an uncertain action cannot be retried or replaced. This is current-control resolution, not selector self-healing.
 
 ---
 
@@ -313,16 +418,16 @@ persona:
       willingness_to_continue_delta: -0.1
 
 channel:
-  type: webchat_playwright
-  url: http://127.0.0.1:8000/?variant=success
+  type: webchat_playwright_dynamic
+  url: http://127.0.0.1:8000/?variant=success&view=frame
   open_locator: { strategy: test_id, value: open-chat }
-  input_locator: { strategy: test_id, value: chat-input }
+  frame_locator: { strategy: test_id, value: chat-frame }
+  ownership:
+    root_locator: { strategy: test_id, value: chat-widget }
+    proof: chat_embed
   customer_message_locator: { strategy: test_id, value: customer-message }
   assistant_message_locator: { strategy: test_id, value: assistant-message }
   message_identity: { strategy: attribute, attribute_name: data-message-id }
-  send_strategy:
-    type: click
-    locator: { strategy: test_id, value: send-message }
   response_completion:
     strategy: completion_locator
     locator: { strategy: test_id, value: response-complete }
@@ -368,6 +473,34 @@ A scenario describes the customer's objective independently from the persona.
 
 A persona has static `traits`, a communication style, fresh `initial_state` for every run, and deterministic behavioral rules. Normalized traits and state values are in `[0, 1]`.
 
+Describe **who the customer is** with optional `persona.description`, and **how they write** with optional `communication.writing_description`. Both accept up to 2,000 characters and must be nonblank when supplied. Add these fields to an existing persona; keep its required `id`, `communication.tone`, `communication.style`, and `initial_state`:
+
+```yaml
+persona:
+  id: busy-customer
+  description: >
+    A busy customer with limited technical knowledge who wants
+    a practical solution and dislikes repeating information.
+  communication:
+    language: pt-BR
+    tone: informal
+    style: conversational
+    message_length: short
+    grammar_error_probability: 0.15
+    writing_description: >
+      Writes like a WhatsApp conversation: uses "vc" and "pq",
+      often omits accents and punctuation, and asks one question at a time.
+  initial_state:
+    frustration: 0.1
+    willingness_to_continue: 0.9
+```
+
+`message_length` is optional: `short` favors one or two concise sentences, `medium` a compact paragraph, and `long` several sentences or paragraphs when useful. These are soft preferences, not word/token limits. `grammar_error_probability` defaults to `0` and accepts `[0,1]`: it guides grammatical-error propensity, separately from existing typo/spelling-error probabilities, without guaranteeing measured error frequencies. The adapter does not truncate or rewrite messages or introduce errors into structured actions, identifiers, or factual values. Settings guide generation; model compliance is not guaranteed.
+
+Narratives cannot override structured language/tone/style/length/error settings, customer action rules, current behavioral state, or scenario facts. Omitted/null descriptions and message length plus grammar probability `0` preserve legacy persona prompts. Narrative background does not replace deterministic `behavioral_rules` or change evaluator success criteria.
+
+Use synthetic data in descriptions. The selected persona model receives the original prose. Effective configuration is persisted under the normal privacy policy even when prompt capture is disabled. Add `description` and/or `writing_description` to `privacy.redaction_keys` to redact those complete fields and exact echoes in persisted evidence/captured prompts; free-text sensitive substrings still require configured patterns, known secrets, or whole-field redaction. Automatic PII detection is not provided.
+
 The MVP supports the `repeated_information` behavioral event. Matching rules execute by `priority` and then `id`; deltas accumulate before values are clamped. When `willingness_to_continue` reaches a rule's `abandonment_threshold`, the persona abandons and no further customer message is sent.
 
 ### Evaluators
@@ -385,18 +518,38 @@ A required criterion gates the run. Optional criteria are diagnostic only. Evide
 
 ### Web-chat channel
 
-The MVP channel type is `webchat_playwright`. It supports `open_locator`, optional `frame_locator`, input and message locators, a message identity rule, a send strategy, and an explicit assistant-response completion rule.
+The canonical MVP channel type is `webchat_playwright_dynamic`. Its interface contract fixes `open_locator`, optional `frame_locator`, attested conversation-root `ownership`, message readers, message identity and assistant-response completion. Safe composer/send controls and eligible latest-reply options are resolved from the current owned DOM rather than configured sample states. The example uses a controlled same-origin frame.
+
+Runtime exposes ordinary current chat choices to the scenario-driven persona without an informational-menu keyword whitelist. Consequential choices require explicit scenario authorization. For example, sandbox payment tests must declare a maximum amount and currency:
+
+```yaml
+scenario:
+  id: sandbox-payment
+  description: Complete a bounded test payment
+  goal: Pay the test invoice in the sandbox
+  action_authorizations:
+    - action: payment
+      environment: sandbox
+      max_amount: 25.00
+      currency: USD
+```
+
+Payment choices without a parseable amount, above the configured maximum, or with an explicitly conflicting currency are not offered. Live payments are not authorized by this MVP schema. Other consequential categories (`purchase`, `account_change`, `consent`, `authentication`, `destructive`) can be explicitly authorized by a scenario. Native ownership, current-node validation and no-retry-after-uncertain-dispatch safeguards still apply.
 
 Locator strategies: `role`, `label`, `placeholder`, `text`, `test_id`, and `css`. XPath is deliberately unsupported. Prefer accessible locators or `test_id` values.
 
 | Feature | Supported values |
 | --- | --- |
 | Send | `press_enter`, or `click` with a locator |
-| Message identity | Stable DOM `attribute`; fixture-only `actor_sequence_content_hash` fallback |
+| Message identity | Stable DOM `attribute`; browser-reference `dom_node`; fixture-only `actor_sequence_content_hash` fallback |
 | Response completion | `quiet_interval`, `streaming_indicator_disappears`, or `completion_locator` |
 | Embedded chat | Optional `frame_locator` |
 
-The submitted customer text is canonical after a successful send. A matching DOM echo is supplemental evidence; no echo is allowed; a material mismatch is a channel error. Stream fragments are combined into a finalized message, while distinct assistant bubbles remain ordered messages in one observed assistant turn.
+The submitted customer text is canonical after a successful send. In marked-reader channels, a matching DOM echo is supplemental evidence; no echo is allowed, and a material mismatch is a channel error. Interface guides using `reader_evidence: observed_exchange` require a unique exact echo and separated fresh response evidence on each action. Stream fragments are combined into a finalized message, while distinct assistant bubbles remain ordered messages in one observed assistant turn.
+
+For append-only chats without message IDs, `message_identity: { strategy: dom_node }` tracks actual browser node references in memory. It does not inject IDs into the page or use content hashes. Repeated identical replies remain distinct, and streaming changes retain the same identity. Removing/replacing observed nodes, reordering them, or changing finalized text fails closed. Node tracking is bounded to 120 nodes per actor and is released with the browser session. Prefer stable attributes when available; virtualized/re-rendered transcripts may not support this strategy.
+
+The public `InterfaceChannelGuide` uses `version: "1"` and `webchat_playwright_dynamic`, with content-free fresh-replay validation. The private sample graph is used only during discovery/replay; it is not loaded as runtime authority or published. Old guide shapes require rediscovery, even if they also say version 1. Inline journey channels use the same dynamic interface contract; old text/stateful channel shapes are not accepted as current run configuration.
 
 ### Model providers
 
@@ -460,6 +613,7 @@ Image pixels are not text-redacted, so enable screenshot capture only for an exp
 | `trace.jsonl` | Durable source of truth: typed, sequenced events |
 | `evaluation.json` | Criterion snapshots and evaluator findings |
 | `report.json` | Outcome, metrics, findings, evidence references, and artifact omissions |
+| `report.md` | Optional localized template, same-persona subjective feedback, formal conclusions and source evidence |
 | `artifacts/telemetry/spans.jsonl` | Local, run-correlated supplementary span records when telemetry is enabled |
 
 `trace.jsonl` is authoritative. The message `sequence` is conversation-wide and distinct from trace-event sequence. If a provider does not report token usage or a model version, the metadata records that information as unavailable rather than reporting zero or a misleading aggregate.
@@ -496,7 +650,7 @@ The fixture supports `view=main` (default) and `view=frame` (`chat-frame` iframe
 uv run pytest
 uv run ruff check .
 uv run ruff format --check .
-uv run mypy src
+uv run mypy src tests/contract tests/smoke/test_live_tinytroupe.py
 ```
 
 Build and test distribution archives:
@@ -512,6 +666,16 @@ The live TinyTroupe/OpenAI smoke test is intentionally opt-in and validates the 
 export OPENAI_API_KEY='your-credential'
 SYNTHETICCX_RUN_LIVE_SMOKE=1 uv run pytest -q tests/smoke/test_live_tinytroupe.py
 ```
+
+To exercise the actual discovery planner on a synthetic local widget, select an existing scenario draft with model/execution settings and enable its separate smoke:
+
+```bash
+SYNTHETICCX_PLANNER_SCENARIO=billing-draft.yaml \
+SYNTHETICCX_RUN_DISCOVERY_PLANNER_SMOKE=1 \
+uv run --extra discovery pytest -q -s tests/smoke/test_live_discovery_planner.py
+```
+
+This check calls the selected model API and launches local Chromium. It tests delayed startup, unmarked reader learning, exact fresh replay and publication/loading, using synthetic data. It does not use the draft's target site or contact SKY. Without `SYNTHETICCX_PLANNER_SCENARIO`, it reads model/execution settings from `sky_scenario.yaml`; that local file is not shipped with the repository. The regular suite skips all four opt-in smokes. Legacy MCP smokes exercise retained compatibility tooling and are not evidence for the current native CLI discovery path.
 
 ---
 

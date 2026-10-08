@@ -9,17 +9,17 @@ import pytest
 import yaml
 
 from syntheticcx import cli
-from syntheticcx.config.models import ChannelGuide
+from syntheticcx.config.models import InterfaceChannelGuide
 from syntheticcx.discovery import publish
 from syntheticcx.errors import ConfigurationError
 
 
-def inputs(tmp_path: Path) -> tuple[Path, ChannelGuide]:
+def inputs(tmp_path: Path) -> tuple[Path, InterfaceChannelGuide]:
     source: dict[str, Any] = yaml.safe_load(Path("examples/telecom/scenario.yaml").read_text())
     channel = source.pop("channel")
     path = tmp_path / "draft.yaml"
     path.write_text(yaml.safe_dump(source))
-    return path, ChannelGuide.model_validate(
+    return path, InterfaceChannelGuide.model_validate(
         {
             "version": "1",
             "channel": channel,

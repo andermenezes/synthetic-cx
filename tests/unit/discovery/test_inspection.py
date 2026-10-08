@@ -48,3 +48,30 @@ def test_cross_origin_inspection_is_rejected() -> None:
     with pytest.raises(ChannelError, match="selected target origin"):
         asyncio.run(browser.inspect_chat())
     assert browser.snapshots == 1
+
+
+def test_opened_dialog_waits_for_editor_without_clicking_or_sending(monkeypatch):
+    class PendingBrowser(InventoryBrowser):
+        reads = 0
+
+        async def _call(self, name, arguments, *, check_origin=True):
+            self.reads += 1
+            assert name == "browser_evaluate"
+            self.result = {
+                "origin": "https://example.com",
+                "complete": True,
+                "has_visible_dialog": True,
+                "editor_ready": self.reads > 1,
+                "elements": [],
+                "frames": [{"editor_ready": True, "in_dialog": False}],
+            }
+            return await super()._call(name, arguments, check_origin=check_origin)
+
+    async def sleep(seconds):
+        pass
+
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    browser = PendingBrowser({})
+    asyncio.run(browser.inspect_chat())
+    assert browser.reads == 2
+    assert browser.snapshots == 3

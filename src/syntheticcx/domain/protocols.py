@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable
 from datetime import datetime
-from typing import Protocol, TypeVar
+from typing import Protocol, TypedDict, TypeVar, runtime_checkable
 
 from syntheticcx.domain.artifacts import ConfigArtifact, EvaluationContext, Run
 from syntheticcx.domain.events import TypedTraceEvent
@@ -17,7 +17,11 @@ from syntheticcx.domain.models import (
     LLMResponse,
     PersonaAction,
     PersonaDefinition,
+    PersonaFeedbackResponse,
+    PersonaReflectionRequest,
     PersonaState,
+    ReplyOption,
+    SelectionReceipt,
     SendReceipt,
 )
 
@@ -31,6 +35,32 @@ class ChannelAdapter(Protocol):
     async def close(self) -> None: ...
 
 
+@runtime_checkable
+class OptionSelectingChannel(Protocol):
+    """Optional capability; ordinary text channels need not implement it."""
+
+    async def select_option(self, option_id: str) -> SelectionReceipt: ...
+
+
+@runtime_checkable
+class InitialObservingChannel(Protocol):
+    """Current startup context, separate from any later submission response baseline."""
+
+    async def observe_initial(self) -> CompletedResponse | None: ...
+
+
+class ObservedControls(TypedDict):
+    text_available: bool
+    options: list[ReplyOption]
+
+
+@runtime_checkable
+class ControlsObservingChannel(Protocol):
+    """Optional live controls; no DOM or executable targets cross this seam."""
+
+    async def observe_controls(self) -> ObservedControls: ...
+
+
 class PersonaSimulator(Protocol):
     async def initialize(
         self, definition: PersonaDefinition, scenario_context: CustomerScenarioContext
@@ -38,6 +68,13 @@ class PersonaSimulator(Protocol):
     async def respond(
         self, observation: ConversationObservation, state: PersonaState
     ) -> PersonaAction: ...
+
+
+@runtime_checkable
+class PersonaReflector(Protocol):
+    @property
+    def reflection_available(self) -> bool: ...
+    async def reflect(self, request: PersonaReflectionRequest) -> PersonaFeedbackResponse: ...
 
 
 class Evaluator(Protocol):

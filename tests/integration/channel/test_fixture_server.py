@@ -14,8 +14,8 @@ from playwright.async_api import Browser, BrowserContext
 
 from syntheticcx.adapters.channel.playwright import PlaywrightChannel
 from syntheticcx.adapters.storage.filesystem import FilesystemStorage
-from syntheticcx.config.loader import load_config, load_config_text
-from syntheticcx.config.models import ChannelConfig, LocatorConfig
+from syntheticcx.config.loader import load_config_text
+from syntheticcx.config.models import ChannelConfig, LocatorConfig, ProjectSettings
 from syntheticcx.domain.artifacts import ConfigArtifact, Run
 from syntheticcx.domain.models import PersonaDefinition, Scenario
 from syntheticcx.errors import ChannelError
@@ -30,6 +30,17 @@ assert spec is not None and spec.loader is not None
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 FixtureServer = module.FixtureServer
+
+
+class PrivateChannelConfig(ProjectSettings):
+    """Legacy fixture settings for direct internal channel tests only."""
+
+    channel: ChannelConfig
+
+
+def private_config() -> PrivateChannelConfig:
+    document = yaml.safe_load(Path("tests/fixtures/discovery-sample.yaml").read_text())
+    return PrivateChannelConfig.model_validate(document)
 
 
 def test_server_serves_every_variant_and_frame_assets() -> None:
@@ -95,7 +106,7 @@ def test_chromium_greeting_excludes_history_and_closes_after_partial_start(
 ) -> None:
     async def exercise() -> None:
         with FixtureServer() as fixture:
-            config = load_config(Path("examples/telecom/scenario.yaml"))
+            config = private_config()
             channel_data = config.channel.model_dump(mode="json")
             channel_data["url"] = (
                 f"{fixture.base_url}/?variant=success&view={'frame' if framed else 'main'}"
@@ -135,7 +146,7 @@ def test_chromium_greeting_excludes_history_and_closes_after_partial_start(
 def test_css_text_and_placeholder_locators_in_browser(framed: bool) -> None:
     async def exercise() -> None:
         with FixtureServer() as fixture:
-            config = load_config(Path("examples/telecom/scenario.yaml"))
+            config = private_config()
             channel_data = config.channel.model_dump(mode="json")
             channel_data["url"] = (
                 f"{fixture.base_url}/?variant=success&view={'frame' if framed else 'main'}"
@@ -190,7 +201,7 @@ def configured_channel(
     echo_window: float = 0.12,
     reuse_completion: bool = False,
 ) -> PlaywrightChannel:
-    config = load_config(Path("examples/telecom/scenario.yaml"))
+    config = private_config()
     channel = config.channel.model_dump(mode="json")
     channel["url"] = (
         f"{base_url}/?variant={variant}&view={'frame' if framed else 'main'}"
@@ -226,7 +237,7 @@ def configured_channel(
 def test_navigation_failure_reports_http_status_without_page_content() -> None:
     async def exercise() -> None:
         with FixtureServer() as fixture:
-            config = load_config(Path("examples/telecom/scenario.yaml"))
+            config = private_config()
             channel_data = config.channel.model_dump(mode="json")
             channel_data["url"] = f"{fixture.base_url}/missing.txt"
             channel = PlaywrightChannel(
@@ -244,7 +255,7 @@ def test_navigation_failure_reports_http_status_without_page_content() -> None:
 def test_native_channel_waits_for_unique_partial_name_opener() -> None:
     async def exercise() -> None:
         with FixtureServer() as fixture:
-            config = load_config(Path("examples/telecom/scenario.yaml"))
+            config = private_config()
             channel_data = config.channel.model_dump(mode="json")
             channel_data["url"] = f"{fixture.base_url}/?variant=success"
             channel_data["open_locator"] = {
@@ -271,7 +282,7 @@ def test_native_channel_waits_for_unique_partial_name_opener() -> None:
 def test_native_channel_reports_missing_opener_separately_from_input() -> None:
     async def exercise() -> None:
         with FixtureServer() as fixture:
-            config = load_config(Path("examples/telecom/scenario.yaml"))
+            config = private_config()
             channel_data = config.channel.model_dump(mode="json")
             channel_data["url"] = f"{fixture.base_url}/?variant=success"
             channel_data["open_locator"] = {
@@ -295,7 +306,7 @@ def test_native_channel_reports_missing_opener_separately_from_input() -> None:
 def test_native_send_reports_failed_control_without_exposing_probe() -> None:
     async def exercise() -> None:
         with FixtureServer() as fixture:
-            config = load_config(Path("examples/telecom/scenario.yaml"))
+            config = private_config()
             channel_data = config.channel.model_dump(mode="json")
             channel_data["url"] = f"{fixture.base_url}/?variant=success"
             channel_data["send_strategy"]["locator"] = {
@@ -321,7 +332,7 @@ def test_native_send_reports_failed_control_without_exposing_probe() -> None:
 def test_native_channel_sends_with_observed_role_name_button() -> None:
     async def exercise() -> None:
         with FixtureServer() as fixture:
-            config = load_config(Path("examples/telecom/scenario.yaml"))
+            config = private_config()
             channel_data = config.channel.model_dump(mode="json")
             channel_data["url"] = f"{fixture.base_url}/?variant=success"
             channel_data["send_strategy"] = {
@@ -574,7 +585,7 @@ def test_cancelled_post_submission_echo_does_not_allow_a_blind_retry() -> None:
 def test_chromium_missing_input_classified_and_partial_browser_closed(framed: bool) -> None:
     async def exercise() -> None:
         with FixtureServer() as fixture:
-            config = load_config(Path("examples/telecom/scenario.yaml"))
+            config = private_config()
             channel_data = config.channel.model_dump(mode="json")
             channel_data["url"] = (
                 f"{fixture.base_url}/?variant=missing_control&view={'frame' if framed else 'main'}"
@@ -585,7 +596,8 @@ def test_chromium_missing_input_classified_and_partial_browser_closed(framed: bo
             channel = PlaywrightChannel(ChannelConfig.model_validate(channel_data), limits)
             try:
                 with pytest.raises(
-                    ChannelError, match="browser startup or control resolution failed"
+                    ChannelError,
+                    match="configured chat input could not be resolved in the selected scope",
                 ):
                     await channel.start()
             finally:
@@ -633,7 +645,11 @@ def test_browser_failure_screenshot_is_committed_before_close(tmp_path: Path) ->
                     },
                 }
             )
-            channel = PlaywrightChannel(config.channel, config.execution)
+            channel_data = private_config().channel.model_dump(mode="json")
+            channel_data["url"] = document["channel"]["url"]
+            channel = PlaywrightChannel(
+                ChannelConfig.model_validate(channel_data), config.execution
+            )
 
             class UnusedPersona:
                 async def initialize(self, *_args: object) -> None:

@@ -1,0 +1,92 @@
+# Private calibration/exploration sample. Never load this as public runtime configuration.
+version: "1"
+scenario:
+  id: unexpected-bill-increase
+  description: A subscriber needs to understand a higher mobile invoice.
+  goal: Understand why the current invoice is higher than the previous invoice.
+  starting_context:
+    current_invoice: 150.00
+    previous_invoice: 100.00
+  knowledge:
+    account_number: SYNTHETIC-001
+  information:
+    - id: account_number
+      aliases: [account number, account ID]
+  success_criteria:
+    - id: billing-explanation
+      evaluator_type: semantic_goal_completion
+      result_kind: boolean
+      evidence_policy: required
+      parameters:
+        expected_facts:
+          - The invoice increased by 50 because the customer changed to a more expensive plan.
+persona:
+  id: standard-customer
+  name: Alex Customer
+  traits:
+    digital_literacy: 0.7
+  communication:
+    tone: polite
+    style: concise
+  initial_state:
+    frustration: 0.1
+    willingness_to_continue: 0.9
+  behavioral_rules:
+    - id: repeated-information-frustration
+      priority: 10
+      event: repeated_information
+      frustration_delta: 0.2
+      willingness_to_continue_delta: -0.1
+channel:
+  type: webchat_playwright
+  url: http://127.0.0.1:8000/?variant=success
+  open_locator:
+    strategy: test_id
+    value: open-chat
+  input_locator:
+    strategy: test_id
+    value: chat-input
+  customer_message_locator:
+    strategy: test_id
+    value: customer-message
+  assistant_message_locator:
+    strategy: test_id
+    value: assistant-message
+  message_identity:
+    strategy: attribute
+    attribute_name: data-message-id
+  send_strategy:
+    type: click
+    locator:
+      strategy: test_id
+      value: send-message
+  response_completion:
+    strategy: completion_locator
+    locator:
+      strategy: test_id
+      value: response-complete
+execution:
+  max_turns: 5
+  journey_timeout_seconds: 120
+  greeting_grace_seconds: 2
+  browser_action_timeout_seconds: 10
+  echo_observation_seconds: 0.25
+  response_timeout_seconds: 20
+  model_timeout_seconds: 30
+  evaluator_timeout_seconds: 30
+  persistence_timeout_seconds: 5
+  close_timeout_seconds: 5
+model:
+  provider: openai
+  model: gpt-5.4-mini
+telemetry:
+  enabled: true
+  remote_export: false
+storage:
+  run_root: .runs
+privacy:
+  redaction_keys: [account_number]
+  capture_prompts: false
+  allow_screenshots: false
+  confirm_screenshot_target_safe: false
+  allow_video: false

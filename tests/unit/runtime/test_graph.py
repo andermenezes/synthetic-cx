@@ -21,6 +21,7 @@ from syntheticcx.domain.models import (
     PersonaDefinition,
     PersonaState,
     Scenario,
+    SelectionReceipt,
     SendReceipt,
     TokenUsage,
 )
@@ -32,6 +33,92 @@ from syntheticcx.runtime.journal import RunJournal
 from syntheticcx.runtime.state import initial_state
 
 NOW = datetime(2026, 9, 24, tzinfo=UTC)
+
+
+def test_initial_menu_reaches_persona_with_zero_grace_and_no_startup_probe():
+    class InitialMenuChannel(Channel):
+        initial_reads = 0
+        selected = []
+
+        async def observe_initial(self):
+            self.initial_reads += 1
+            return CompletedResponse.model_validate(
+                {
+                    "messages": [
+                        {
+                            "id": "initial-menu",
+                            "sequence": 0,
+                            "actor": "assistant",
+                            "content": "Choose a topic",
+                            "observed_at": NOW,
+                            "options": [{"id": "current-choice", "label": "Plans"}],
+                        }
+                    ],
+                    "started_at": NOW,
+                    "completed_at": NOW,
+                    "completion_strategy": "quiet_interval",
+                }
+            )
+
+        async def select_option(self, option_id):
+            self.selected.append(option_id)
+            return SelectionReceipt(
+                message_id="selected",
+                submitted_at=NOW,
+                selected_option_id=option_id,
+                selected_label="Plans",
+                source_message_id="initial-menu",
+            )
+
+    class Customer(Persona):
+        async def respond(self, observation, state):
+            self.observations.append(observation)
+            if len(self.observations) == 1:
+                assert observation.messages[-1].options[0].label == "Plans"
+                return PersonaAction(
+                    state=state, signal="continue", selected_option_id="current-choice"
+                )
+            return PersonaAction(state=state, signal="goal_believed_complete")
+
+    async def exercise():
+        config = load_config(Path("examples/telecom/scenario.yaml"))
+        definition = PersonaDefinition.model_validate(config.persona.model_dump())
+        channel = InitialMenuChannel([response(("after-choice", "Plan details"))])
+        customer = Customer([])
+        storage = Storage()
+        graph = build_graph(
+            scenario=Scenario.model_validate(config.scenario.model_dump()),
+            persona=definition,
+            channel=channel,
+            simulator=customer,
+            journal=RunJournal("run-1", storage, Redactor(PrivacyConfig()), Clock()),
+            wait=RealWaitController(),
+            limits=config.execution.model_copy(update={"greeting_grace_seconds": 0}),
+        )
+        result = await graph.ainvoke(initial_state(definition))
+        assert result["turn_count"] == 1
+        assert channel.initial_reads == 1
+        assert channel.selected == ["current-choice"]
+        assert channel.sent == []
+        assert customer.observations[1].messages[0].id == "after-choice"
+
+    asyncio.run(exercise())
+
+
+def test_failed_initial_observation_never_falls_back_to_text_or_receive():
+    class FailedInitialChannel(Channel):
+        async def observe_initial(self):
+            raise ChannelError("channel.initial", "current state is ambiguous")
+
+        async def receive(self):
+            pytest.fail("an initial-state failure must not enter the greeting fallback")
+
+    channel = FailedInitialChannel([])
+    customer = Persona(["This must not be sent"])
+    with pytest.raises(ChannelError, match="initial chat observation failed"):
+        execute(channel, customer, greeting_grace=1)
+    assert channel.sent == []
+    assert customer.observations == []
 
 
 class Clock:
@@ -89,8 +176,11 @@ class Channel:
 
 
 class Persona:
-    def __init__(self, messages: list[str | None]) -> None:
+    def __init__(
+        self, messages: list[str | None], discarded_action_counts: list[int] | None = None
+    ) -> None:
         self.messages = iter(messages)
+        self.discarded_action_counts = iter(discarded_action_counts or [])
         self.observations: list[ConversationObservation] = []
         self.states: list[PersonaState] = []
 
@@ -110,6 +200,7 @@ class Persona:
             message=message,
             state=state,
             signal="continue" if message is not None else "goal_believed_complete",
+            discarded_action_count=next(self.discarded_action_counts, 0),
         )
 
 
@@ -151,6 +242,41 @@ def execute(
     assert storage.events == list(journal.committed_events)
     assert [event.sequence for event in storage.events] == list(range(len(storage.events)))
     return result, storage.events
+
+
+def test_initial_observer_without_greeting_does_not_receive_before_submission() -> None:
+    class NoGreetingChannel(Channel):
+        async def observe_initial(self):
+            return None
+
+        async def receive(self):
+            assert self.sent, "receive requires a pending customer submission"
+            return await super().receive()
+
+    channel = NoGreetingChannel([response(("reply", "Coverage details"))])
+    persona = Persona(["Please explain coverage", None])
+    result, _ = execute(channel, persona, greeting_grace=1)
+    assert result["termination_reason"] == "goal_believed_complete"
+    assert result["turn_count"] == 1
+    assert persona.observations[0].kind == "conversation_started"
+
+
+def test_multiple_persona_choices_are_recorded_and_first_action_continues() -> None:
+    channel = Channel(
+        [response(("assistant-2", "Thanks, please continue"), ("assistant-3", "More details"))]
+    )
+    persona = Persona(["Please explain the plans", None], discarded_action_counts=[2, 0])
+    result, events = execute(channel, persona)
+    ambiguity = next(event for event in events if event.type == "persona_output_ambiguity_observed")
+    assert ambiguity.data.candidate_action_count == 3
+    assert ambiguity.data.selected_action_order == 1
+    assert ambiguity.data.discarded_action_count == 2
+    assert result["turn_count"] == 1
+    assert channel.sent == ["Please explain the plans"]
+    assert [message.content for message in persona.observations[1].messages] == [
+        "Thanks, please continue",
+        "More details",
+    ]
 
 
 def test_no_greeting_then_multipart_response_is_one_observation() -> None:

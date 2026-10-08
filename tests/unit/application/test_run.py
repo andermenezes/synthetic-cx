@@ -12,6 +12,7 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
+from syntheticcx.adapters.channel import dynamic as channel_module
 from syntheticcx.adapters.llm.preflight import CapabilityPreflight
 from syntheticcx.application import run as application
 from syntheticcx.cli import app
@@ -35,7 +36,7 @@ from syntheticcx.evaluation.service import EvaluationService
 
 
 class FakeChannel:
-    def __init__(self, *_args: Any) -> None:
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
         self.started = False
         self.closed = False
 
@@ -122,6 +123,89 @@ def scenario_file(tmp_path: Path, *, report: bool = True) -> Path:
     return path
 
 
+@pytest.mark.parametrize("markdown_failure", [False, True])
+def test_cli_redacts_scenario_fact_recalled_only_in_feedback(
+    tmp_path, monkeypatch, markdown_failure
+):
+    from syntheticcx.domain.models import PersonaFeedbackResponse
+
+    path = scenario_file(tmp_path)
+    data = yaml.safe_load(path.read_text())
+    sensitive = "private-account-908172"
+    data["scenario"]["knowledge"]["account_number"] = sensitive
+    data["privacy"]["redaction_keys"].append("account_number")
+    data["scenario"]["observation_topics"] = [{"id": "clarity", "description": "Was it clear?"}]
+    data["reporting"] = {"markdown": {"enabled": True}}
+    data["persona"]["description"] = f"Customer remembers {sensitive}"
+    path.write_text(yaml.safe_dump(data))
+    monkeypatch.setenv("OPENAI_API_KEY", "canary-credential")
+
+    class ReflectingPersona(FakePersona):
+        reflection_available = True
+
+        async def reflect(self, request):
+            return PersonaFeedbackResponse.model_validate(
+                {
+                    "summary": f"I remember {sensitive}.",
+                    "topics": [
+                        {
+                            "topic_id": "clarity",
+                            "status": "observed",
+                            "impression": f"It was clear for {sensitive}.",
+                            "evidence_message_ids": [request.messages[-1].id],
+                        }
+                    ],
+                }
+            )
+
+    async def preflight(*args):
+        return CapabilityPreflight()
+
+    monkeypatch.setattr(application, "preflight_models", preflight)
+    monkeypatch.setattr(channel_module, "DynamicPlaywrightChannel", FakeChannel)
+    monkeypatch.setattr(application, "TinyTroupePersonaSimulator", ReflectingPersona)
+    monkeypatch.setattr(application, "OpenAIProvider", lambda *args, **kwargs: FakeProvider())
+    monkeypatch.setattr(
+        application,
+        "EvaluationService",
+        lambda **kwargs: EvaluationService(
+            **kwargs,
+            evaluators={"semantic_goal_completion": GoalEvaluator("passed")},
+        ),
+    )
+    if markdown_failure:
+        original_write = application.FilesystemStorage._atomic_write
+
+        def fail_markdown(cls, destination, content):
+            if destination.name == "report.md":
+                raise OSError("sensitive filesystem error")
+            original_write(destination, content)
+
+        monkeypatch.setattr(
+            application.FilesystemStorage, "_atomic_write", classmethod(fail_markdown)
+        )
+    output = CliRunner().invoke(app, ["run", str(path)])
+    if markdown_failure:
+        assert output.exit_code == 3, output.output
+        directory = next((tmp_path / "runs").iterdir())
+        assert (
+            json.loads((directory / "metadata.json").read_text())["lifecycle_status"] != "finalized"
+        )
+        assert not (directory / "report.md").exists()
+        assert "Markdown report:" not in output.output
+        return
+    assert output.exit_code == 0, output.output
+    directory = next((tmp_path / "runs").iterdir())
+    for name in ["trace.jsonl", "config.yaml", "report.json", "report.md"]:
+        assert sensitive not in (directory / name).read_text()
+    assert "Markdown report:" in output.output
+    events = [json.loads(line) for line in (directory / "trace.jsonl").read_text().splitlines()]
+    feedback = next(
+        event["data"] for event in events if event["type"] == "persona_feedback_recorded"
+    )
+    assert feedback["status"] == "available"
+
+
 @pytest.mark.parametrize(
     ("verdict", "code", "report_enabled"),
     [("passed", 0, True), ("failed", 1, True), ("error", 3, True), ("passed", 0, False)],
@@ -138,7 +222,9 @@ def test_cli_composes_run_and_renders_committed_projection(
     channel = FakeChannel()
     persona = FakePersona()
     monkeypatch.setattr(application, "preflight_models", preflight)
-    monkeypatch.setattr(application, "PlaywrightChannel", lambda *_args: channel)
+    monkeypatch.setattr(
+        channel_module, "DynamicPlaywrightChannel", lambda *_args, **_kwargs: channel
+    )
     monkeypatch.setattr(
         application, "TinyTroupePersonaSimulator", lambda *_args, **_kwargs: persona
     )
@@ -224,7 +310,9 @@ def test_cli_infrastructure_error_takes_precedence_over_failed_evaluation(
 
     channel = FailingCloseChannel()
     monkeypatch.setattr(application, "preflight_models", preflight)
-    monkeypatch.setattr(application, "PlaywrightChannel", lambda *_args: channel)
+    monkeypatch.setattr(
+        channel_module, "DynamicPlaywrightChannel", lambda *_args, **_kwargs: channel
+    )
     monkeypatch.setattr(
         application, "TinyTroupePersonaSimulator", lambda *_args, **_kwargs: FakePersona()
     )
@@ -254,8 +342,15 @@ def test_cli_enabled_prompt_capture_is_redacted_in_committed_trace(
     path = scenario_file(tmp_path)
     source = yaml.safe_load(path.read_text())
     source["privacy"]["capture_prompts"] = True
+    source["privacy"]["redaction_keys"].extend(["description", "writing_description"])
     account = 'private-"account\\id'
     credential = 'canary-"credential\\id'
+    narrative = 'private-persona-"background\\id'
+    writing = 'private-writing-"voice\\id'
+    source["persona"]["description"] = narrative
+    source["persona"]["communication"].update(
+        writing_description=writing, message_length="short", grammar_error_probability=0.15
+    )
     source["scenario"]["knowledge"]["account_number"] = account
     path.write_text(yaml.safe_dump(source), encoding="utf-8")
     monkeypatch.setenv("OPENAI_API_KEY", credential)
@@ -268,6 +363,13 @@ def test_cli_enabled_prompt_capture_is_redacted_in_committed_trace(
             super().__init__()
             self.capture = prompt_capture
             self.interactions: list[ModelInteraction] = []
+
+        async def initialize(
+            self, definition: PersonaDefinition, context: CustomerScenarioContext
+        ) -> PersonaState:
+            assert definition.description == narrative
+            assert definition.communication.writing_description == writing
+            return await super().initialize(definition, context)
 
         async def respond(
             self, observation: ConversationObservation, state: PersonaState
@@ -285,14 +387,24 @@ def test_cli_enabled_prompt_capture_is_redacted_in_committed_trace(
                             {
                                 "role": "user",
                                 "content": json.dumps(
-                                    {"knowledge": {"account_number": account}, "secret": credential}
+                                    {
+                                        "knowledge": {"account_number": account},
+                                        "secret": credential,
+                                        "background": narrative,
+                                        "voice": writing,
+                                    }
                                 ),
                             }
                         ]
                     ),
                 )
             )
-            return await super().respond(observation, state)
+            result = await super().respond(observation, state)
+            return (
+                result.model_copy(update={"message": narrative + " " + writing})
+                if result.message
+                else result
+            )
 
         def take_interactions(self) -> tuple[ModelInteraction, ...]:
             values = tuple(self.interactions)
@@ -300,7 +412,9 @@ def test_cli_enabled_prompt_capture_is_redacted_in_committed_trace(
             return values
 
     monkeypatch.setattr(application, "preflight_models", preflight)
-    monkeypatch.setattr(application, "PlaywrightChannel", lambda *_args: FakeChannel())
+    monkeypatch.setattr(
+        channel_module, "DynamicPlaywrightChannel", lambda *_args, **_kwargs: FakeChannel()
+    )
     monkeypatch.setattr(
         application,
         "TinyTroupePersonaSimulator",
@@ -328,6 +442,13 @@ def test_cli_enabled_prompt_capture_is_redacted_in_committed_trace(
     assert all("<redacted:secret>" in prompt for prompt in prompts)
     assert "private-" not in (directory / "trace.jsonl").read_text()
     assert "canary-" not in (directory / "trace.jsonl").read_text()
+    for artifact in directory.rglob("*"):
+        if artifact.is_file() and artifact.suffix in {".json", ".jsonl", ".yaml", ".log"}:
+            assert "private-persona" not in artifact.read_text()
+            assert "private-writing" not in artifact.read_text()
+    effective = yaml.safe_load((directory / "config.yaml").read_text())["effective_config"]
+    assert effective["persona"]["communication"]["message_length"] == "short"
+    assert effective["persona"]["communication"]["grammar_error_probability"] == 0.15
     assert "prompts_not_captured" not in json.dumps(trace)
     metadata = json.loads((directory / "metadata.json").read_text())
     assert "prompts_not_captured" not in metadata["metadata"]["capture_omissions"]
@@ -381,7 +502,9 @@ def test_cli_deadline_matrix_retains_evidence_and_reports_error(
     channel = SlowChannel()
     persona = SlowPersona()
     monkeypatch.setattr(application, "preflight_models", preflight)
-    monkeypatch.setattr(application, "PlaywrightChannel", lambda *_args: channel)
+    monkeypatch.setattr(
+        channel_module, "DynamicPlaywrightChannel", lambda *_args, **_kwargs: channel
+    )
     monkeypatch.setattr(
         application, "TinyTroupePersonaSimulator", lambda *_args, **_kwargs: persona
     )
@@ -431,9 +554,9 @@ def test_invalid_configuration_does_not_probe_or_create_a_run(
         application, "preflight_models", lambda *_args: pytest.fail("unexpected provider probe")
     )
     monkeypatch.setattr(
-        application,
-        "PlaywrightChannel",
-        lambda *_args: pytest.fail("unexpected browser construction"),
+        channel_module,
+        "DynamicPlaywrightChannel",
+        lambda *_args, **_kwargs: pytest.fail("unexpected browser construction"),
     )
     output = CliRunner().invoke(app, ["run", str(path)])
     assert output.exit_code == 2
@@ -454,7 +577,9 @@ def test_capability_failure_is_reported_before_browser_or_storage(
 
     monkeypatch.setattr(application, "preflight_models", unavailable)
     monkeypatch.setattr(
-        application, "PlaywrightChannel", lambda *_args: pytest.fail("browser constructed")
+        channel_module,
+        "DynamicPlaywrightChannel",
+        lambda *_args, **_kwargs: pytest.fail("browser constructed"),
     )
     output = CliRunner().invoke(app, ["run", str(path)])
     assert output.exit_code == 2
@@ -479,7 +604,9 @@ def test_run_id_is_announced_only_after_initial_metadata_commit(
 
     channel = FailingChannel()
     monkeypatch.setattr(application, "preflight_models", preflight)
-    monkeypatch.setattr(application, "PlaywrightChannel", lambda *_args: channel)
+    monkeypatch.setattr(
+        channel_module, "DynamicPlaywrightChannel", lambda *_args, **_kwargs: channel
+    )
     monkeypatch.setattr(
         application, "TinyTroupePersonaSimulator", lambda *_args, **_kwargs: FakePersona()
     )
@@ -535,7 +662,9 @@ def test_cli_reports_cancelled_and_storage_failure_without_claiming_a_final_repo
             await super().append_event(*args, **kwargs)
 
     monkeypatch.setattr(application, "preflight_models", preflight)
-    monkeypatch.setattr(application, "PlaywrightChannel", lambda *_args: InterruptingChannel())
+    monkeypatch.setattr(
+        channel_module, "DynamicPlaywrightChannel", lambda *_args, **_kwargs: InterruptingChannel()
+    )
     monkeypatch.setattr(
         application, "TinyTroupePersonaSimulator", lambda *_args, **_kwargs: FakePersona()
     )
@@ -566,7 +695,9 @@ def test_telemetry_shutdown_failure_does_not_overwrite_final_outcome(
         raise OSError("hostile token: canary-credential")
 
     monkeypatch.setattr(application, "preflight_models", preflight)
-    monkeypatch.setattr(application, "PlaywrightChannel", lambda *_args: FakeChannel())
+    monkeypatch.setattr(
+        channel_module, "DynamicPlaywrightChannel", lambda *_args, **_kwargs: FakeChannel()
+    )
     monkeypatch.setattr(
         application, "TinyTroupePersonaSimulator", lambda *_args, **_kwargs: FakePersona()
     )
@@ -611,7 +742,9 @@ def test_remote_telemetry_setup_failure_is_a_configuration_error_before_browser(
     monkeypatch.setattr(application, "preflight_models", preflight)
     monkeypatch.setattr(application, "RunTelemetry", unavailable_telemetry)
     monkeypatch.setattr(
-        application, "PlaywrightChannel", lambda *_args: pytest.fail("browser constructed")
+        channel_module,
+        "DynamicPlaywrightChannel",
+        lambda *_args, **_kwargs: pytest.fail("browser constructed"),
     )
     output = CliRunner().invoke(app, ["run", str(path)])
     assert output.exit_code == 2
@@ -634,7 +767,9 @@ def test_unexpected_owner_failure_returns_safe_partial_result(
     channel = FakeChannel()
     persona = FakePersona()
     monkeypatch.setattr(application, "preflight_models", preflight)
-    monkeypatch.setattr(application, "PlaywrightChannel", lambda *_args: channel)
+    monkeypatch.setattr(
+        channel_module, "DynamicPlaywrightChannel", lambda *_args, **_kwargs: channel
+    )
     monkeypatch.setattr(
         application, "TinyTroupePersonaSimulator", lambda *_args, **_kwargs: persona
     )

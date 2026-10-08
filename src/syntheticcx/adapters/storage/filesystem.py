@@ -129,6 +129,10 @@ class FilesystemStorage:
         self._materialize_conversation = materialize_conversation
         self._materialize_evaluation = materialize_evaluation
         self._materialize_report = materialize_report
+        self._materialize_markdown = bool(
+            project_config and project_config.reporting.markdown.enabled
+        )
+        self._report_language = project_config.report_language if project_config else "en-US"
         self._screenshot_policy = (
             ScreenshotPolicy.from_config(project_config) if project_config else ScreenshotPolicy()
         )
@@ -390,6 +394,12 @@ class FilesystemStorage:
                         media_type="application/json", status="omitted", reason="disabled"
                     ),
                 ]
+                if self._materialize_markdown:
+                    records.append(
+                        ArtifactRecord(
+                            path="report.md", media_type="text/markdown", status="captured"
+                        )
+                    )
                 records = reconcile_artifacts(events, records + run.artifacts)
                 safe_records = [self._redactor.redact_model(record) for record in records]
                 projections = build_projections(
@@ -400,7 +410,7 @@ class FilesystemStorage:
                     artifacts=safe_records,
                     materialize_conversation=self._materialize_conversation,
                     materialize_evaluation=self._materialize_evaluation,
-                    materialize_report=self._materialize_report,
+                    materialize_report=self._materialize_report or self._materialize_markdown,
                 )
                 metadata = MetadataArtifact.model_validate(
                     run.model_dump(exclude={"events", "messages", "evaluations"})
@@ -446,8 +456,24 @@ class FilesystemStorage:
                     else None
                 )
                 report_bytes = (
-                    canonical_bytes(projections.report) if projections.report is not None else None
+                    canonical_bytes(projections.report)
+                    if self._materialize_report and projections.report is not None
+                    else None
                 )
+                markdown_bytes = None
+                if self._materialize_markdown and projections.report is not None:
+                    from syntheticcx.domain.events import MessageObservedEvent
+                    from syntheticcx.reporting.markdown import render_markdown
+
+                    markdown_bytes = render_markdown(
+                        projections.report,
+                        [
+                            event.data.message
+                            for event in events
+                            if isinstance(event, MessageObservedEvent)
+                        ],
+                        self._report_language,
+                    ).encode("utf-8")
                 if (
                     self._finalized_metadata is not None
                     and self._finalized_metadata != metadata_bytes
@@ -463,6 +489,8 @@ class FilesystemStorage:
                     self._atomic_write(directory / "evaluation.json", evaluation_bytes)
                 if report_bytes is not None:
                     self._atomic_write(directory / "report.json", report_bytes)
+                if markdown_bytes is not None:
+                    self._atomic_write(directory / "report.md", markdown_bytes)
                 self._atomic_write(directory / "metadata.json", metadata_bytes)
                 self._finalized_metadata = metadata_bytes
 

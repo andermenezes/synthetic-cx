@@ -20,12 +20,27 @@ from syntheticcx.adapters.discovery.playwright_mcp import (
     _unique_safe_launcher,
 )
 from syntheticcx.config.models import ChannelConfig, LocatorConfig, PrivacyConfig
-from syntheticcx.discovery.explore import explore
+from syntheticcx.discovery.explore import _snapshot_excerpt, explore
 from syntheticcx.domain.models import LLMRequest, LLMResponse
 from syntheticcx.errors import ChannelError, ModelError
 from syntheticcx.privacy import Redactor
 
 URL = "http://127.0.0.1:8000/?variant=success"
+
+
+def test_long_opened_page_excerpt_retains_chat_tail():
+    snapshot = (
+        "- Page URL: https://example.com/\n"
+        + "FAQ material " * 3000
+        + '\n- dialog\n- textbox "Chat input"'
+    )
+    excerpt = _snapshot_excerpt(snapshot, 16000, True)
+    assert len(excerpt) <= 16000
+    assert 'textbox "Chat input"' in excerpt
+    assert "https://example.com/" in excerpt
+    assert 'textbox "Chat input"' not in _snapshot_excerpt(snapshot, 16000, False)
+
+
 SNAPSHOT = "### Page\n- Page URL: " + URL + '\n### Snapshot\n- button "Open chat" [ref=e5]'
 OPENED = SNAPSHOT + '\n- textbox "Message" [ref=e6]'
 ALREADY_OPEN = SNAPSHOT.replace('- button "Open chat" [ref=e5]', '- textbox "Message" [ref=e6]')
@@ -33,7 +48,9 @@ HOVERED = "### Page\n- Page URL: " + URL + '\n### Snapshot\n- button "Talk to an
 
 
 def candidate() -> dict[str, Any]:
-    source: dict[str, Any] = yaml.safe_load(Path("examples/telecom/scenario.yaml").read_text())
+    source: dict[str, Any] = yaml.safe_load(
+        Path("tests/fixtures/discovery-sample.yaml").read_text()
+    )
     channel = cast(dict[str, Any], source["channel"])
     channel["url"] = "__SYNTHETICCX_TARGET_URL__"
     return channel
@@ -72,6 +89,77 @@ class AlreadyOpenBrowser(Browser):
     async def navigate(self, url: str) -> str:
         assert url == URL
         return ALREADY_OPEN
+
+
+def test_explicit_id_hint_opens_unlabeled_button_before_model_proposal():
+    class IdBrowser(Browser):
+        async def navigate(self, url):
+            return SNAPSHOT.replace('button "Open chat"', "button")
+
+        async def open_id_hint(self, snapshot):
+            assert 'button "' not in snapshot
+            self.clicks.append("explicit-id")
+            return OPENED, LocatorConfig(strategy="css", value='[id="ovc-btn-chat-widget"]')
+
+    channel = candidate()
+    channel["open_locator"] = None
+    browser = IdBrowser()
+    provider = Provider(decision("propose", channel=json.dumps(channel)))
+    result = run(browser, provider, chat_hint="id=ovc-btn-chat-widget")
+    assert result.channel.open_locator.value == '[id="ovc-btn-chat-widget"]'
+    assert browser.clicks == ["explicit-id"] and browser.inspections == 1
+    assert "already activated: True" in provider.requests[0].messages[1].content
+
+
+def test_explicit_id_never_falls_back_to_model_click_for_unsupported_browser():
+    provider = Provider()
+    with pytest.raises(ChannelError, match="does not support"):
+        run(Browser(), provider, chat_hint="id=ovc-btn-chat-widget")
+    assert provider.requests == []
+
+
+def test_redacted_id_hint_keeps_raw_dispatch_intent_separate_from_model_text():
+    class IdBrowser(Browser):
+        async def open_id_hint(self, snapshot):
+            self.clicks.append("id")
+            return OPENED, LocatorConfig(strategy="css", value='[id="chat-customer-123"]')
+
+    browser = IdBrowser()
+    provider = Provider(decision("propose", channel=json.dumps(candidate())))
+    result = asyncio.run(
+        explore(
+            URL,
+            browser,
+            provider,
+            Redactor(PrivacyConfig()),
+            chat_hint="id=chat-<redacted:customer_id>",
+            id_launcher_requested=True,
+        )
+    )
+    assert result.channel.open_locator.value == '[id="chat-customer-123"]'
+    assert browser.clicks == ["id"]
+    assert "customer-123" not in provider.requests[0].model_dump_json()
+
+
+def test_id_hint_reconsiders_controls_that_appear_after_initial_open(monkeypatch):
+    class DelayedBrowser(Browser):
+        async def open_id_hint(self, snapshot):
+            self.clicks.append("id")
+            return OPENED, LocatorConfig(strategy="css", value='[id="chat"]')
+
+        async def snapshot(self):
+            return OPENED + '\n- button "Send" [ref=e7]'
+
+    async def sleep(seconds):
+        pass
+
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    browser = DelayedBrowser()
+    provider = Provider(decision("stop"), decision("propose", channel=json.dumps(candidate())))
+    result = run(browser, provider, chat_hint="id=chat")
+    assert result.channel.open_locator.value == '[id="chat"]'
+    assert browser.clicks == ["id"]
+    assert browser.inspections == 2 and len(provider.requests) == 2
 
 
 class Provider:
@@ -132,6 +220,47 @@ def test_safe_open_then_typed_candidate() -> None:
     assert len(provider.requests) == 2
     assert "chat-input" in provider.requests[1].messages[-1].content
     assert all(request.response_schema is not None for request in provider.requests)
+
+
+@pytest.mark.parametrize("repeated", [False, True])
+def test_auto_opened_launcher_is_not_clicked_again(repeated: bool) -> None:
+    browser = Browser()
+    open_again = decision("open_chat", target="e5", element="Open chat")
+    provider = Provider(
+        open_again,
+        open_again if repeated else decision("propose", channel=json.dumps(candidate())),
+    )
+    if repeated:
+        with pytest.raises(ChannelError, match="repeatedly requested"):
+            run(browser, provider, chat_hint="Open chat", max_discovery_attempts=2)
+    else:
+        result = run(browser, provider, chat_hint="Open chat", max_discovery_attempts=2)
+        assert isinstance(result.channel, ChannelConfig)
+    assert browser.clicks == ["e5"]
+    assert "Chat opener already activated: True" in provider.requests[0].messages[-1].content
+    assert "No second click was made" in provider.requests[1].messages[-1].content
+
+
+def test_control_only_proposal_defers_message_markup_to_native_calibration() -> None:
+    proposal = candidate()
+    for field in (
+        "customer_message_locator",
+        "assistant_message_locator",
+        "message_identity",
+        "response_completion",
+    ):
+        proposal.pop(field)
+    result = run(AlreadyOpenBrowser(), Provider(decision("propose", channel=json.dumps(proposal))))
+    assert result.channel.assistant_message_locator.value == ".syntheticcx-pending-assistant"
+    assert (
+        result.channel.input_locator
+        == ChannelConfig.model_validate(
+            {
+                **candidate(),
+                "url": URL,
+            }
+        ).input_locator
+    )
 
 
 def test_valid_proposal_opens_unique_safe_launcher_before_publication() -> None:
@@ -519,8 +648,8 @@ def test_invalid_decisions_do_not_publish_a_candidate(bad: dict[str, str]) -> No
 
 def test_repeated_open_action_cannot_toggle_opened_chat() -> None:
     browser = Browser()
-    provider = Provider(*[decision("open_chat", target="e5", element="Open chat")] * 3)
-    with pytest.raises(ChannelError, match="already clicked"):
+    provider = Provider(*[decision("open_chat", target="e5", element="Open chat")] * 4)
+    with pytest.raises(ChannelError, match="repeatedly requested"):
         run(browser, provider)
     assert len(browser.clicks) == 1
 
@@ -590,7 +719,7 @@ def test_model_timeout_is_bounded() -> None:
             await asyncio.sleep(5)
             raise AssertionError("unreachable")
 
-    with pytest.raises(ModelError, match="decision failed"):
+    with pytest.raises(ModelError, match="decision timed out after 0.01 seconds"):
         asyncio.run(
             explore(
                 URL,
@@ -600,3 +729,49 @@ def test_model_timeout_is_bounded() -> None:
                 model_timeout_seconds=0.01,
             )
         )
+
+
+@pytest.mark.parametrize(
+    "provider_message,expected",
+    [
+        ("model request failed: timed out", "timed out"),
+        ("model request failed (HTTP 429)", "HTTP 429"),
+        ("model response is malformed", "response is malformed"),
+        ("model response was refused", "response was refused"),
+        ("model response was truncated", "response was truncated"),
+        ("private-provider-canary", "details suppressed"),
+    ],
+)
+def test_decision_failure_preserves_only_allowlisted_provider_diagnostics(
+    provider_message: str,
+    expected: str,
+) -> None:
+    class FailingProvider(Provider):
+        async def generate(self, request: LLMRequest) -> LLMResponse:
+            raise ModelError("model.generate", provider_message, retryable=True)
+
+    with pytest.raises(ModelError, match=expected) as caught:
+        run(AlreadyOpenBrowser(), FailingProvider())
+    assert caught.value.retryable
+    assert "private-provider-canary" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "content,expected",
+    [
+        ("{private-page-canary", "invalid JSON"),
+        (json.dumps(decision("open_chat", target="e1", element="")), "invalid action schema"),
+        ("private-page-canary" * 2000, "size limit"),
+    ],
+)
+def test_decision_validation_failure_has_specific_value_free_diagnostic(
+    content: str,
+    expected: str,
+) -> None:
+    class InvalidProvider(Provider):
+        async def generate(self, request: LLMRequest) -> LLMResponse:
+            return cast(LLMResponse, type("Response", (), {"content": content})())
+
+    with pytest.raises(ModelError, match=expected) as caught:
+        run(AlreadyOpenBrowser(), InvalidProvider())
+    assert "private-page-canary" not in str(caught.value)

@@ -20,7 +20,7 @@ class RuntimeState(TypedDict):
     observation: ConversationObservation | None
     response: CompletedResponse | None
     action: PersonaAction | None
-    pending_message: str | None
+    pending_message: str | None  # Legacy text slot; selections are carried by action directly.
     receipt: SendReceipt | None
     turn_count: int
     termination_reason: str | None

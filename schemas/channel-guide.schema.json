@@ -1,13 +1,69 @@
 {
   "$defs": {
-    "ChannelConfig": {
+    "ChatOwnership": {
       "additionalProperties": false,
+      "description": "Independently attested chat root; child locators are root-relative.",
+      "properties": {
+        "proof": {
+          "enum": [
+            "chat_dialog",
+            "chat_embed",
+            "opener_linked",
+            "chat_panel"
+          ],
+          "title": "Proof",
+          "type": "string"
+        },
+        "root_locator": {
+          "$ref": "#/$defs/LocatorConfig"
+        }
+      },
+      "required": [
+        "root_locator",
+        "proof"
+      ],
+      "title": "ChatOwnership",
+      "type": "object"
+    },
+    "InterfaceChannelConfig": {
+      "additionalProperties": false,
+      "description": "Fixed chat boundary and readers; interaction controls are discovered per turn.",
       "properties": {
         "assistant_message_locator": {
           "$ref": "#/$defs/LocatorConfig"
         },
+        "bootstrap_input_locator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocatorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "bootstrap_send_strategy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SendStrategyConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "customer_message_locator": {
-          "$ref": "#/$defs/LocatorConfig"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocatorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "frame_locator": {
           "anyOf": [
@@ -19,9 +75,6 @@
             }
           ],
           "default": null
-        },
-        "input_locator": {
-          "$ref": "#/$defs/LocatorConfig"
         },
         "message_identity": {
           "$ref": "#/$defs/MessageIdentityConfig"
@@ -37,14 +90,23 @@
           ],
           "default": null
         },
+        "ownership": {
+          "$ref": "#/$defs/ChatOwnership"
+        },
+        "reader_evidence": {
+          "default": "marked",
+          "enum": [
+            "marked",
+            "observed_exchange"
+          ],
+          "title": "Reader Evidence",
+          "type": "string"
+        },
         "response_completion": {
           "$ref": "#/$defs/ResponseCompletionConfig"
         },
-        "send_strategy": {
-          "$ref": "#/$defs/SendStrategyConfig"
-        },
         "type": {
-          "const": "webchat_playwright",
+          "const": "webchat_playwright_dynamic",
           "title": "Type",
           "type": "string"
         },
@@ -58,29 +120,30 @@
       "required": [
         "type",
         "url",
-        "input_locator",
-        "customer_message_locator",
+        "ownership",
         "assistant_message_locator",
         "message_identity",
-        "send_strategy",
         "response_completion"
       ],
-      "title": "ChannelConfig",
+      "title": "InterfaceChannelConfig",
       "type": "object"
     },
-    "GuideValidation": {
+    "InterfaceGuideValidation": {
       "additionalProperties": false,
+      "description": "Content-free evidence from a complete fresh replay, without its private graph.",
       "properties": {
         "observed_behaviors": {
           "items": {
             "enum": [
               "open",
               "send",
+              "select_option",
               "receive",
               "completion"
             ],
             "type": "string"
           },
+          "maxItems": 5,
           "minItems": 4,
           "title": "Observed Behaviors",
           "type": "array"
@@ -108,7 +171,7 @@
         "target_origin",
         "observed_behaviors"
       ],
-      "title": "GuideValidation",
+      "title": "InterfaceGuideValidation",
       "type": "object"
     },
     "LocatorConfig": {
@@ -174,6 +237,7 @@
         "strategy": {
           "enum": [
             "attribute",
+            "dom_node",
             "actor_sequence_content_hash"
           ],
           "title": "Strategy",
@@ -260,13 +324,13 @@
     }
   },
   "additionalProperties": false,
-  "description": "Verified channel controls imported by a referenced run document.",
+  "description": "Public dynamic interface contract; legacy guide versions are not converted.",
   "properties": {
     "channel": {
-      "$ref": "#/$defs/ChannelConfig"
+      "$ref": "#/$defs/InterfaceChannelConfig"
     },
     "validation": {
-      "$ref": "#/$defs/GuideValidation"
+      "$ref": "#/$defs/InterfaceGuideValidation"
     },
     "version": {
       "const": "1",
@@ -279,6 +343,6 @@
     "channel",
     "validation"
   ],
-  "title": "ChannelGuide",
+  "title": "InterfaceChannelGuide",
   "type": "object"
 }

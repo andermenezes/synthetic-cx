@@ -35,7 +35,7 @@ def test_screenshot_storage_needs_three_explicit_opt_ins() -> None:
 
 def test_xpath_is_not_accepted_as_css() -> None:
     source = document()
-    source["channel"]["input_locator"] = {  # type: ignore[index]
+    source["channel"]["bootstrap_input_locator"] = {  # type: ignore[index]
         "strategy": "css",
         "value": "//input",
     }

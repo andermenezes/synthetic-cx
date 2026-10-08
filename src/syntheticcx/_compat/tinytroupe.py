@@ -162,6 +162,15 @@ class TinySession:
             faculty = import_module("tinytroupe.agent.mental_faculty").CustomMentalFaculty(
                 name="SyntheticCX customer decision",
                 actions_configs={
+                    "SELECT_OPTION": {
+                        "description": (
+                            "Choose one available reply option toward YOUR customer goal. Content "
+                            "must be its exact opaque ID from the current observation, not its "
+                            "label or a selector. Never combine SELECT_OPTION with TALK or another "
+                            "external decision in the same batch."
+                        ),
+                        "function": None,
+                    },
                     "GOAL_COMPLETE": {
                         "description": (
                             "Explicitly declare that YOUR customer goal is satisfied; do not talk."
@@ -177,6 +186,25 @@ class TinySession:
             person = agent_module.TinyPerson(name=self._name, mental_faculties=[faculty])
             person.define("description", description)
             person.define("goal", goal)
+            # The pinned v2 template reads these as top-level variables, not
+            # from its mental_state JSON. Use the public persona-definition API
+            # so the generated prompt actually contains the goal and peer.
+            person.define("goals", goal)
+            person.define(
+                "accessible_agents",
+                [
+                    {
+                        "name": "customer_support",
+                        "relation_description": (
+                            "The customer-support assistant in the external web chat. "
+                            "It is reachable now. TALK content is delivered by SyntheticCX, "
+                            "not by TinyTroupe. Use the current observed capabilities to "
+                            "decide whether to talk or select an option. Pursue your "
+                            "scenario goal; do not wait for another agent."
+                        ),
+                    }
+                ],
+            )
             self._person = person
 
     def respond(self, stimulus: str) -> list[dict[str, Any]]:
@@ -198,3 +226,29 @@ class TinySession:
             self._client.close()
             self._person = None
             self._closed = True
+
+    def reflect(self, stimulus: str) -> list[dict[str, Any]]:
+        """Ask the retained customer for feedback; no channel or action callback exists."""
+        if self._closed or self._person is None:
+            raise ValueError("persona has not been initialized")
+        with self._scope():
+            faculty = import_module("tinytroupe.agent.mental_faculty").CustomMentalFaculty(
+                name="SyntheticCX post-conversation feedback",
+                actions_configs={
+                    "REFLECT": {
+                        "description": (
+                            "Privately report YOUR first-person customer impressions after the "
+                            "conversation. Content must be the requested feedback JSON, not TALK."
+                        ),
+                        "function": None,
+                    }
+                },
+            )
+            self._person.add_mental_faculties([faculty])
+            self._person.listen(stimulus, communication_display=False)
+            actions = self._person.act(
+                until_done=True, return_actions=True, communication_display=False
+            )
+            if not isinstance(actions, list):
+                raise ValueError("persona returned no feedback action list")
+            return actions

@@ -17,11 +17,11 @@ from jsonschema import Draft202012Validator
 from typer.testing import CliRunner
 
 from syntheticcx import cli as cli_module
-from syntheticcx.adapters.channel.playwright import PlaywrightChannel
+from syntheticcx.adapters.channel import dynamic as dynamic_channel
+from syntheticcx.adapters.channel.dynamic import DynamicChatBroker
 from syntheticcx.adapters.llm.preflight import CapabilityPreflight
 from syntheticcx.application import run as application
 from syntheticcx.cli import app
-from syntheticcx.discovery.explore import DiscoveryCandidate
 from syntheticcx.domain.models import (
     ConversationObservation,
     CustomerScenarioContext,
@@ -389,22 +389,22 @@ def test_cli_fixture_channel_failure_keeps_evidence_and_closes_browser(
     async def preflight(*_args: Any) -> CapabilityPreflight:
         return CapabilityPreflight()
 
-    channels: list[PlaywrightChannel] = []
+    channels: list[DynamicChatBroker] = []
 
-    class ObservedChannel(PlaywrightChannel):
+    class ObservedChannel(DynamicChatBroker):
         closed = 0
 
         async def close(self) -> None:
             self.closed += 1
             await super().close()
 
-    def new_channel(*args: Any) -> ObservedChannel:
-        channel = ObservedChannel(*args)
+    def new_channel(*args: Any, **kwargs: Any) -> ObservedChannel:
+        channel = ObservedChannel(*args, **kwargs)
         channels.append(channel)
         return channel
 
     monkeypatch.setattr(application, "preflight_models", preflight)
-    monkeypatch.setattr(application, "PlaywrightChannel", new_channel)
+    monkeypatch.setattr(dynamic_channel, "DynamicChatBroker", new_channel)
     monkeypatch.setattr(
         application, "TinyTroupePersonaSimulator", lambda *_args, **_kwargs: DeterministicPersona()
     )
@@ -442,17 +442,63 @@ def test_discovered_guide_runs_through_normal_cli(
     demo = importlib.import_module("run_demo")
     monkeypatch.setenv("OPENAI_API_KEY", "offline-test-secret")
 
-    async def proposed(scenario: Path, url: str, **_kwargs: Any) -> DiscoveryCandidate:
+    async def proposed(scenario: Path, url: str, **_kwargs: Any):
+        from syntheticcx.adapters.channel.broker import NativeChatBroker
+        from syntheticcx.config.loader import load_discovery_draft
+        from syntheticcx.config.models import StatefulChannelConfig
+        from syntheticcx.discovery.budget import DiscoveryBudget
+        from syntheticcx.discovery.contracts import LearnResult
+        from syntheticcx.discovery.replay import replay
+
         document = yaml.safe_load(scenario.read_text())
         channel = yaml.safe_load((EXAMPLE / "scenario.yaml").read_text())["channel"]
         channel["url"] = url
         assert "channel" not in document
-        return DiscoveryCandidate(channel=channel, open_steps=1)
+        # Double only the learned private sample; exact replay and runtime are native.
+        sample = StatefulChannelConfig.model_validate(
+            {
+                **channel,
+                "type": "webchat_playwright_stateful",
+                "initial_state_id": "composer",
+                "states": [
+                    {
+                        "id": "composer",
+                        "kind": "composer",
+                        "input_locator": {"strategy": "test_id", "value": "chat-input"},
+                        "send_strategy": {
+                            "type": "click",
+                            "locator": {"strategy": "test_id", "value": "send-message"},
+                        },
+                    }
+                ],
+                "transitions": [
+                    {
+                        "id": "probe",
+                        "from_state": "composer",
+                        "to_state": "composer",
+                        "action_kind": "probe",
+                        "probe_id": "explicit",
+                    }
+                ],
+                "verification_recipe": [{"transition_id": "probe"}],
+            }
+        )
+        limits = load_discovery_draft(scenario).execution
+        broker = NativeChatBroker(contract=sample, limits=limits)
+        try:
+            await broker.start()
+            return await replay(
+                broker,
+                LearnResult(config=sample, probes={"explicit": "Synthetic test: please reply."}),
+                budget=DiscoveryBudget.create(limits.journey_timeout_seconds),
+            )
+        finally:
+            await broker.close()
 
     async def preflight(*_args: Any) -> CapabilityPreflight:
         return CapabilityPreflight()
 
-    monkeypatch.setattr(cli_module, "discover_candidate", proposed)
+    monkeypatch.setattr(cli_module, "discover_guide", proposed)
     monkeypatch.setattr(application, "preflight_models", preflight)
     monkeypatch.setattr(
         application, "TinyTroupePersonaSimulator", lambda *_args, **_kwargs: DeterministicPersona()
@@ -475,7 +521,7 @@ def test_discovered_guide_runs_through_normal_cli(
                 "discover",
                 str(draft),
                 "--url",
-                f"{fixture.base_url}/?variant=success",
+                f"{fixture.base_url}/?variant=success&view=frame",
                 "--output",
                 str(guide),
             ],
@@ -483,6 +529,10 @@ def test_discovered_guide_runs_through_normal_cli(
         assert discovered.exit_code == 0, discovered.output
         completed = tmp_path / "draft.completed.yaml"
         assert guide.exists() and completed.exists()
+        published = yaml.safe_load(guide.read_text())
+        assert published["version"] == "1"
+        assert published["channel"]["type"] == "webchat_playwright_dynamic"
+        assert "states" not in published["channel"]
         output = CliRunner().invoke(app, ["run", str(completed), "--language", "pt-BR"])
         assert output.exit_code == 0, output.output
     directory = next((tmp_path / "runs").iterdir())

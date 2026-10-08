@@ -39,14 +39,19 @@ persona:
       frustration_delta: 0.2
       willingness_to_continue_delta: -0.1
 channel:
-  type: webchat_playwright
-  url: http://127.0.0.1:8000/?variant=success
+  type: webchat_playwright_dynamic
+  url: http://127.0.0.1:8000/?variant=success&view=frame
   open_locator:
     strategy: test_id
     value: open-chat
-  input_locator:
+  frame_locator:
     strategy: test_id
-    value: chat-input
+    value: chat-frame
+  ownership:
+    root_locator:
+      strategy: test_id
+      value: chat-widget
+    proof: chat_embed
   customer_message_locator:
     strategy: test_id
     value: customer-message
@@ -56,11 +61,6 @@ channel:
   message_identity:
     strategy: attribute
     attribute_name: data-message-id
-  send_strategy:
-    type: click
-    locator:
-      strategy: test_id
-      value: send-message
   response_completion:
     strategy: completion_locator
     locator:

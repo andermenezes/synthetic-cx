@@ -36,5 +36,9 @@ def second_probe(language: Language) -> str:
     return _SECOND_PROBES[language]
 
 
+def third_probe(language: Language) -> str:
+    return _SECOND_PROBES[language]
+
+
 def persona_instruction(language: Language) -> str:
     return _PERSONA_INSTRUCTIONS[language]

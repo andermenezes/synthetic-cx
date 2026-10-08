@@ -35,7 +35,7 @@ class MessageCursor:
         self._delivered: dict[Actor, set[str]] = {"customer": set(), "assistant": set()}
 
     def _key(self, bubble: Bubble) -> str:
-        if self._identity.strategy == "attribute":
+        if self._identity.strategy in {"attribute", "dom_node"}:
             if not bubble.attribute_id or not bubble.attribute_id.strip():
                 raise ChannelError("channel.observe", "message has no stable identity")
             return bubble.attribute_id
@@ -85,7 +85,7 @@ class MessageCursor:
             ):
                 raise ChannelError("channel.observe", "message finalization is ambiguous")
             self._delivered[actor].add(key)
-            if self._identity.strategy == "attribute":
+            if self._identity.strategy in {"attribute", "dom_node"}:
                 ids.append(f"{actor}:{key}")
             else:
                 normalized = unicodedata.normalize("NFKC", bubble.content).casefold().strip()

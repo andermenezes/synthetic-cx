@@ -113,12 +113,20 @@ class ChatProvider:
             )
         except asyncio.CancelledError:
             raise
-        except (TimeoutError, APITimeoutError, APIConnectionError):
-            raise ModelError("model.generate", "model request failed", retryable=True) from None
+        except (TimeoutError, APITimeoutError):
+            raise ModelError(
+                "model.generate", "model request failed: timed out", retryable=True
+            ) from None
+        except APIConnectionError:
+            raise ModelError(
+                "model.generate", "model request failed: connection error", retryable=True
+            ) from None
         except APIStatusError as exc:
             retryable = exc.status_code == 429 or exc.status_code >= 500
             raise ModelError(
-                "model.generate", "model request failed", retryable=retryable
+                "model.generate",
+                f"model request failed (HTTP {exc.status_code})",
+                retryable=retryable,
             ) from None
         except APIError:
             raise ModelError("model.generate", "model request failed") from None
@@ -127,7 +135,12 @@ class ChatProvider:
 
         ended = datetime.now(UTC)
         try:
-            content = response.choices[0].message.content
+            choice = response.choices[0]
+            if getattr(choice.message, "refusal", None):
+                raise ModelError("model.generate", "model response was refused")
+            if getattr(choice, "finish_reason", None) == "length":
+                raise ModelError("model.generate", "model response was truncated")
+            content = choice.message.content
             if not isinstance(content, str) or not content.strip():
                 raise ValueError("missing content")
             if request.response_schema is not None:
@@ -160,6 +173,8 @@ class ChatProvider:
                     ],
                 ),
             )
+        except ModelError:
+            raise
         except Exception:
             raise ModelError("model.generate", "model response is malformed") from None
 

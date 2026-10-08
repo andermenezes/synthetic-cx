@@ -13,6 +13,7 @@ from pydantic import Field, ValidationError, model_validator
 
 from syntheticcx.adapters.discovery.playwright_mcp import (
     DiscoveryBrowser,
+    IdHintBrowser,
     _observed_opener,
     _observed_send_control,
     _unique_safe_launcher,
@@ -24,10 +25,47 @@ from syntheticcx.config.models import (
     SendStrategyConfig,
     StrictModel,
 )
+from syntheticcx.discovery.catalog import interaction_catalog
+from syntheticcx.discovery.hints import launcher_id
+from syntheticcx.discovery.proposals import (
+    INTERACTION_INSTRUCTIONS,
+    INTERACTION_SCHEMA,
+    parse_interaction,
+)
 from syntheticcx.domain.models import LLMMessage, LLMRequest
 from syntheticcx.domain.protocols import LLMProvider
 from syntheticcx.errors import ChannelError, ModelError
 from syntheticcx.privacy import Redactor
+
+
+class _RejectedDecision(ModelError):
+    """Correctable model output, distinct from a failed/refused provider request."""
+
+
+def _decision_rejection(error: ValueError | TypeError) -> str:
+    """Describe owned fields/reasons only, never invalid values or provider output."""
+    if isinstance(error, json.JSONDecodeError):
+        return "invalid JSON"
+    if isinstance(error, ValidationError):
+        fields = {"action", "revision", "target_id", "input_id", "frame_id", "send_id", "send_mode"}
+        rejected = sorted(
+            {
+                str(item["loc"][0])
+                for item in error.errors(include_input=False)
+                if item["loc"] and item["loc"][0] in fields
+            }
+        )
+        return "invalid action schema" + (": check " + ", ".join(rejected) if rejected else "")
+    owned_reasons = {
+        "unknown catalog revision",
+        "unknown or wrong-kind catalog candidate",
+        "browser action requires only a current target",
+        "stop cannot carry controls",
+        "proposal requires input candidate only",
+        "click requires observed send candidate",
+    }
+    return str(error) if str(error) in owned_reasons else "invalid action schema"
+
 
 _DECISION_SCHEMA: JsonObject = {
     "type": "object",
@@ -76,12 +114,34 @@ _INSTRUCTIONS = (
     '"locator":{"strategy":"test_id","value":"response-complete"}}}. '
     "Locator strategies are role, label, placeholder, text, test_id, and css; every locator "
     "needs value and may include name. Identity is an attribute with attribute_name, or the "
+    "dom_node without attribute_name when message nodes lack IDs and remain append-only, or "
     "fixture-only actor_sequence_content_hash fallback. Send is press_enter without locator, "
     "or click with locator. Completion is quiet_interval with quiet_interval_seconds, "
-    "streaming_indicator_disappears with locator, or completion_locator with locator."
+    "streaming_indicator_disappears with locator, or completion_locator with locator. "
+    "Input, opener/frame scope, and send controls must be observed. "
+    "When a dialog is open, choose its visible editable composer, never an unrelated page search "
+    "or newsletter input. Open shadow roots are transparent to Playwright CSS and semantic "
+    "locators; they are NOT iframes. Set frame_locator only for an observed iframe. "
+    "Do not use XPath selectors for shadow-root controls. If the composer is not ready, use stop. "
+    "If messages do not yet "
+    "exist, omit customer_message_locator, assistant_message_locator, message_identity, "
+    "and response_completion rather than inventing attributes or stopping solely for missing "
+    "message markup. Owned provisional defaults are used only for subsequent native "
+    "calibration, which observes a real exchange and replaces these reading controls."
 )
 _TARGET_PLACEHOLDER = "__SYNTHETICCX_TARGET_URL__"
 _PAGE_URL = re.compile(r"(?m)^- Page URL: .*$")
+
+
+def _snapshot_excerpt(snapshot: str, limit: int, opened_chat: bool) -> str:
+    """Keep a newly opened portal on long pages instead of only the page's header."""
+    if len(snapshot) <= limit or not opened_chat:
+        return snapshot[:limit]
+    header = snapshot[: min(1000, limit // 4)]
+    marker = "\n[Earlier page content omitted; current chat evidence follows.]\n"
+    return header + marker + snapshot[-(limit - len(header) - len(marker)) :]
+
+
 _CHANNEL_FIELD_NAMES = frozenset(
     {
         "type",
@@ -195,6 +255,7 @@ async def explore(
     snapshot_limit: int = 16_000,
     sensitive_context: JsonObject | None = None,
     chat_hint: str | None = None,
+    id_launcher_requested: bool | None = None,
     on_progress: Callable[[str], None] | None = None,
     max_discovery_attempts: int = 3,
 ) -> DiscoveryCandidate:
@@ -243,7 +304,33 @@ async def explore(
             return None
         return launcher
 
-    if chat_hint is not None and hinted_launcher() is None:
+    # Production dispatch uses raw validated intent, not the redacted model-facing text.
+    explicit_id = (
+        launcher_id(chat_hint) is not None
+        if id_launcher_requested is None
+        else id_launcher_requested
+    )
+    if explicit_id:
+        if not isinstance(browser, IdHintBrowser):
+            raise ChannelError("discover hint", "browser does not support explicit launcher IDs")
+        if max_steps < 2:
+            raise ChannelError("discover hint", "explicit launcher requires an opening step")
+        if on_progress is not None:
+            on_progress("opening explicitly identified chat launcher with safety checks")
+        previous = snapshot
+        snapshot, observed_opener = await browser.open_id_hint(previous)
+        for _ in range(2):
+            if snapshot != previous:
+                break
+            await asyncio.sleep(1)
+            snapshot = await browser.snapshot()
+        if snapshot == previous:
+            raise ChannelError("discover controls", "chat opener did not reveal new controls")
+        opened_chat = True
+        observed_send_control = _observed_send_control(previous, snapshot)
+        inspection = await browser.inspect_chat()
+        first_step = 1
+    elif chat_hint is not None and hinted_launcher() is None:
         if on_progress is not None:
             on_progress("waiting briefly for hinted chat launcher in accessibility snapshot")
         for _ in range(5):
@@ -251,43 +338,57 @@ async def explore(
             snapshot = await browser.snapshot()
             if hinted_launcher() is not None:
                 break
-    launcher = hinted_launcher()
-    if launcher is not None and max_steps > 1:
-        if on_progress is not None:
-            on_progress("opening unique safely labeled hinted chat launcher")
-        await open_control(*launcher)
-        first_step = 1
-    else:
-        first_step = 0
+    if not explicit_id:
+        launcher = hinted_launcher()
+        if launcher is not None and max_steps > 1:
+            if on_progress is not None:
+                on_progress("opening unique safely labeled hinted chat launcher")
+            await open_control(*launcher)
+            first_step = 1
+        else:
+            first_step = 0
 
     for step in range(first_step, max_steps):
 
         async def request_decision(*, feedback: str | None = None) -> DiscoveryDecision:
+            catalog = interaction_catalog(snapshot, inspection, chat_hint)
             page_data = _PAGE_URL.sub(
-                f"- Page URL: {_TARGET_PLACEHOLDER}", snapshot[:snapshot_limit]
+                f"- Page URL: {_TARGET_PLACEHOLDER}",
+                _snapshot_excerpt(snapshot, snapshot_limit, opened_chat),
             ).replace(url, _TARGET_PLACEHOLDER)
             safe_snapshot = redactor.redact_text_with_field_values(
                 page_data, sensitive_context or {}
             )
             safe_inspection = redactor.redact_text_with_field_values(
-                inspection[:12_000], sensitive_context or {}
+                inspection[:12_000].replace(url, _TARGET_PLACEHOLDER), sensitive_context or {}
             )
             user_content = (
                 f"Target URL: {_TARGET_PLACEHOLDER}\n"
                 f"User chat hint: {chat_hint or '(none)'}\n"
+                f"Chat opener already activated: {opened_chat}. "
+                "If true, do not open it again; inspect current controls and propose a channel.\n"
                 f"Snapshot:\n{safe_snapshot}"
             )
             if safe_inspection:
                 user_content += f"\nRead-only chat DOM attribute inventory:\n{safe_inspection}"
+            user_content += (
+                "\nCurrent candidate catalog:\n"
+                + redactor.redact_text_with_field_values(
+                    json.dumps(catalog.public(), ensure_ascii=False).replace(
+                        url, _TARGET_PLACEHOLDER
+                    ),
+                    sensitive_context or {},
+                )
+            )
             if feedback is not None:
                 user_content += f"\nDiscovery feedback: {feedback}"
             request = LLMRequest(
                 id=f"discovery-{uuid4().hex}",
                 messages=[
-                    LLMMessage(role="system", content=_INSTRUCTIONS),
+                    LLMMessage(role="system", content=INTERACTION_INSTRUCTIONS),
                     LLMMessage(role="user", content=user_content),
                 ],
-                response_schema=_DECISION_SCHEMA,
+                response_schema=INTERACTION_SCHEMA,
             )
             if on_progress is not None:
                 on_progress(
@@ -297,26 +398,108 @@ async def explore(
                 )
             try:
                 response = await asyncio.wait_for(provider.generate(request), model_timeout_seconds)
-                if len(response.content) > 20_000:
-                    raise ValueError("model response too large")
-                return cast(
-                    DiscoveryDecision, DiscoveryDecision.model_validate_json(response.content)
-                )
             except asyncio.CancelledError:
                 raise
-            except (ValueError, ValidationError, TimeoutError, ModelError):
-                raise ModelError("discover decision", "discovery model decision failed") from None
+            except TimeoutError:
+                raise ModelError(
+                    "discover decision",
+                    f"discovery model decision timed out after {model_timeout_seconds:g} seconds",
+                    retryable=True,
+                ) from None
+            except ModelError as error:
+                # Only known adapter-owned classifications are safe to display;
+                # arbitrary provider/page exception text must remain suppressed.
+                known = {
+                    "model request failed",
+                    "model request failed: timed out",
+                    "model request failed: connection error",
+                    "model response is malformed",
+                    "model response was refused",
+                    "model response was truncated",
+                }
+                reason = (
+                    error.message
+                    if error.message in known
+                    or re.fullmatch(r"model request failed \(HTTP [1-5][0-9]{2}\)", error.message)
+                    else "provider request failed; details suppressed"
+                )
+                raise ModelError(
+                    "discover decision",
+                    f"discovery model decision failed: {reason}",
+                    retryable=error.retryable,
+                ) from None
+            if len(response.content) > 20_000:
+                raise ModelError(
+                    "discover decision", "discovery model decision response exceeded size limit"
+                )
+            try:
+                payload = json.loads(response.content)
+                # Compatibility is explicit, never fallback from a malformed new envelope.
+                if (
+                    isinstance(payload, dict)
+                    and "revision" not in payload
+                    and "channel_json" in payload
+                ):
+                    return cast(DiscoveryDecision, DiscoveryDecision.model_validate(payload))
+                proposal, compiled = parse_interaction(response.content, url, catalog)
+                if proposal.action in {"hover", "open_chat"}:
+                    assert proposal.target_id is not None
+                    target, element = catalog.resolve(
+                        proposal.revision, proposal.target_id, "opener"
+                    )
+                    return DiscoveryDecision(action=proposal.action, target=target, element=element)
+                if compiled is not None:
+                    owned = compiled.model_dump(mode="json")
+                    owned["url"] = _TARGET_PLACEHOLDER
+                    return DiscoveryDecision(action="propose", channel_json=json.dumps(owned))
+                return DiscoveryDecision(action="stop")
+            except (ValueError, TypeError) as error:
+                reason = _decision_rejection(error)
+                raise _RejectedDecision(
+                    "discover decision", f"discovery model decision returned {reason}"
+                ) from None
 
         def corrected_channel(channel_json: str) -> ChannelConfig:
             proposed = json.loads(channel_json)
             if not isinstance(proposed, dict) or proposed.get("url") != _TARGET_PLACEHOLDER:
                 raise ValueError("proposal cannot change target URL")
-            return cast(ChannelConfig, ChannelConfig.model_validate({**proposed, "url": url}))
+            # A closed/unused widget may have no message DOM at all. These owned
+            # placeholders are never published by the command: native calibration
+            # must replace them and independent verification must succeed.
+            reading_defaults = {
+                "customer_message_locator": {
+                    "strategy": "css",
+                    "value": ".syntheticcx-pending-customer",
+                },
+                "assistant_message_locator": {
+                    "strategy": "css",
+                    "value": ".syntheticcx-pending-assistant",
+                },
+                "message_identity": {"strategy": "attribute", "attribute_name": "data-message-id"},
+                "response_completion": {"strategy": "quiet_interval", "quiet_interval_seconds": 1},
+            }
+            return cast(
+                ChannelConfig,
+                ChannelConfig.model_validate({**reading_defaults, **proposed, "url": url}),
+            )
 
         feedback: str | None = None
         browser_action_taken = False
         for attempt in range(max_discovery_attempts):
-            decision = await request_decision(feedback=feedback)
+            try:
+                decision = await request_decision(feedback=feedback)
+            except _RejectedDecision as error:
+                if on_progress is not None:
+                    on_progress(f"discovery decision rejected: {error.message}")
+                if attempt == max_discovery_attempts - 1:
+                    raise
+                feedback = (
+                    error.message + ". Return all required fields from the supplied schema; "
+                    "use only IDs and revision from the current candidate catalog. "
+                    "Unused IDs must be null. No browser action was taken; "
+                    "do not reopen an already activated chat."
+                )
+                continue
             if on_progress is not None:
                 on_progress(f"discovery decision: {decision.action}")
             if decision.action == "stop":
@@ -328,8 +511,10 @@ async def explore(
                     fresh = await browser.snapshot()
                     if fresh != snapshot:
                         snapshot = fresh
-                        if chat_hint is None or hinted_launcher() is not None:
+                        if opened_chat or chat_hint is None or hinted_launcher() is not None:
                             changed = True
+                            if opened_chat:
+                                inspection = await browser.inspect_chat()
                             break
                 if not changed:
                     raise ChannelError("discover controls", "chat controls could not be identified")
@@ -347,7 +532,23 @@ async def explore(
                 break
             if decision.action == "open_chat":
                 if opened_chat:
-                    raise ChannelError("discover controls", "chat opener was already clicked")
+                    if attempt == max_discovery_attempts - 1:
+                        raise ChannelError(
+                            "discover controls",
+                            "model repeatedly requested an already activated chat opener",
+                        )
+                    snapshot = await browser.snapshot()
+                    inspection = await browser.inspect_chat()
+                    feedback = (
+                        "The chat opener has already been activated. No second click was made. "
+                        "Use the refreshed snapshot and inventory to propose current controls; "
+                        "do not request open_chat again."
+                    )
+                    if on_progress is not None:
+                        on_progress(
+                            "chat already opened; refreshing evidence without clicking again"
+                        )
+                    continue
                 if step == max_steps - 1:
                     break
                 await open_control(decision.target, decision.element)

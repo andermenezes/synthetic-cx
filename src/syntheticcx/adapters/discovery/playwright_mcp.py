@@ -8,12 +8,14 @@ import os
 import re
 import tempfile
 from contextlib import AsyncExitStack
-from typing import Protocol, cast
+from typing import Protocol, cast, runtime_checkable
 from urllib.parse import urlsplit
 
 from pydantic import AnyHttpUrl, TypeAdapter, ValidationError
 
+from syntheticcx.adapters.discovery.dom import DOM_HELPERS
 from syntheticcx.config.models import LocatorConfig
+from syntheticcx.discovery.hints import launcher_id
 from syntheticcx.errors import ChannelError, ConfigurationError
 
 SERVER_VERSION = "0.0.82"
@@ -21,9 +23,16 @@ ALLOWED_TOOLS = frozenset(
     {"browser_navigate", "browser_snapshot", "browser_hover", "browser_click", "browser_evaluate"}
 )
 _PAGE_URL = re.compile(r"^- Page URL: (\S+)$", re.MULTILINE)
-_CHAT_WORDS = re.compile(r"\b(chat|support|help|contact|assistant|message)\b", re.I)
+_CHAT_WORDS = re.compile(
+    r"\b(chat|support|help|contact|assistant|message|suporte|ajuda|atendimento|"
+    r"assistente|contato|contate|mensagem|converse)\b|\bfale conosco\b",
+    re.I,
+)
 _UNSAFE_WORDS = re.compile(
-    r"\b(pay|purchase|buy|order|submit|delete|confirm|login|log in|sign in)\b", re.I
+    r"\b(pay|purchase|buy|order|submit|send|delete|confirm|login|log in|sign in|"
+    r"pagar|pague|pagamento|comprar|compre|compra|pedido|enviar|excluir|exclua|"
+    r"confirmar|confirme|entrar|senha|assinar|assine|aceitar|aceite|consentimento)\b",
+    re.I,
 )
 _LABELED_CONTROL = re.compile(
     r'^\s*-\s*(button|link)\s+"([^"\n]{1,256})"[^\n]*\[ref=(e\d+)\]', re.I
@@ -38,23 +47,94 @@ class DiscoveryBrowser(Protocol):
     async def inspect_chat(self) -> str: ...
 
 
+@runtime_checkable
+class IdHintBrowser(Protocol):
+    async def open_id_hint(self, snapshot: str) -> tuple[str, LocatorConfig]: ...
+
+
+# Fixed read-only guard; it never collects input values or emits page content.
+_ID_HINT_CHECK = """el => {
+  const refs = (el.getAttribute('aria-labelledby') || '').trim().split(/\\s+/).filter(Boolean);
+  if (refs.length > 8) return false;
+  const labels = [];
+  const labelTree = refs.length ? walkDOM(el.getRootNode(), false) : null;
+  if (labelTree && !labelTree.complete) return false;
+  for (const ref of refs) {
+    const nodes = labelTree.nodes.filter(node => node.id === ref);
+    if (nodes.length !== 1) return false;
+    const text = nodes[0].textContent || '';
+    if (text.length > 1000) return false;
+    labels.push(text);
+  }
+  const label = [el.id, el.textContent || '', el.getAttribute('aria-label') || '',
+    el.getAttribute('title') || '', ...labels].join(' ');
+  const unsafe = new RegExp('\\\\b(pay|purchase|buy|order|submit|delete|confirm|login|' +
+    'log in|sign in|comprar|pagar|enviar|excluir|confirmar|entrar)\\\\b', 'i');
+  return el.tagName === 'BUTTON' && el.type === 'button' && !composedClosest(el, 'form') &&
+    el.getAttribute('aria-expanded') !== 'true' && !unsafe.test(label);
+}"""
+
+# Fixed read-only ID lookup. The click itself still uses MCP's actionability checks.
+_ID_HINT_INSPECTION = """() => {
+  __DOM_HELPERS__
+  const scan = walkDOM(document);
+  const nodes = scan.nodes.filter(node => node.matches(__SELECTOR__));
+  const el = nodes.length === 1 ? nodes[0] : null;
+  const safe = scan.complete && el && (__CHECK__)(el) && !el.matches(':disabled') &&
+    el.getClientRects().length > 0 && getComputedStyle(el).visibility === 'visible';
+  return {origin: location.origin, safe: Boolean(safe), count: Math.min(nodes.length, 2),
+    complete: scan.complete};
+}""".replace("__CHECK__", _ID_HINT_CHECK).replace("__DOM_HELPERS__", DOM_HELPERS)
+
+
 # Fixed, read-only DOM inventory. Never pass page/model text into executable code.
 # Omit input values, text content, links, and arbitrary attributes.
 _CHAT_INSPECTION = """() => {
-  const fields = ['role', 'aria-label', 'placeholder', 'data-testid',
+  __DOM_HELPERS__
+  const fields = ['id', 'class', 'type', 'role', 'aria-label', 'placeholder', 'data-testid',
                   'data-message-id', 'data-actor', 'data-role'];
-  const inventory = (doc) => Array.from(doc.querySelectorAll(
-    'iframe, textarea, input:not([type=password]), [contenteditable=true], button, ' +
-    '[role=textbox], [role=button], [data-message-id], [data-actor], [data-role]'
-  )).slice(0, 50).map(node => ({
+  const inventory = (doc) => {
+    const scan = walkDOM(doc);
+    const visible = node => !!node.getClientRects().length;
+    const dialog = node => composedClosest(node, '[role=dialog], dialog');
+    const editor = node => node.matches('textarea, input:not([type=password]):not([type=hidden])' +
+      ':not([type=file]):not([type=button]):not([type=submit]), [role=textbox], ' +
+      '[contenteditable=true]');
+    const controls = scan.nodes.filter(node => node.matches(
+      'iframe, textarea, input:not([type=password]), [contenteditable=true], button, ' +
+      '[role=textbox], [role=button], [data-message-id], [data-actor], [data-role]'));
+    // Prioritize visible editors and chat-related controls, not the first page buttons.
+    const priority = node => editor(node) && visible(node) && dialog(node) ? 0 :
+      visible(node) && dialog(node) ? 1 : editor(node) && visible(node) ? 2 :
+      node.getRootNode().host ? 3 : 4;
+    controls.sort((a, b) => priority(a) - priority(b));
+    return {complete: scan.complete, truncated: controls.length > 50,
+      has_visible_dialog: scan.nodes.some(node => node.matches('[role=dialog], dialog') &&
+        visible(node)),
+      editor_ready: controls.some(node => editor(node) && visible(node) &&
+        !node.matches(':disabled') && (doc !== document || dialog(node))),
+      elements: controls.slice(0, 50).map(node => ({
     tag: node.tagName.toLowerCase(),
+    visible: visible(node), editable: editor(node), in_dialog: !!dialog(node),
     attributes: Object.fromEntries(fields.filter(key => node.hasAttribute(key))
       .map(key => [key, (node.getAttribute(key) || '').slice(0, 80)]))
-  }));
-  const frames = Array.from(document.querySelectorAll('iframe')).slice(0, 3)
-    .map(frame => { try { return inventory(frame.contentDocument); } catch { return []; } });
-  return { origin: location.origin, elements: inventory(document), frames };
-}"""
+  }))};
+  };
+  const scan = walkDOM(document);
+  const frameNodes = scan.nodes.filter(node => node.tagName === 'IFRAME');
+  const frames = frameNodes.slice(0, 3).map(frame => {
+    const metadata = {tag: 'iframe', attributes: Object.fromEntries(fields
+      .filter(key => frame.hasAttribute(key))
+      .map(key => [key, frame.getAttribute(key).slice(0, 80)]))};
+    try {
+      const doc = frame.contentDocument;
+      return doc ? {frame: metadata, in_dialog: !!composedClosest(frame, '[role=dialog], dialog'),
+        ...inventory(doc)} : {frame: metadata, inaccessible: true};
+    } catch { return {frame: metadata, inaccessible: true}; }
+  });
+  return {origin: location.origin, ...inventory(document), frames,
+    frames_truncated: frameNodes.length > 3};
+}""".replace("__DOM_HELPERS__", DOM_HELPERS)
 
 
 def _origin(url: str) -> tuple[str, str, int | None]:
@@ -198,6 +278,7 @@ class ManagedPlaywrightMCP:
         self._session: object | None = None
         self._snapshot = ""
         self._chat_hint = chat_hint
+        self._launcher_id = launcher_id(chat_hint)
 
     async def __aenter__(self) -> ManagedPlaywrightMCP:
         # Import the optional SDK only when discovery is invoked.
@@ -309,18 +390,47 @@ class ManagedPlaywrightMCP:
 
     async def inspect_chat(self) -> str:
         """Collect bounded selector evidence only after a safe chat-opening click."""
-        await self.snapshot()  # Confirm the target origin before running fixed JS.
-        text = await self._call(
-            "browser_evaluate", {"function": _CHAT_INSPECTION}, check_origin=False
-        )
+        deadline = asyncio.get_running_loop().time() + self._timeout
         try:
-            result = json.loads(text.split("### Result\n", 1)[1].split("\n### ", 1)[0])
-            if not isinstance(result, dict) or not isinstance(result.get("origin"), str):
-                raise ValueError("invalid inspection result")
-            if _origin(result["origin"]) != self._origin:
-                raise ChannelError("discover navigation", "browser left the selected target origin")
+            while True:
+                await self.snapshot()  # Confirm origin before each fixed read-only inspection.
+                text = await self._call(
+                    "browser_evaluate", {"function": _CHAT_INSPECTION}, check_origin=False
+                )
+                result = json.loads(text.split("### Result\n", 1)[1].split("\n### ", 1)[0])
+                if not isinstance(result, dict) or not isinstance(result.get("origin"), str):
+                    raise ValueError("invalid inspection result")
+                if _origin(result["origin"]) != self._origin:
+                    raise ChannelError(
+                        "discover navigation", "browser left the selected target origin"
+                    )
+                frame_ready = any(
+                    isinstance(frame, dict)
+                    and frame.get("editor_ready") is True
+                    and frame.get("in_dialog") is True
+                    for frame in result.get("frames", [])
+                )
+                if (
+                    result.get("has_visible_dialog") is not True
+                    or result.get("editor_ready") is True
+                    or frame_ready
+                ):
+                    break
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    raise ChannelError(
+                        "discover controls", "opened chat editor did not become available"
+                    )
+                await asyncio.sleep(min(1.0, remaining))
+            if result.get("complete") is False or any(
+                isinstance(frame, dict) and frame.get("complete") is False
+                for frame in result.get("frames", [])
+            ):
+                raise ChannelError(
+                    "discover inspection", "chat DOM inspection exceeded safe limits"
+                )
             inventory = json.dumps(
-                {"elements": result["elements"], "frames": result["frames"]},
+                {key: value for key, value in result.items() if key != "origin"},
                 ensure_ascii=False,
             )
             if len(inventory) > 12_000:
@@ -331,6 +441,62 @@ class ManagedPlaywrightMCP:
             raise ChannelError("discover inspection", "chat inspection failed") from None
         await self.snapshot()  # Also reject navigation during/after evaluation.
         return inventory
+
+    async def open_id_hint(self, snapshot: str) -> tuple[str, LocatorConfig]:
+        """Open only the explicitly requested ID, never arbitrary model-authored code."""
+        if snapshot != self._snapshot:
+            raise ChannelError("discover hint", "chat control snapshot is stale")
+        if self._launcher_id is None:
+            raise ChannelError("discover hint", "explicit launcher ID is required")
+        _check_page_origin(snapshot, self._origin)
+        selector = f'[id="{self._launcher_id}"]'
+        code = _ID_HINT_INSPECTION.replace("__SELECTOR__", json.dumps(selector))
+        try:
+            for attempt in range(6):
+                text = await self._call("browser_evaluate", {"function": code}, check_origin=False)
+                result = json.loads(text.split("### Result\n", 1)[1].split("\n### ", 1)[0])
+                if not isinstance(result, dict):
+                    raise ValueError("invalid inspection result")
+                if _origin(result["origin"]) != self._origin:
+                    raise ChannelError(
+                        "discover navigation", "browser left the selected target origin"
+                    )
+                if result.get("complete") is not True:
+                    raise ChannelError(
+                        "discover hint", "launcher DOM inspection exceeded safe limits"
+                    )
+                if result.get("count") != 0 or attempt == 5:
+                    break
+                await asyncio.sleep(1)
+                await self.snapshot()
+            if result.get("safe") is not True or result.get("count") != 1:
+                message = (
+                    "explicit ID launcher was not found"
+                    if result.get("count") == 0
+                    else "explicit ID launcher is ambiguous"
+                    if result.get("count") == 2
+                    else "explicit ID launcher failed safety checks"
+                )
+                raise ChannelError("discover hint", message)
+        except asyncio.CancelledError:
+            raise
+        except ChannelError as error:
+            if error.operation in {"discover navigation", "discover hint"}:
+                raise
+            raise ChannelError(
+                "discover hint", "explicit ID launcher could not be safely opened"
+            ) from None
+        except Exception:
+            raise ChannelError(
+                "discover hint", "explicit ID launcher could not be safely opened"
+            ) from None
+        await self.snapshot()  # Reject navigation between inspection and the click.
+        # Keep structural safety restrictions in the actual click target too.
+        guarded = f'button[type="button"]{selector}:not([aria-expanded="true"]):not(form button)'
+        await self._call(
+            "browser_click", {"target": guarded, "element": "explicitly identified chat launcher"}
+        )
+        return await self.snapshot(), LocatorConfig(strategy="css", value=selector)
 
     async def hover(self, target: str, element: str, snapshot: str) -> str:
         if snapshot != self._snapshot:

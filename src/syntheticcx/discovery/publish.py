@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +12,8 @@ import yaml
 from pydantic import ValidationError
 
 from syntheticcx.config.loader import load_config, load_discovery_draft
-from syntheticcx.config.models import ChannelGuide, ReferencedProjectConfig
+from syntheticcx.config.models import InterfaceChannelGuide, ReferencedProjectConfig
+from syntheticcx.config.sanitize import sanitized_channel_guide
 from syntheticcx.errors import ConfigurationError
 from syntheticcx.language import Language
 
@@ -53,13 +55,14 @@ def _replace(path: Path, data: bytes) -> None:
 def publish_guide(
     source: Path,
     output: Path,
-    guide: ChannelGuide,
+    guide: InterfaceChannelGuide,
     *,
     in_place: bool,
     language: Language | None = None,
+    resolved_secrets: Sequence[str] = (),
 ) -> Path:
     """Save verified controls, then a validated scenario copy or backed-up edit."""
-    load_discovery_draft(source)
+    draft = load_discovery_draft(source)
     destination = source if in_place else source.with_name(f"{source.stem}.completed.yaml")
     backup = source.with_name(f"{source.name}.bak")
     identities = {source.resolve(), destination.resolve(), backup.resolve()}
@@ -79,7 +82,18 @@ def publish_guide(
     except (OSError, UnicodeError, yaml.YAMLError, TypeError, ValidationError):
         raise ConfigurationError("publish discovery", "scenario could not be completed") from None
     serialized_guide = yaml.safe_dump(
-        guide.model_dump(mode="json", exclude_none=True), sort_keys=False, allow_unicode=True
+        sanitized_channel_guide(
+            guide,
+            draft.privacy,
+            resolved_secrets=resolved_secrets,
+            sensitive_context={
+                "persona": draft.persona.model_dump(mode="json"),
+                "starting_context": draft.scenario.starting_context,
+                "knowledge": draft.scenario.knowledge,
+            },
+        ),
+        sort_keys=False,
+        allow_unicode=True,
     ).encode("utf-8")
     guide_written = False
     backup_written = False

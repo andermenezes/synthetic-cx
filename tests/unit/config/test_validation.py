@@ -30,8 +30,39 @@ def document() -> dict[str, Any]:
         (("execution", "max_turns"), 0, "execution.max_turns"),
         (("execution", "model_timeout_seconds"), float("inf"), "execution.model_timeout"),
         (("persona", "traits"), {"patience": 1.1}, "persona.traits.patience"),
+        (("persona", "description"), " \n\t", "persona.description"),
+        (("persona", "description"), "x" * 2001, "persona.description"),
+        (("persona", "description"), 42, "persona.description"),
+        (("persona", "communication", "writing_description"), "", "writing_description"),
+        (("persona", "communication", "writing_description"), "  ", "writing_description"),
+        (("persona", "communication", "writing_description"), "x" * 2001, "writing_description"),
+        (("persona", "communication", "message_length"), "secret-value", "message_length"),
+        (
+            ("persona", "communication", "grammar_error_probability"),
+            -0.1,
+            "grammar_error_probability",
+        ),
+        (
+            ("persona", "communication", "grammar_error_probability"),
+            1.1,
+            "grammar_error_probability",
+        ),
+        (
+            ("persona", "communication", "grammar_error_probability"),
+            float("nan"),
+            "grammar_error_probability",
+        ),
+        (
+            ("persona", "communication", "grammar_error_probability"),
+            float("inf"),
+            "grammar_error_probability",
+        ),
         (("channel", "type"), "unknown", "channel.type"),
-        (("channel", "send_strategy"), {"type": "click"}, "channel.send_strategy"),
+        (
+            ("channel", "bootstrap_send_strategy"),
+            {"type": "click"},
+            "channel.bootstrap_send_strategy",
+        ),
         (("model", "api_key"), "secret-value", "model.openai.api_key"),
         (("model", "provider"), "secret-value", "model"),
         (("privacy", "synthetic_id_patterns"), ["["], "privacy.synthetic_id_patterns"),
@@ -63,6 +94,48 @@ def compatible(url: str) -> dict[str, Any]:
             True,
         ),
     }
+
+
+def test_legacy_persona_has_optional_writing_defaults(document: dict[str, Any]) -> None:
+    config = load_config_text(yaml.safe_dump(document))
+    assert config.persona.description is None
+    assert config.persona.communication.writing_description is None
+    assert config.persona.communication.message_length is None
+    assert config.persona.communication.grammar_error_probability == 0
+
+
+@pytest.mark.parametrize("length", ["short", "medium", "long", None])
+@pytest.mark.parametrize("probability", [0, 0.15, 1])
+def test_persona_writing_fields_round_trip(
+    document: dict[str, Any], length: str | None, probability: float
+) -> None:
+    document["persona"]["description"] = "  A busy customer with limited technical knowledge.  "
+    document["persona"]["communication"].update(
+        writing_description="Uses WhatsApp abbreviations and occasionally omits punctuation.",
+        message_length=length,
+        grammar_error_probability=probability,
+    )
+    config = load_config_text(yaml.safe_dump(document))
+    restored = load_config_text(yaml.safe_dump(config.model_dump(mode="json")))
+    assert restored == config
+    assert config.persona.description == document["persona"]["description"]
+    assert config.persona.communication.message_length == length
+    assert config.persona.communication.grammar_error_probability == probability
+    validator = Draft202012Validator(json.loads(Path("schemas/project.schema.json").read_text()))
+    assert validator.is_valid(document)
+
+
+def test_sensitive_persona_prose_is_redacted_in_configuration_echoes(
+    document: dict[str, Any],
+) -> None:
+    document["persona"]["description"] = 'Sensitive persona "narrative"'
+    document["persona"]["communication"]["writing_description"] = "Sensitive writing voice"
+    document["scenario"]["description"] = "Sensitive writing voice"
+    document["privacy"]["redaction_keys"] = ["description", "writing_description"]
+    config = ProjectConfig.model_validate(document)
+    snapshot = sanitized_effective_config(config)
+    assert "Sensitive" not in json.dumps(snapshot)
+    assert config.persona.description == 'Sensitive persona "narrative"'
 
 
 @pytest.mark.parametrize("url", ["http://localhost:8000", "http://127.0.0.2", "http://[::1]"])

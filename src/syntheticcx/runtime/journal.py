@@ -5,36 +5,46 @@ from __future__ import annotations
 import asyncio
 import math
 from collections.abc import Callable
-from typing import cast
+from typing import TypeAlias, TypeVar, cast
 from uuid import uuid4
 
-from pydantic import TypeAdapter
+from pydantic import BaseModel, TypeAdapter
 
 from syntheticcx.domain.events import (
     ConversationStarted,
     EvaluationCompleted,
     MessageObserved,
     OperationFailure,
+    PersonaOutputAmbiguityObserved,
     RepeatedInformationObserved,
     RunLifecycleChange,
     TypedTraceEvent,
 )
-from syntheticcx.domain.models import ArtifactRecord, ModelInteraction, PersonaStateTransition
+from syntheticcx.domain.models import (
+    ArtifactRecord,
+    ModelInteraction,
+    PersonaFeedback,
+    PersonaStateTransition,
+)
 from syntheticcx.domain.protocols import Clock, StorageBackend, WaitController
 from syntheticcx.errors import PersistenceError
 from syntheticcx.privacy import Redactor
 from syntheticcx.telemetry.run import span
 
-EventData = (
+EvidenceModel = TypeVar("EvidenceModel", bound=BaseModel)
+
+EventData: TypeAlias = (
     RunLifecycleChange
     | ConversationStarted
     | MessageObserved
     | PersonaStateTransition
     | RepeatedInformationObserved
+    | PersonaOutputAmbiguityObserved
     | ModelInteraction
     | EvaluationCompleted
     | OperationFailure
     | ArtifactRecord
+    | PersonaFeedback
 )
 _EVENT_TYPES = {
     RunLifecycleChange: "run_lifecycle_changed",
@@ -42,10 +52,12 @@ _EVENT_TYPES = {
     MessageObserved: "message_observed",
     PersonaStateTransition: "persona_state_changed",
     RepeatedInformationObserved: "repeated_information",
+    PersonaOutputAmbiguityObserved: "persona_output_ambiguity_observed",
     ModelInteraction: "model_interaction_completed",
     EvaluationCompleted: "evaluation_completed",
     OperationFailure: "operation_failed",
     ArtifactRecord: "artifact_recorded",
+    PersonaFeedback: "persona_feedback_recorded",
 }
 
 
@@ -82,8 +94,20 @@ class RunJournal:
         self._persistence_timeout = timeout
 
     @property
+    def available(self) -> bool:
+        return not self._failed
+
+    @property
     def committed_events(self) -> tuple[TypedTraceEvent, ...]:
         return tuple(event.model_copy(deep=True) for event in self._events)
+
+    def sanitize_evidence(self, model: EvidenceModel) -> EvidenceModel:
+        """Project adapter evidence into the same redacted namespace as committed data.
+
+        Use only for comparisons with committed evidence; this does not append or
+        acknowledge an event. Append still enforces event identity and durability.
+        """
+        return self._redactor.redact_model(model)
 
     async def append(self, data: EventData) -> TypedTraceEvent:
         """Allocate and append once; never advance the cursor on uncertain failure."""
@@ -111,7 +135,7 @@ class RunJournal:
                         "data": data.model_dump(mode="json"),
                     }
                 )
-                safe_event = self._redactor.redact_model(event)
+                safe_event = self.sanitize_evidence(event)
                 if (safe_event.id, safe_event.sequence, safe_event.timestamp) != (
                     event.id,
                     event.sequence,

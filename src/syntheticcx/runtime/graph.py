@@ -7,15 +7,17 @@ from typing import Literal, Protocol, cast, runtime_checkable
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from syntheticcx.config.models import ExecutionLimits
+from syntheticcx.config.models import ExecutionLimits, JsonObject
 from syntheticcx.domain.events import (
     ConversationStarted,
     MessageObserved,
     MessageObservedEvent,
+    PersonaOutputAmbiguityObserved,
     RepeatedInformationObserved,
     RunLifecycleChange,
 )
 from syntheticcx.domain.models import (
+    ConversationCapabilities,
     ConversationObservation,
     CustomerScenarioContext,
     Message,
@@ -24,9 +26,17 @@ from syntheticcx.domain.models import (
     PersonaState,
     PersonaStateTransition,
     Scenario,
+    SelectionReceipt,
 )
-from syntheticcx.domain.protocols import ChannelAdapter, PersonaSimulator, WaitController
-from syntheticcx.errors import ChannelError, ModelError
+from syntheticcx.domain.protocols import (
+    ChannelAdapter,
+    ControlsObservingChannel,
+    InitialObservingChannel,
+    OptionSelectingChannel,
+    PersonaSimulator,
+    WaitController,
+)
+from syntheticcx.errors import ModelError, safe_channel_error
 from syntheticcx.runtime.behavior import apply_behavior
 from syntheticcx.runtime.journal import RunJournal
 from syntheticcx.runtime.repetition import RepetitionTracker
@@ -107,13 +117,28 @@ def build_graph(
 
     async def greeting(state: RuntimeState) -> dict[str, object]:
         response = None
-        if limits.greeting_grace_seconds > 0:
+        if isinstance(channel, InitialObservingChannel):
+            try:
+                response = await wait.run(
+                    channel.observe_initial(), limits.browser_action_timeout_seconds
+                )
+            except Exception as exc:
+                raise safe_channel_error(
+                    exc, "channel.greeting", "initial chat observation failed"
+                ) from None
+        if (
+            not isinstance(channel, InitialObservingChannel)
+            and response is None
+            and limits.greeting_grace_seconds > 0
+        ):
             try:
                 response = await wait.run(channel.receive(), limits.greeting_grace_seconds)
             except TimeoutError:
                 pass
-            except Exception:
-                raise ChannelError("channel.greeting", "greeting observation failed") from None
+            except Exception as exc:
+                raise safe_channel_error(
+                    exc, "channel.greeting", "greeting observation failed"
+                ) from None
         if response is not None:
             messages: list[Message] = []
             for message in response.messages:
@@ -178,14 +203,42 @@ def build_graph(
     async def respond(state: RuntimeState) -> dict[str, object]:
         observation = state["observation"]
         assert observation is not None
+        if isinstance(channel, ControlsObservingChannel):
+            try:
+                controls = await wait.run(
+                    channel.observe_controls(), limits.browser_action_timeout_seconds
+                )
+                capabilities = ConversationCapabilities.model_validate(controls)
+                capabilities = journal.sanitize_evidence(capabilities)
+            except Exception as exc:
+                raise safe_channel_error(
+                    exc, "channel.controls", "current controls observation failed"
+                ) from None
+            observation = observation.model_copy(update={"capabilities": capabilities})
         try:
             with span("persona.respond"), span("model.call", operation="persona.respond"):
                 action = await wait.run(
                     simulator.respond(observation, state["persona_state"]),
                     limits.model_timeout_seconds,
                 )
-        except Exception:
-            raise ModelError("persona.respond", "persona response failed") from None
+        except Exception as exc:
+            if isinstance(exc, ModelError):
+                raise
+            raise ModelError(
+                "persona.respond",
+                "persona response failed",
+                reason_code=(
+                    "persona_timeout" if isinstance(exc, TimeoutError) else "unknown_model_failure"
+                ),
+            ) from None
+        if action.discarded_action_count:
+            await journal.append(
+                PersonaOutputAmbiguityObserved(
+                    candidate_action_count=action.discarded_action_count + 1,
+                    selected_action_order=1,
+                    discarded_action_count=action.discarded_action_count,
+                )
+            )
         observation_ids = {message.id for message in observation.messages}
         input_ids = [
             event.id
@@ -209,9 +262,15 @@ def build_graph(
             reason = "abandonment"
         elif action.signal == "goal_believed_complete":
             reason = "goal_believed_complete"
-        elif action.message is None:
-            raise ModelError("persona.respond", "continuing action has no customer message")
+        elif (action.message is None) == (action.selected_option_id is None):
+            raise ModelError("persona.respond", "continuing action requires exactly one decision")
+        if reason is None and action.selected_option_id is not None:
+            if sum(o.id == action.selected_option_id for o in observation.current_options) != 1:
+                raise ModelError("persona.respond", "persona selected an unavailable option")
+        if reason is None and action.message is not None and not observation.text_available:
+            raise ModelError("persona.respond", "persona text action is unavailable")
         return {
+            "observation": observation,
             "persona_state": current,
             "action": action,
             "pending_message": action.message if reason is None else None,
@@ -219,13 +278,55 @@ def build_graph(
         }
 
     async def send(state: RuntimeState) -> dict[str, object]:
-        content = state["pending_message"]
-        if content is None or state["termination_reason"] is not None:
-            raise ValueError("cannot send after termination or without a message")
+        action = state["action"]
+        if action is None or state["termination_reason"] is not None:
+            raise ValueError("cannot send after termination or without an action")
+        metadata: JsonObject = {}
+        selection = action.selected_option_id is not None
         try:
-            receipt = await wait.run(channel.send(content), limits.browser_action_timeout_seconds)
-        except Exception:
-            raise ChannelError("channel.send", "customer send failed") from None
+            if selection:
+                option_id = action.selected_option_id
+                assert option_id is not None
+                observation = state["observation"]
+                latest = observation.messages[-1] if observation and observation.messages else None
+                if (
+                    observation is None
+                    or sum(o.id == option_id for o in observation.current_options) != 1
+                ):
+                    raise ValueError("unavailable option")
+                if not isinstance(channel, OptionSelectingChannel):
+                    raise ValueError("channel does not support option selection")
+                receipt = await wait.run(
+                    channel.select_option(option_id), limits.browser_action_timeout_seconds
+                )
+                if not isinstance(receipt, SelectionReceipt):
+                    raise ValueError("selection receipt does not match the requested option")
+                # The observation is committed/redacted; adapter receipt IDs may
+                # still contain raw DOM attributes. Compare in its owned namespace.
+                safe_receipt = journal.sanitize_evidence(receipt)
+                if safe_receipt.selected_option_id != option_id or (
+                    observation.capabilities is None
+                    and (latest is None or safe_receipt.source_message_id != latest.id)
+                ):
+                    raise ValueError("selection receipt does not match the requested option")
+                content = receipt.selected_label
+                metadata = {
+                    "action_kind": "select_option",
+                    "option_id": receipt.selected_option_id,
+                    "source_assistant_message_id": receipt.source_message_id,
+                }
+            else:
+                pending = state["pending_message"]
+                if pending is None:
+                    raise ValueError("cannot send without a message")
+                content = pending
+                receipt = await wait.run(
+                    channel.send(content), limits.browser_action_timeout_seconds
+                )
+        except Exception as exc:
+            # Both decisions use the existing send operation/runner error boundary.
+            message = "customer action failed" if selection else "customer send failed"
+            raise safe_channel_error(exc, "channel.send", message) from None
         before = state["persona_state"]
         after = before.model_copy(update={"turn_number": state["turn_count"] + 1})
         if progress is not None:
@@ -241,6 +342,7 @@ def build_graph(
                     actor="customer",
                     content=content,
                     observed_at=receipt.submitted_at,
+                    metadata=metadata,
                 ),
                 identity_evidence=receipt.evidence,
             )
@@ -254,7 +356,8 @@ def build_graph(
                     applied_rule_ids=[],
                 )
             )
-        tracker.record_send(content, receipt)
+        if not selection:
+            tracker.record_send(content, receipt)
         return {
             "receipt": receipt,
             "turn_count": state["turn_count"] + 1,
@@ -266,8 +369,8 @@ def build_graph(
         try:
             with span("conversation.turn", **{"turn.number": state["turn_count"]}):
                 response = await wait.run(channel.receive(), limits.response_timeout_seconds)
-        except Exception:
-            raise ChannelError("channel.receive", "assistant receive failed") from None
+        except Exception as exc:
+            raise safe_channel_error(exc, "channel.receive", "assistant receive failed") from None
         messages: list[Message] = []
         for message in response.messages:
             committed = await journal.append(MessageObserved(message=message))

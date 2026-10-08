@@ -264,6 +264,7 @@ def test_provider_error_is_sanitized_and_classified(status: int, retryable: bool
             with pytest.raises(ModelError) as error:
                 await adapter.generate(request())
             assert error.value.retryable is retryable
+            assert error.value.message == f"model request failed (HTTP {status})"
             assert "private-secret-in-body" not in str(error.value)
         finally:
             await client.close()
@@ -405,6 +406,34 @@ def test_model_timeout_is_bounded_and_safe() -> None:
             with pytest.raises(ModelError, match="model request failed") as error:
                 await adapter.generate(request())
             assert error.value.retryable
+            assert error.value.message == "model request failed: timed out"
+        finally:
+            await client.close()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("failure", ["refusal", "length"])
+def test_response_failure_reports_only_safe_classification(failure: str) -> None:
+    def respond(_: httpx.Request) -> httpx.Response:
+        result = payload(None)
+        if failure == "refusal":
+            result["choices"][0]["message"]["refusal"] = "private-refusal-canary"
+        else:
+            result["choices"][0]["finish_reason"] = "length"
+        return httpx.Response(200, json=result)
+
+    async def exercise() -> None:
+        client = fake_client(httpx.MockTransport(respond))
+        try:
+            with pytest.raises(ModelError) as caught:
+                await provider_for("openai", client).generate(request(structured=True))
+            assert caught.value.message == (
+                "model response was refused"
+                if failure == "refusal"
+                else "model response was truncated"
+            )
+            assert "private-refusal-canary" not in str(caught.value)
         finally:
             await client.close()
 

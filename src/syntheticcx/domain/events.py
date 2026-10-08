@@ -15,6 +15,7 @@ from syntheticcx.domain.models import (
     Message,
     ModelInteraction,
     Outcome,
+    PersonaFeedback,
     PersonaStateTransition,
     UtcDatetime,
 )
@@ -25,6 +26,7 @@ class RunLifecycleChange(DomainModel):
     current: Lifecycle
     termination_reason: str | None = None
     outcome: Outcome | None = None
+    conversation_duration_seconds: float | None = Field(default=None, ge=0)
 
 
 class ConversationStarted(DomainModel):
@@ -42,6 +44,15 @@ class RepeatedInformationObserved(DomainModel):
     information_id: Identifier
     original_message_id: Identifier
     request_message_id: Identifier
+
+
+class PersonaOutputAmbiguityObserved(DomainModel):
+    """Audit competing persona actions and the deterministic resolution."""
+
+    candidate_action_count: int = Field(ge=2)
+    selected_action_order: Literal[1] = 1
+    discarded_action_count: int = Field(ge=1)
+    resolution: Literal["first_external_action_selected"] = "first_external_action_selected"
 
 
 class EvaluationCompleted(DomainModel):
@@ -85,6 +96,11 @@ class RepeatedInformationEvent(EventEnvelope):
     data: RepeatedInformationObserved
 
 
+class PersonaOutputAmbiguityEvent(EventEnvelope):
+    type: Literal["persona_output_ambiguity_observed"]
+    data: PersonaOutputAmbiguityObserved
+
+
 class ModelInteractionCompletedEvent(EventEnvelope):
     type: Literal["model_interaction_completed"]
     data: ModelInteraction
@@ -105,16 +121,23 @@ class ArtifactRecordedEvent(EventEnvelope):
     data: ArtifactRecord
 
 
+class PersonaFeedbackRecordedEvent(EventEnvelope):
+    type: Literal["persona_feedback_recorded"]
+    data: PersonaFeedback
+
+
 TypedTraceEvent = Annotated[
     RunLifecycleEvent
     | ConversationStartedEvent
     | MessageObservedEvent
     | PersonaStateChangedEvent
     | RepeatedInformationEvent
+    | PersonaOutputAmbiguityEvent
     | ModelInteractionCompletedEvent
     | EvaluationCompletedEvent
     | OperationFailedEvent
-    | ArtifactRecordedEvent,
+    | ArtifactRecordedEvent
+    | PersonaFeedbackRecordedEvent,
     Field(discriminator="type"),
 ]
 

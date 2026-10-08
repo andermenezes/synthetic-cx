@@ -87,6 +87,11 @@ class EvaluationService:
             raise ConfigurationError("evaluate run", "evaluation model is required")
 
         results: list[EvaluationResult] = []
+        supplemental_ids = {
+            event.id
+            for event in self._journal.committed_events
+            if event.type == "persona_feedback_recorded"
+        }
         for criterion in criteria:
             evaluator = self._evaluators[criterion.evaluator_type]
             attempts = 0
@@ -95,7 +100,15 @@ class EvaluationService:
                 context = EvaluationContext(
                     criterion=criterion,
                     scenario=scenario,
-                    sanitized_trace=list(self._journal.committed_events),
+                    sanitized_trace=[
+                        event
+                        for event in self._journal.committed_events
+                        if event.id not in supplemental_ids
+                        and not (
+                            event.type == "model_interaction_completed"
+                            and supplemental_ids.intersection(event.data.output_event_ids)
+                        )
+                    ],
                 )
                 failure: Exception | None = None
                 candidate: EvaluationResult | None = None

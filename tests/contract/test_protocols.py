@@ -19,6 +19,7 @@ from syntheticcx.domain.models import (
     PersonaAction,
     PersonaDefinition,
     PersonaState,
+    ReplyOption,
     SendReceipt,
 )
 
@@ -72,7 +73,13 @@ class FakeAdapters:
         return await operation
 
 
+class FakeControlsChannel(FakeAdapters):
+    async def observe_controls(self) -> protocols.ObservedControls:
+        return {"text_available": False, "options": [ReplyOption(id="choice", label="Billing")]}
+
+
 channel: protocols.ChannelAdapter = FakeAdapters()
+controls_channel: protocols.ControlsObservingChannel = FakeControlsChannel()
 persona: protocols.PersonaSimulator = FakeAdapters()
 evaluator: protocols.Evaluator = FakeAdapters()
 provider: protocols.LLMProvider = FakeAdapters()
@@ -93,6 +100,7 @@ def test_protocol_annotations_expose_no_external_sdk_types() -> None:
 
     for name in [
         "ChannelAdapter",
+        "ControlsObservingChannel",
         "PersonaSimulator",
         "Evaluator",
         "LLMProvider",
@@ -103,3 +111,8 @@ def test_protocol_annotations_expose_no_external_sdk_types() -> None:
         for _, method in inspect.getmembers(getattr(protocols, name), inspect.isfunction):
             for annotation in get_type_hints(method).values():
                 inspect_annotation(annotation)
+
+
+def test_current_controls_are_optional_for_legacy_channel_adapters() -> None:
+    assert not isinstance(FakeAdapters(), protocols.ControlsObservingChannel)
+    assert isinstance(FakeControlsChannel(), protocols.ControlsObservingChannel)

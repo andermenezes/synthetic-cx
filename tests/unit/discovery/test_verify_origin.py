@@ -16,7 +16,7 @@ from syntheticcx.errors import ChannelError
 
 
 def test_origin_checked_again_after_greeting_before_probe(monkeypatch: Any) -> None:
-    source = yaml.safe_load(Path("examples/telecom/scenario.yaml").read_text())
+    source = yaml.safe_load(Path("tests/fixtures/discovery-sample.yaml").read_text())
     source["channel"]["url"] = "https://example.com/"
     candidate = DiscoveryCandidate(channel=source["channel"], open_steps=0)
     limits = ExecutionLimits.model_validate(source["execution"])

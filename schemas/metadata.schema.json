@@ -98,6 +98,48 @@
           "title": "Operation",
           "type": "string"
         },
+        "reason_code": {
+          "anyOf": [
+            {
+              "enum": [
+                "channel.state",
+                "channel.reader",
+                "channel.reader_evidence",
+                "channel.ownership",
+                "channel.observe",
+                "channel.options",
+                "channel.select_option",
+                "channel.controls"
+              ],
+              "type": "string"
+            },
+            {
+              "enum": [
+                "provider_timeout",
+                "provider_connection",
+                "provider_http_4xx",
+                "provider_http_5xx",
+                "provider_error",
+                "invalid_structured_response",
+                "persona_timeout",
+                "persona_action_malformed",
+                "persona_action_unsupported",
+                "persona_action_missing",
+                "persona_action_ambiguous",
+                "persona_option_unavailable",
+                "persona_text_unavailable",
+                "persona_adapter_error",
+                "unknown_model_failure"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason Code"
+        },
         "retryable": {
           "default": false,
           "title": "Retryable",

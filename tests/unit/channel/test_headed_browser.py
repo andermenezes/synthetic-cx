@@ -9,8 +9,9 @@ from typing import Any
 import pytest
 import yaml
 
-from syntheticcx.adapters.channel import playwright as channel_module
-from syntheticcx.config.models import ChannelConfig, ExecutionLimits
+from syntheticcx.adapters.channel import broker as broker_module
+from syntheticcx.adapters.channel.dynamic import DynamicPlaywrightChannel
+from syntheticcx.config.models import ExecutionLimits, InterfaceChannelConfig
 from syntheticcx.errors import ChannelError
 
 
@@ -50,13 +51,13 @@ def test_native_browser_launch_uses_selected_mode(
         async def start(self) -> Playwright:
             return Playwright()
 
-    monkeypatch.setattr(channel_module, "async_playwright", Manager)
+    monkeypatch.setattr(broker_module, "async_playwright", Manager)
     source = yaml.safe_load(Path("examples/telecom/scenario.yaml").read_text())
-    channel = channel_module.PlaywrightChannel(
-        ChannelConfig.model_validate(source["channel"]),
+    channel = DynamicPlaywrightChannel(
+        InterfaceChannelConfig.model_validate(source["channel"]),
         ExecutionLimits.model_validate(source["execution"]),
         headed=headed,
     )
-    with pytest.raises(ChannelError, match="HTTP 403"):
+    with pytest.raises(ChannelError, match="native target navigation failed"):
         asyncio.run(channel.start())
     assert launches == [not headed]

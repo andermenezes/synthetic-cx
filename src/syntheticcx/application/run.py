@@ -34,6 +34,7 @@ from syntheticcx.domain.models import (
     Scenario,
     TokenUsage,
 )
+from syntheticcx.domain.protocols import ChannelAdapter
 from syntheticcx.errors import ConfigurationError, PersistenceError
 from syntheticcx.evaluation.service import EvaluationService
 from syntheticcx.language import Language, require_language
@@ -159,9 +160,19 @@ async def execute_run(
         settings.persona.credential.get_secret_value(),
         settings.evaluation.credential.get_secret_value(),
     )
-    redactor = Redactor(config.privacy, resolved_secrets=secrets)
+    redactor = Redactor(
+        config.privacy,
+        resolved_secrets=secrets,
+        sensitive_context={
+            "persona": config.persona.model_dump(mode="json"),
+            "starting_context": config.scenario.starting_context,
+            "knowledge": config.scenario.knowledge,
+        },
+    )
     prompt_capture = (
-        PromptCapture(redactor, config.scenario) if config.privacy.capture_prompts else None
+        PromptCapture(redactor, config.scenario, persona=config.persona)
+        if config.privacy.capture_prompts
+        else None
     )
     config_artifact = ConfigArtifact(
         source_content_hash=loaded.source_content_hash,
@@ -207,7 +218,7 @@ async def execute_run(
             remote_timeout=config.execution.close_timeout_seconds,
         )
     provider: OpenAIProvider | OpenAICompatibleProvider | None = None
-    channel: PlaywrightChannel | None = None
+    channel: ChannelAdapter | None = None
     simulator: TinyTroupePersonaSimulator | None = None
     acknowledged = False
     result: EvaluatedRunResult | None = None
@@ -244,11 +255,28 @@ async def execute_run(
             redactor=redactor,
             provider=provider,
         )
-        channel = (
-            PlaywrightChannel(config.channel, config.execution, headed=True)
-            if headed
-            else PlaywrightChannel(config.channel, config.execution)
-        )
+        if config.channel.type == "webchat_playwright_dynamic":
+            from syntheticcx.adapters.channel.dynamic import DynamicPlaywrightChannel
+
+            channel = DynamicPlaywrightChannel(
+                config.channel,
+                config.execution,
+                headed=headed,
+                action_authorizations=[
+                    authorization.model_dump(mode="json")
+                    for authorization in config.scenario.action_authorizations
+                ],
+            )
+        elif config.channel.type == "webchat_playwright_stateful":
+            from syntheticcx.adapters.channel.stateful import StatefulPlaywrightChannel
+
+            channel = StatefulPlaywrightChannel(config.channel, config.execution, headed=headed)
+        else:
+            channel = (
+                PlaywrightChannel(config.channel, config.execution, headed=True)
+                if headed
+                else PlaywrightChannel(config.channel, config.execution)
+            )
         simulator = TinyTroupePersonaSimulator(
             config.model,
             settings.persona,

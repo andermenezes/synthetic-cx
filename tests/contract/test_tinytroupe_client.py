@@ -3,6 +3,7 @@
 import asyncio
 import json
 from collections.abc import Callable
+from datetime import UTC, datetime
 from importlib import import_module
 from pathlib import Path
 from typing import Any, cast
@@ -22,7 +23,9 @@ from syntheticcx.config.models import (
 from syntheticcx.domain.models import (
     ConversationObservation,
     CustomerScenarioContext,
+    Message,
     PersonaDefinition,
+    ReplyOption,
 )
 from syntheticcx.privacy import Redactor
 from syntheticcx.privacy.prompt_capture import PromptCapture
@@ -289,3 +292,89 @@ def test_pinned_persona_uses_selected_sdk_transport_and_returns_owned_evidence(
         assert body["model"] == config.model
         assert body["response_format"]["type"] == "json_schema"
         assert ("temperature" in body) == (config.provider == "openai_compatible")
+        prompt = json.dumps(body["messages"], ensure_ascii=False)
+        assert "customer_support" in prompt
+        assert "reachable" in prompt
+        assert context.goal in prompt
+
+
+def test_pinned_select_option_is_an_owned_decision_without_browser_callback(
+    monkeypatch: Any,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "id": "response-1",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "offline",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": json.dumps(
+                                {
+                                    "actions": [
+                                        {
+                                            "type": "SELECT_OPTION",
+                                            "content": "opaque:1",
+                                            "target": "",
+                                        },
+                                        {"type": "DONE", "content": "", "target": ""},
+                                    ],
+                                    "cognitive_state": {
+                                        "goals": "Understand invoice",
+                                        "context": [],
+                                        "attention": "billing",
+                                        "emotions": "calm",
+                                    },
+                                }
+                            ),
+                        },
+                    }
+                ],
+            },
+        )
+
+    install_mock_sdk_transport(monkeypatch, respond)
+    project = load_config(Path("examples/telecom/scenario.yaml"))
+    settings = ResolvedModelSettings(
+        provider="openai", model=project.model.model, credential="offline-secret"
+    )
+    simulator = TinyTroupePersonaSimulator(project.model, settings, timeout_seconds=15)
+
+    async def exercise() -> None:
+        state = await simulator.initialize(
+            PersonaDefinition.model_validate(project.persona.model_dump()),
+            CustomerScenarioContext.from_scenario(project.scenario),
+        )
+        person = simulator._session._person
+        result = await simulator.respond(
+            ConversationObservation(
+                kind="assistant_response",
+                messages=[
+                    Message(
+                        id="assistant-1",
+                        actor="assistant",
+                        sequence=0,
+                        content="",
+                        observed_at=datetime.now(UTC),
+                        options=[ReplyOption(id="opaque:1", label="Billing information")],
+                    )
+                ],
+            ),
+            state,
+        )
+        assert result.selected_option_id == "opaque:1" and result.message is None
+        assert result.state == state and simulator._session._person is person
+        assert len(simulator.take_interactions()) == 1
+        await simulator.close()
+
+    asyncio.run(exercise())
+    assert len(requests) == 1
+    assert b"SELECT_OPTION" in requests[0].content

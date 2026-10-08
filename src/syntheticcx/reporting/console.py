@@ -9,7 +9,9 @@ def render_report(report: Report, *, report_omitted: bool = False) -> str:
     """Render only fields of an acknowledged report projection."""
     goal = report.goal_result.status if report.goal_result is not None else "unavailable"
     errors = ", ".join(
-        f"{error.category} ({error.operation}): {error.message}" for error in report.errors
+        f"{error.category} ({error.operation}): {error.message}"
+        + (f" [reason={error.reason_code}]" if error.reason_code else "")
+        for error in report.errors
     )
     lines = [
         f"Run ID: {report.run_id}",
@@ -24,6 +26,12 @@ def render_report(report: Report, *, report_omitted: bool = False) -> str:
     ]
     if report_omitted:
         lines.append("report.json: omitted by storage configuration")
+    if any(
+        record.path == "report.md" and record.status == "captured" for record in report.artifacts
+    ):
+        lines.append(f"Markdown report: {report.artifact_location}/report.md")
+    if report.persona_feedback is not None:
+        lines.append(f"Customer impressions: {report.persona_feedback.status} (subjective)")
     return "\n".join(lines)
 
 
