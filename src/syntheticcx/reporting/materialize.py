@@ -8,7 +8,7 @@ checked before any caller persists a projection.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import cast
+from typing import Literal, cast
 
 from pydantic import TypeAdapter
 
@@ -16,26 +16,26 @@ from syntheticcx.config.models import Criterion
 from syntheticcx.domain.artifacts import ConversationArtifact, EvaluationArtifact
 from syntheticcx.domain.events import (
     ArtifactRecordedEvent,
+    BehavioralObservationRecordedEvent,
     EvaluationCompletedEvent,
     MessageObservedEvent,
     PersonaFeedbackRecordedEvent,
     RepeatedInformationEvent,
     RunLifecycleEvent,
     TypedTraceEvent,
+    committed_behavior_batches,
     committed_errors,
 )
 from syntheticcx.domain.models import (
     ArtifactRecord,
+    BehavioralTransitionSummary,
     ErrorDetail,
     EvaluationResult,
     Message,
-    PersonaState,
-    PersonaStateTransition,
     Report,
 )
 from syntheticcx.errors import EvaluationError, PersistenceError
 from syntheticcx.evaluation.validation import validate_result
-from syntheticcx.privacy import Redactor
 
 _EVENT = TypeAdapter(TypedTraceEvent)
 
@@ -59,12 +59,14 @@ def build_projections(
     materialize_conversation: bool,
     materialize_evaluation: bool,
     materialize_report: bool,
+    allow_partial: bool = False,
 ) -> Projections:
     """Derive artifact views and validate references before finalization.
 
     Criteria are complete sanitized snapshots from the effective configuration.
-    Message order follows committed event order; report metrics are derived as
-    approved in the plan checkpoint.
+    Message order follows committed event order. allow_partial permits a
+    read-only diagnostic view before finalization, retaining missing required
+    evaluation omissions without inventing verdicts or writing to a failed store.
     """
     snapshots = [_criterion_snapshot(criterion) for criterion in criteria]
     configured = {criterion.id: criterion for criterion in snapshots}
@@ -143,7 +145,11 @@ def build_projections(
             final_lifecycle = event
         prior_events.append(event)
 
-    _validate_criterion_coverage(snapshots, result_criterion_ids)
+    _validate_criterion_coverage(
+        snapshots,
+        result_criterion_ids,
+        require_complete=not allow_partial or final_lifecycle is not None,
+    )
 
     conversation = ConversationArtifact(messages) if materialize_conversation else None
     evaluation = (
@@ -169,8 +175,56 @@ def build_projections(
         reconciled_artifacts,
         final_lifecycle,
         committed_errors(events),
+        *_behavior_evidence(events, final_lifecycle is not None),
     )
     return Projections(conversation, evaluation, report)
+
+
+def _behavior_evidence(
+    events: list[TypedTraceEvent], finalized: bool
+) -> tuple[
+    int,
+    int,
+    list[BehavioralTransitionSummary],
+    Literal["unavailable", "complete", "prefix"],
+    str | None,
+]:
+    """Claim effects only for batches whose entire transition list committed."""
+    try:
+        batches, reason = committed_behavior_batches(events)
+        counters: dict[str, int] = {}
+        for batch in batches:
+            current = batch.observation.data.state
+            for transition in batch.transitions:
+                data = transition.data
+                occurrence = counters.get(data.signal, 0) + 1
+                if data.before != current or data.occurrence != occurrence:
+                    raise ValueError("behavioral state or occurrence evidence is inconsistent")
+                counters[data.signal] = occurrence
+                current = data.after
+    except ValueError:
+        raise PersistenceError(
+            "materialize evidence", "committed behavioral evidence is inconsistent"
+        ) from None
+    if not any(isinstance(event, BehavioralObservationRecordedEvent) for event in events):
+        return 0, 0, [], "unavailable", None
+    if reason is None and not finalized:
+        reason = "source run has no committed final lifecycle"
+    transitions = [
+        BehavioralTransitionSummary.model_validate(
+            {
+                **transition.data.model_dump(mode="json"),
+                "detector_id": signal.data.signal.detector_id,
+                "detector_type": signal.data.signal.detector_type,
+                "detector_version": signal.data.signal.detector_version,
+                "source_event_ids": list(signal.data.signal.source_event_ids),
+                "source_message_ids": list(signal.data.signal.source_message_ids),
+            }
+        )
+        for batch in batches
+        for signal, transition in zip(batch.signals, batch.transitions, strict=True)
+    ]
+    return len(batches), len(transitions), transitions, "prefix" if reason else "complete", reason
 
 
 def reconcile_artifacts(
@@ -196,7 +250,10 @@ def _criterion_snapshot(criterion: Criterion) -> Criterion:
 
 
 def _validate_criterion_coverage(
-    criteria: list[Criterion], result_criterion_ids: list[str]
+    criteria: list[Criterion],
+    result_criterion_ids: list[str],
+    *,
+    require_complete: bool = True,
 ) -> None:
     known_ids = {criterion.id for criterion in criteria}
     required_ids = {criterion.id for criterion in criteria if criterion.required}
@@ -206,7 +263,7 @@ def _validate_criterion_coverage(
             "materialize evidence", "an evaluation references an unknown criterion"
         )
     missing = sorted(required_ids - set(result_criterion_ids))
-    if missing:
+    if missing and require_complete:
         raise PersistenceError(
             "materialize evidence", "a required criterion has no committed evaluation"
         )
@@ -226,6 +283,11 @@ def _build_report(
     artifacts: list[ArtifactRecord],
     final_lifecycle: RunLifecycleEvent | None,
     failures: list[ErrorDetail],
+    behavior_observation_count: int,
+    behavior_signal_count: int,
+    behavior_transitions: list[BehavioralTransitionSummary],
+    behavior_completeness: Literal["unavailable", "complete", "prefix"],
+    behavior_prefix_reason: str | None,
 ) -> Report | None:
     if not materialize_report:
         return None
@@ -242,11 +304,16 @@ def _build_report(
         omissions.append("conversation")
     if not materialize_evaluation:
         omissions.append("evaluation")
+    evaluated_ids = {result.criterion_id for result in results}
+    if any(criterion.required and criterion.id not in evaluated_ids for criterion in criteria):
+        omissions.append("evaluation:incomplete")
     omissions.extend(
         f"screenshot:{artifact.reason or artifact.status}"
         for artifact in artifacts
         if artifact.media_type == "image/png" and artifact.status != "captured"
     )
+    if behavior_prefix_reason is not None:
+        omissions.append("behavior:incomplete_prefix")
     return Report(
         run_id=run_id,
         outcome=final_lifecycle.data.outcome if final_lifecycle else None,
@@ -277,6 +344,11 @@ def _build_report(
             ),
             None,
         ),
+        behavior_observation_count=behavior_observation_count,
+        behavior_signal_count=behavior_signal_count,
+        behavior_transitions=behavior_transitions,
+        behavior_completeness=behavior_completeness,
+        behavior_prefix_reason=behavior_prefix_reason,
     )
 
 
@@ -309,13 +381,6 @@ def omitted_artifact_records(
             ArtifactRecord(media_type="application/json", status="omitted", reason="disabled")
         )
     return records
-
-
-def sanitize_transition_proof(
-    transition: PersonaStateTransition, redactor: Redactor
-) -> PersonaState:
-    """Revalidate a transition through the redaction boundary."""
-    return redactor.redact_model(transition).after
 
 
 __all__ = [

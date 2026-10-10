@@ -50,6 +50,7 @@ def render_markdown(
         "cancelled": statuses["cancelled"],
         "channel_error": label("Channel error", "Erro de canal"),
         "model_error": label("Model error", "Erro de modelo"),
+        "behavior_error": label("Behavior error", "Erro de comportamento"),
         "persistence_error": label("Persistence error", "Erro de persistência"),
     }
     unavailable = label("Unavailable", "Indisponível")
@@ -177,6 +178,84 @@ def render_markdown(
                     unavailable,
                     "",
                 ]
+    lines += [
+        "## " + label("Owned behavioral effects", "Efeitos comportamentais controlados"),
+        "",
+        label(
+            "Detector classifications and rule effects are separate from formal evaluation, "
+            "repeated-information findings, and subjective customer impressions. "
+            "These are recorded effects, not an offline replay verification.",
+            "Classificações dos detectores e efeitos das regras são separados da avaliação formal, "
+            "dos fatos de informação repetida e das impressões subjetivas do cliente. "
+            "Estes efeitos são registrados, não uma verificação de replay offline.",
+        ),
+        "",
+        "- "
+        + label("Evidence completeness", "Completude da evidência")
+        + ": "
+        + _text(report.behavior_completeness),
+        "- "
+        + label("Completed observations", "Observações completas")
+        + ": "
+        + str(report.behavior_observation_count),
+        "- "
+        + label("Acknowledged signals/transitions", "Sinais/transições confirmados")
+        + ": "
+        + str(report.behavior_signal_count),
+        "",
+    ]
+    if report.behavior_prefix_reason:
+        lines += [
+            label("Prefix limitation", "Limitação do prefixo")
+            + ": "
+            + _text(report.behavior_prefix_reason),
+            "",
+        ]
+    for transition in report.behavior_transitions:
+        lines += [
+            "### " + _text(transition.signal) + " #" + str(transition.occurrence),
+            "",
+            "- " + label("Observation", "Observação") + ": " + _text(transition.observation_id),
+            "- "
+            + label("Signal event", "Evento do sinal")
+            + ": "
+            + _text(transition.signal_event_id),
+            "- "
+            + label("Detector", "Detector")
+            + ": "
+            + _text(transition.detector_id)
+            + " ("
+            + _text(transition.detector_type)
+            + "@"
+            + _text(transition.detector_version)
+            + ")",
+            "- "
+            + label("Source events", "Eventos de origem")
+            + ": "
+            + ", ".join(_text(ref) for ref in transition.source_event_ids),
+            "- "
+            + label("Source messages", "Mensagens de origem")
+            + ": "
+            + ", ".join(_text(ref) for ref in transition.source_message_ids),
+            "- "
+            + label("Applied rules", "Regras aplicadas")
+            + ": "
+            + ", ".join(_text(rule) for rule in transition.applied_rule_ids),
+            "- "
+            + label("Frustration", "Frustração")
+            + ": "
+            + f"{transition.before.frustration} → {transition.after.frustration}",
+            "- "
+            + label("Willingness to continue", "Disposição para continuar")
+            + ": "
+            + f"{transition.before.willingness_to_continue} → "
+            + str(transition.after.willingness_to_continue),
+            "- "
+            + label("Abandoned", "Abandonou")
+            + ": "
+            + f"{transition.before.abandoned} → {transition.after.abandoned}",
+            "",
+        ]
     lines += ["", "## " + label("Formal test conclusions", "Conclusões formais do teste"), ""]
     for finding in report.findings:
         lines += [

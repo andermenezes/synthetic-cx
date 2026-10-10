@@ -188,7 +188,15 @@ class Channel:
         pytest.fail("menu-only channel must never receive TALK")
 
     async def receive(self):
-        return await self.observe_initial()
+        response = await self.observe_initial()
+        return response.model_copy(
+            update={
+                "messages": [
+                    message.model_copy(update={"id": "assistant-response"})
+                    for message in response.messages
+                ]
+            }
+        )
 
 
 def invoke(channel, simulator, wait=None):

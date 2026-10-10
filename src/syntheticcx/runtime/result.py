@@ -24,6 +24,7 @@ TerminationReason = Literal[
     "cancelled",
     "channel_error",
     "model_error",
+    "behavior_error",
     "persistence_error",
 ]
 

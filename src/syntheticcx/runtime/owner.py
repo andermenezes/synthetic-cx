@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
-from syntheticcx.config.models import ExecutionLimits, ProjectConfig
+from syntheticcx.config.models import BehaviorConfig, ExecutionLimits, ProjectConfig
 from syntheticcx.domain.artifacts import ConfigArtifact, Run
 from syntheticcx.domain.events import (
     EvaluationCompleted,
@@ -27,6 +27,7 @@ from syntheticcx.domain.protocols import (
 from syntheticcx.errors import ConfigurationError, EvaluationError, PersistenceError
 from syntheticcx.evaluation.service import EvaluationService
 from syntheticcx.privacy import Redactor
+from syntheticcx.runtime.behavior_signals import BehaviorDetectors, prepare_behavior
 from syntheticcx.runtime.journal import RunJournal
 from syntheticcx.runtime.model_metadata import with_committed_interactions
 from syntheticcx.runtime.result import EvaluatedRunResult
@@ -68,6 +69,7 @@ async def run_evaluated(
     redactor: Redactor,
     evaluation_provider: AsyncCloseable | None = None,
     project_config: ProjectConfig | None = None,
+    behavior_detectors: BehaviorDetectors | None = None,
     on_created: Callable[[str], None] | None = None,
 ) -> EvaluatedRunResult:
     """Own conversation, evaluation, terminal trace, metadata commit and cleanup."""
@@ -75,6 +77,21 @@ async def run_evaluated(
         mode="json"
     ) != project_config.scenario.model_dump(mode="json"):
         raise ConfigurationError("prepare run", "scenario differs from the effective configuration")
+    if behavior_detectors is None:
+        behavior_detectors = prepare_behavior(
+            project_config.behavior if project_config is not None else BehaviorConfig(),
+            persona.behavioral_rules,
+        ).instantiate()
+    run = run.model_copy(
+        update={
+            "metadata": run.metadata.model_copy(
+                update={"behavior_detectors": behavior_detectors.metadata}
+            )
+        }
+    )
+    config_artifact = config_artifact.model_copy(
+        update={"behavior_detectors": behavior_detectors.metadata}
+    )
     conversation = await run_conversation(
         run=run,
         config_artifact=config_artifact,
@@ -88,6 +105,7 @@ async def run_evaluated(
         wait=wait,
         limits=limits,
         project_config=project_config,
+        behavior_detectors=behavior_detectors,
         retain_storage=True,
         on_created=on_created,
     )

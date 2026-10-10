@@ -7,7 +7,7 @@ import os
 import platform
 import socket
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -26,6 +26,7 @@ from syntheticcx.config.sanitize import sanitized_effective_config
 from syntheticcx.config.settings import prepare_settings, requires_semantic_evaluation
 from syntheticcx.domain.artifacts import ConfigArtifact, MetadataArtifact, Run
 from syntheticcx.domain.models import (
+    BehavioralDetectorMetadata,
     ModelIdentity,
     PersonaDefinition,
     Report,
@@ -41,6 +42,7 @@ from syntheticcx.language import Language, require_language
 from syntheticcx.privacy import Redactor
 from syntheticcx.privacy.prompt_capture import PromptCapture
 from syntheticcx.reporting.materialize import build_projections
+from syntheticcx.runtime.behavior_signals import DetectorRegistration, prepare_behavior
 from syntheticcx.runtime.clock import RealClock, RealWaitController
 from syntheticcx.runtime.journal import RunJournal
 from syntheticcx.runtime.model_metadata import with_model_evidence
@@ -95,11 +97,16 @@ def _lock_hash() -> str | None:
 
 
 def _initial_run(
-    config: ProjectConfig, run_id: str, preflight: CapabilityPreflight, clock: RealClock
+    config: ProjectConfig,
+    run_id: str,
+    preflight: CapabilityPreflight,
+    clock: RealClock,
+    behavior_detectors: tuple[BehavioralDetectorMetadata, ...] = (),
 ) -> Run:
     probe = _LocalProcessProbe()
     metadata = RunMetadata(
         configuration_version=config.version,
+        behavior_detectors=behavior_detectors,
         framework_version=__version__,
         dependency_lock_hash=_lock_hash(),
         persona_model=ModelIdentity(provider=config.model.provider, model=config.model.model),
@@ -138,6 +145,7 @@ async def execute_run(
     on_created: Callable[[str, Path], None] | None = None,
     headed: bool = False,
     language: Language | None = None,
+    behavior_registry: Mapping[str, DetectorRegistration] | None = None,
 ) -> RunExecution:
     """Validate, probe, compose, execute, and read the committed report."""
     loaded = load_config_with_source_hash(path)
@@ -155,7 +163,10 @@ async def execute_run(
                 )
             }
         )
-    settings = prepare_settings(config)
+    prepared_behavior = prepare_behavior(
+        config.behavior, config.persona.behavioral_rules, behavior_registry
+    )
+    settings = prepare_settings(config, behavior_registry=behavior_registry)
     secrets = (
         settings.persona.credential.get_secret_value(),
         settings.evaluation.credential.get_secret_value(),
@@ -174,11 +185,47 @@ async def execute_run(
         if config.privacy.capture_prompts
         else None
     )
+    effective_config = sanitized_effective_config(config, resolved_secrets=secrets)
+    try:
+        original_persona = config.persona.model_dump(mode="json")
+        safe_persona = effective_config["persona"]
+        original_detectors = config.behavior.model_dump(mode="json")["detectors"]
+        safe_detectors = effective_config["behavior"]["detectors"]
+        if (
+            safe_persona["initial_state"] != original_persona["initial_state"]
+            or [
+                {key: value for key, value in rule.items() if key != "description"}
+                for rule in safe_persona["behavioral_rules"]
+            ]
+            != [
+                {key: value for key, value in rule.items() if key != "description"}
+                for rule in original_persona["behavioral_rules"]
+            ]
+            or [
+                {key: detector[key] for key in ("id", "type", "version")}
+                for detector in safe_detectors
+            ]
+            != [
+                {key: detector[key] for key in ("id", "type", "version")}
+                for detector in original_detectors
+            ]
+            or any(
+                redactor.redact_model(metadata) != metadata
+                for metadata in prepared_behavior.metadata
+            )
+        ):
+            raise ValueError("behavioral configuration identity changed")
+    except Exception:
+        raise ConfigurationError(
+            "prepare behavior", "privacy filtering changes behavioral replay identities or rules"
+        ) from None
     config_artifact = ConfigArtifact(
         source_content_hash=loaded.source_content_hash,
         channel_guide_source_hash=loaded.guide_source_hash,
-        effective_config=sanitized_effective_config(config, resolved_secrets=secrets),
+        effective_config=effective_config,
+        behavior_detectors=prepared_behavior.metadata,
     )
+    behavior_detectors = prepared_behavior.instantiate()
     preflight = await preflight_models(config, settings)
     clock = RealClock()
     wait = RealWaitController()
@@ -187,7 +234,7 @@ async def execute_run(
     directory = run_root / run_id
     # Recovery cannot rewrite an active or ambiguously owned run.
     Recovery(run_root, _LocalProcessProbe(), socket.gethostname()).scan()
-    run = _initial_run(config, run_id, preflight, clock)
+    run = _initial_run(config, run_id, preflight, clock, prepared_behavior.metadata)
     storage = FilesystemStorage(
         run_root,
         redactor,
@@ -300,6 +347,7 @@ async def execute_run(
                 redactor=redactor,
                 evaluation_provider=provider,
                 project_config=config,
+                behavior_detectors=behavior_detectors,
                 on_created=created,
             )
     except asyncio.CancelledError:

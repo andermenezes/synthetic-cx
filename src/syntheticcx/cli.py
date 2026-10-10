@@ -1,6 +1,7 @@
 """Synchronous command boundary for one bounded, evidence-backed run."""
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 
@@ -16,6 +17,11 @@ from syntheticcx.discovery.run import discover_guide
 from syntheticcx.errors import ConfigurationError, SyntheticCXError
 from syntheticcx.language import require_language
 from syntheticcx.reporting.console import render_partial, render_report
+from syntheticcx.runtime.behavior_replay import (
+    BehaviorReplayError,
+    replay_behavior,
+    write_behavior_replay,
+)
 
 app = typer.Typer(
     add_completion=False,
@@ -190,7 +196,7 @@ def main(
 
 @app.command()
 def run(
-    scenario: Path = typer.Argument(..., help="Validated version-1 scenario YAML."),
+    scenario: Path = typer.Argument(..., help="Validated version-1 journey YAML."),
     headed: bool = typer.Option(False, "--headed", help="Show the native browser during the run."),
     language: str | None = typer.Option(
         None, "--language", help="Override the persona language: en-US or pt-BR."
@@ -234,3 +240,55 @@ def run(
         }.get(result.partial_reason or "", "final report unavailable")
         typer.echo(render_partial(result.run_id, result.artifact_location, reason))
     raise typer.Exit(result.exit_code)
+
+
+@app.command("replay-behavior")
+def replay_behavior_command(
+    run_directory: Path = typer.Argument(..., help="Read-only directory containing run evidence."),
+    output: Path = typer.Option(..., "--output", help="New replay JSON file; never overwritten."),
+    rules: Path | None = typer.Option(
+        None, "--rules", help="Optional version-1 rules-only YAML for counterfactual behavior."
+    ),
+) -> None:
+    """Replay committed behavior offline; this is not browser replay or evaluation."""
+    try:
+        if output.resolve().is_relative_to(run_directory.resolve()):
+            raise BehaviorReplayError(
+                "output_error", "output must be outside the source run directory"
+            )
+        if rules is not None and output.resolve() == rules.resolve():
+            raise BehaviorReplayError("output_error", "output must differ from the rules input")
+        result = replay_behavior(run_directory, rules=rules)
+        write_behavior_replay(result, output)
+    except BehaviorReplayError as error:
+        typer.echo(
+            json.dumps({"kind": error.kind, "message": error.message}, sort_keys=True),
+            err=True,
+        )
+        raise typer.Exit(3 if error.kind in {"output_error", "output_exists"} else 2) from None
+    except Exception:
+        typer.echo(
+            json.dumps(
+                {
+                    "kind": "invalid_source",
+                    "message": "behavior replay could not read valid evidence",
+                }
+            ),
+            err=True,
+        )
+        raise typer.Exit(2) from None
+    typer.echo(f"Behavior replay: {output}")
+    typer.echo(f"Mode: {result.mode} | Completeness: {result.completeness}")
+    if result.comparison_findings:
+        typer.echo(f"Behavioral mismatches: {len(result.comparison_findings)}", err=True)
+        raise typer.Exit(4)
+    if result.completeness == "prefix":
+        typer.echo(result.prefix_reason, err=True)
+        raise typer.Exit(5)
+    typer.echo(
+        "Recorded behavior verified."
+        if result.mode == "verification"
+        else (
+            "Counterfactual behavior calculated; recorded conversation is not an alternate outcome."
+        )
+    )

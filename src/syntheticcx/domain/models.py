@@ -5,9 +5,19 @@ from __future__ import annotations
 from datetime import UTC
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, AwareDatetime, BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    UUID4,
+    AfterValidator,
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    model_validator,
+)
 
 from syntheticcx.config.models import (
+    BehaviorDetectorVersion,
+    BehaviorIdentifier,
     JsonObject,
     ObservationTopic,
     PersonaConfig,
@@ -176,6 +186,38 @@ class PersonaStateTransition(DomainModel):
     applied_rule_ids: list[Identifier]
 
 
+class BehavioralStateTransition(DomainModel):
+    """Acknowledged rule-engine effect, never an evaluator finding."""
+
+    observation_id: UUID4
+    signal_event_id: Identifier
+    signal: BehaviorIdentifier
+    occurrence: int = Field(gt=0, strict=True)
+    before: PersonaState
+    after: PersonaState
+    applied_rule_ids: list[BehaviorIdentifier] = Field(default_factory=list, max_length=32)
+
+    @model_validator(mode="after")
+    def validate_transition(self) -> BehavioralStateTransition:
+        if len(self.applied_rule_ids) != len(set(self.applied_rule_ids)):
+            raise ValueError("applied rule IDs must be unique")
+        if self.before.turn_number != self.after.turn_number:
+            raise ValueError("behavioral transitions cannot change turn number")
+        if self.before.abandoned and (self.before != self.after or self.applied_rule_ids):
+            raise ValueError("abandoned behavioral state cannot change or fire rules")
+        return self
+
+
+class BehavioralTransitionSummary(BehavioralStateTransition):
+    """Payload-free behavioral report citation with exact detector identity."""
+
+    detector_id: BehaviorIdentifier
+    detector_type: BehaviorIdentifier
+    detector_version: BehaviorDetectorVersion
+    source_event_ids: list[Identifier] = Field(min_length=1)
+    source_message_ids: list[Identifier] = Field(default_factory=list)
+
+
 class PersonaAction(DomainModel):
     message: str | None = None
     selected_option_id: Identifier | None = None
@@ -287,6 +329,25 @@ class ArtifactRecord(DomainModel):
     reason: str | None = None
 
 
+class BehavioralDetectorMetadata(DomainModel):
+    """Exact configured implementation identity, without executable factories."""
+
+    detector_id: BehaviorIdentifier
+    detector_type: BehaviorIdentifier
+    detector_version: BehaviorDetectorVersion
+    mode: Literal["deterministic", "model_backed"]
+    output_signals: tuple[BehaviorIdentifier, ...] = Field(min_length=1, max_length=32)
+    signal_schemas: dict[BehaviorIdentifier, JsonObject] = Field(min_length=1, max_length=32)
+
+    @model_validator(mode="after")
+    def validate_output_signals(self) -> BehavioralDetectorMetadata:
+        if len(self.output_signals) != len(set(self.output_signals)):
+            raise ValueError("advertised signal names must be unique")
+        if set(self.signal_schemas) != set(self.output_signals):
+            raise ValueError("payload schema names must match advertised signal names")
+        return self
+
+
 class RunMetadata(DomainModel):
     configuration_version: str
     framework_version: str
@@ -300,6 +361,7 @@ class RunMetadata(DomainModel):
     usage: TokenUsage
     runtime_platform: Identifier
     owner: RunOwner
+    behavior_detectors: tuple[BehavioralDetectorMetadata, ...] = Field(default=(), max_length=8)
 
 
 class TopicImpression(DomainModel):
@@ -380,3 +442,20 @@ class Report(DomainModel):
     omissions: list[str] = Field(default_factory=list)
     persona_feedback: PersonaFeedback | None = None
     conversation_duration_seconds: float | None = Field(default=None, ge=0)
+    behavior_observation_count: int = Field(default=0, ge=0, strict=True)
+    behavior_signal_count: int = Field(default=0, ge=0, strict=True)
+    behavior_transitions: list[BehavioralTransitionSummary] = Field(default_factory=list)
+    behavior_completeness: Literal["unavailable", "complete", "prefix"] = "unavailable"
+    behavior_prefix_reason: str | None = None
+
+    @model_validator(mode="after")
+    def validate_behavior_evidence(self) -> Report:
+        if (self.behavior_completeness == "prefix") != (self.behavior_prefix_reason is not None):
+            raise ValueError("only behavioral prefixes require a reason")
+        if self.behavior_signal_count != len(self.behavior_transitions):
+            raise ValueError("behavior signal count requires acknowledged transitions")
+        if self.behavior_completeness == "unavailable" and (
+            self.behavior_observation_count or self.behavior_signal_count
+        ):
+            raise ValueError("unavailable behavioral evidence cannot claim committed batches")
+        return self

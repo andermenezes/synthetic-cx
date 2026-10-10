@@ -5,14 +5,20 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from importlib.metadata import PackageNotFoundError, version
+from typing import TYPE_CHECKING
 
 from syntheticcx.config.models import (
+    BehaviorConfig,
+    BehaviorRule,
     OpenAICompatibleModelConfig,
     ProjectConfig,
     ResolvedModelSettings,
     StrictModel,
 )
 from syntheticcx.errors import ConfigurationError
+
+if TYPE_CHECKING:
+    from syntheticcx.runtime.behavior_signals import DetectorRegistration, PreparedBehavior
 
 
 def resolve_model_settings(
@@ -45,10 +51,25 @@ def requires_semantic_evaluation(config: ProjectConfig) -> bool:
     )
 
 
+def validate_behavior(
+    behavior: BehaviorConfig,
+    rules: list[BehaviorRule],
+    registry: Mapping[str, DetectorRegistration] | None = None,
+) -> PreparedBehavior:
+    """Resolve explicit registrations without constructing trusted detectors."""
+    from syntheticcx.runtime.behavior_signals import prepare_behavior
+
+    return prepare_behavior(behavior, rules, registry)
+
+
 def prepare_settings(
-    config: ProjectConfig, environment: Mapping[str, str] | None = None
+    config: ProjectConfig,
+    environment: Mapping[str, str] | None = None,
+    *,
+    behavior_registry: Mapping[str, DetectorRegistration] | None = None,
 ) -> PreparedSettings:
     """Validate local prerequisites without importing adapters or probing endpoints."""
+    validate_behavior(config.behavior, config.persona.behavioral_rules, behavior_registry)
     semantic = requires_semantic_evaluation(config)
     for role, model in [
         ("model", config.model),

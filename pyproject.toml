@@ -18,6 +18,7 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
+  "jsonschema==4.26.0",
   "langgraph==1.2.11",
   "openai==2.54.0",
   "opentelemetry-api==1.44.0",
@@ -26,6 +27,7 @@ dependencies = [
   "pydantic==2.13.5",
   "pydantic-settings==2.15.0",
   "PyYAML==6.0.3",
+  "referencing==0.37.0",
   "tinytroupe @ git+https://github.com/microsoft/TinyTroupe.git@a6244b358a1fe1c71bf751f7ba0f8dfa368ec5a4",
   "typer==0.27.2",
 ]
@@ -38,7 +40,6 @@ discovery = [
 
 [dependency-groups]
 dev = [
-  "jsonschema==4.26.0",
   "mypy==2.3.1",
   "pre-commit==4.6.2",
   "pytest==9.1.1",
@@ -68,6 +69,10 @@ strict = true
 packages = ["syntheticcx"]
 follow_imports = "skip"
 disallow_untyped_decorators = false
+
+[[tool.mypy.overrides]]
+module = ["jsonschema", "jsonschema.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

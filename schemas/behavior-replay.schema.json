@@ -1,0 +1,661 @@
+{
+  "$defs": {
+    "BehaviorCondition": {
+      "additionalProperties": false,
+      "properties": {
+        "occurrence_at_least": {
+          "default": 1,
+          "exclusiveMinimum": 0,
+          "title": "Occurrence At Least",
+          "type": "integer"
+        },
+        "signal": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+          "title": "Signal",
+          "type": "string"
+        },
+        "state": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BehaviorStateConditions"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "signal"
+      ],
+      "title": "BehaviorCondition",
+      "type": "object"
+    },
+    "BehaviorEffects": {
+      "additionalProperties": false,
+      "properties": {
+        "abandon": {
+          "anyOf": [
+            {
+              "const": true,
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Abandon"
+        },
+        "abandonment_threshold": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Abandonment Threshold"
+        },
+        "frustration_delta": {
+          "default": 0,
+          "maximum": 1,
+          "minimum": -1,
+          "title": "Frustration Delta",
+          "type": "number"
+        },
+        "willingness_to_continue_delta": {
+          "default": 0,
+          "maximum": 1,
+          "minimum": -1,
+          "title": "Willingness To Continue Delta",
+          "type": "number"
+        }
+      },
+      "title": "BehaviorEffects",
+      "type": "object"
+    },
+    "BehaviorReplayExternalStateChange": {
+      "additionalProperties": false,
+      "description": "Calculated application of fields changed by a recorded persona/send event.\n\nCounterfactual replay assumes the recorded external decision, not an\nindependently regenerated persona or alternate conversation.",
+      "properties": {
+        "after": {
+          "$ref": "#/$defs/PersonaState"
+        },
+        "before": {
+          "$ref": "#/$defs/PersonaState"
+        },
+        "source_event_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "pattern": "^\\S+$",
+          "title": "Source Event Id",
+          "type": "string"
+        },
+        "transition_index": {
+          "minimum": 0,
+          "title": "Transition Index",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source_event_id",
+        "transition_index",
+        "before",
+        "after"
+      ],
+      "title": "BehaviorReplayExternalStateChange",
+      "type": "object"
+    },
+    "BehaviorReplayOccurrenceFinding": {
+      "additionalProperties": false,
+      "properties": {
+        "calculated": {
+          "exclusiveMinimum": 0,
+          "title": "Calculated",
+          "type": "integer"
+        },
+        "expected": {
+          "exclusiveMinimum": 0,
+          "title": "Expected",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "occurrence_mismatch",
+          "default": "occurrence_mismatch",
+          "title": "Kind",
+          "type": "string"
+        },
+        "transition_index": {
+          "minimum": 0,
+          "title": "Transition Index",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "transition_index",
+        "expected",
+        "calculated"
+      ],
+      "title": "BehaviorReplayOccurrenceFinding",
+      "type": "object"
+    },
+    "BehaviorReplayRulesFinding": {
+      "additionalProperties": false,
+      "properties": {
+        "calculated": {
+          "items": {
+            "maxLength": 80,
+            "minLength": 1,
+            "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+            "type": "string"
+          },
+          "maxItems": 32,
+          "title": "Calculated",
+          "type": "array"
+        },
+        "expected": {
+          "items": {
+            "maxLength": 80,
+            "minLength": 1,
+            "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+            "type": "string"
+          },
+          "maxItems": 32,
+          "title": "Expected",
+          "type": "array"
+        },
+        "kind": {
+          "const": "applied_rules_mismatch",
+          "default": "applied_rules_mismatch",
+          "title": "Kind",
+          "type": "string"
+        },
+        "transition_index": {
+          "minimum": 0,
+          "title": "Transition Index",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "transition_index",
+        "expected",
+        "calculated"
+      ],
+      "title": "BehaviorReplayRulesFinding",
+      "type": "object"
+    },
+    "BehaviorReplaySourceHashes": {
+      "additionalProperties": false,
+      "description": "SHA-256 of exact source trace and effective-config artifact bytes.",
+      "properties": {
+        "effective_config_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Effective Config Sha256",
+          "type": "string"
+        },
+        "trace_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Trace Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "trace_sha256",
+        "effective_config_sha256"
+      ],
+      "title": "BehaviorReplaySourceHashes",
+      "type": "object"
+    },
+    "BehaviorReplayStateFinding": {
+      "additionalProperties": false,
+      "properties": {
+        "boundary": {
+          "enum": [
+            "before",
+            "after"
+          ],
+          "title": "Boundary",
+          "type": "string"
+        },
+        "calculated": {
+          "$ref": "#/$defs/PersonaState"
+        },
+        "expected": {
+          "$ref": "#/$defs/PersonaState"
+        },
+        "kind": {
+          "const": "state_mismatch",
+          "default": "state_mismatch",
+          "title": "Kind",
+          "type": "string"
+        },
+        "transition_index": {
+          "minimum": 0,
+          "title": "Transition Index",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "transition_index",
+        "boundary",
+        "expected",
+        "calculated"
+      ],
+      "title": "BehaviorReplayStateFinding",
+      "type": "object"
+    },
+    "BehaviorReplayTransition": {
+      "additionalProperties": false,
+      "description": "Calculated transition for one distinct signal, including no-match signals.",
+      "properties": {
+        "after": {
+          "$ref": "#/$defs/PersonaState"
+        },
+        "applied_rule_ids": {
+          "default": [],
+          "items": {
+            "maxLength": 80,
+            "minLength": 1,
+            "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+            "type": "string"
+          },
+          "maxItems": 32,
+          "title": "Applied Rule Ids",
+          "type": "array"
+        },
+        "before": {
+          "$ref": "#/$defs/PersonaState"
+        },
+        "occurrence": {
+          "exclusiveMinimum": 0,
+          "title": "Occurrence",
+          "type": "integer"
+        },
+        "signal": {
+          "$ref": "#/$defs/BehavioralSignal"
+        }
+      },
+      "required": [
+        "signal",
+        "occurrence",
+        "before",
+        "after"
+      ],
+      "title": "BehaviorReplayTransition",
+      "type": "object"
+    },
+    "BehaviorRule": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "effects": {
+          "$ref": "#/$defs/BehaviorEffects"
+        },
+        "fire": {
+          "default": "every_match",
+          "enum": [
+            "every_match",
+            "once"
+          ],
+          "title": "Fire",
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "priority": {
+          "title": "Priority",
+          "type": "integer"
+        },
+        "when": {
+          "$ref": "#/$defs/BehaviorCondition"
+        }
+      },
+      "required": [
+        "id",
+        "priority",
+        "when",
+        "effects"
+      ],
+      "title": "BehaviorRule",
+      "type": "object"
+    },
+    "BehaviorStateCondition": {
+      "additionalProperties": false,
+      "properties": {
+        "gte": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gte"
+        },
+        "lte": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lte"
+        }
+      },
+      "title": "BehaviorStateCondition",
+      "type": "object"
+    },
+    "BehaviorStateConditions": {
+      "additionalProperties": false,
+      "properties": {
+        "frustration": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BehaviorStateCondition"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "willingness_to_continue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BehaviorStateCondition"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "BehaviorStateConditions",
+      "type": "object"
+    },
+    "BehavioralSignal": {
+      "additionalProperties": false,
+      "description": "A detector classification, not an evaluator verdict or state mutation.\n\nReferences name acknowledged evidence; membership and backward ordering\nrequire observation/journal context and are not guessed by this model.\nPayload is finite JSON, at most 8 KiB in canonical UTF-8 and 16 containers\ndeep. Rule conditions cannot inspect arbitrary payload fields.",
+      "properties": {
+        "deduplication_key": {
+          "maxLength": 200,
+          "minLength": 1,
+          "pattern": "^\\S+$",
+          "title": "Deduplication Key",
+          "type": "string"
+        },
+        "detector_id": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+          "title": "Detector Id",
+          "type": "string"
+        },
+        "detector_type": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+          "title": "Detector Type",
+          "type": "string"
+        },
+        "detector_version": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Detector Version",
+          "type": "string"
+        },
+        "observation_id": {
+          "format": "uuid4",
+          "title": "Observation Id",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Payload",
+          "type": "object"
+        },
+        "signal": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+          "title": "Signal",
+          "type": "string"
+        },
+        "source_event_ids": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^\\S+$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Source Event Ids",
+          "type": "array"
+        },
+        "source_message_ids": {
+          "default": [],
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^\\S+$",
+            "type": "string"
+          },
+          "title": "Source Message Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "detector_id",
+        "detector_type",
+        "detector_version",
+        "signal",
+        "deduplication_key",
+        "observation_id",
+        "source_event_ids"
+      ],
+      "title": "BehavioralSignal",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "PersonaState": {
+      "additionalProperties": false,
+      "description": "Owned state copied from configuration for each run.",
+      "properties": {
+        "abandoned": {
+          "default": false,
+          "title": "Abandoned",
+          "type": "boolean"
+        },
+        "frustration": {
+          "default": 0,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Frustration",
+          "type": "number"
+        },
+        "turn_number": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Turn Number",
+          "type": "integer"
+        },
+        "willingness_to_continue": {
+          "default": 1,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Willingness To Continue",
+          "type": "number"
+        }
+      },
+      "title": "PersonaState",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Versioned deterministic output, not a run outcome or replay executable.\n\nPrefix means only a fully committed prefix was processed; prefix_reason is\nrequired. Counterfactual outside-continuation IDs name recorded observations\nexcluded after terminal abandonment, not a fabricated alternate conversation.\nCross-trace completeness/reference verification belongs to the replay reader.",
+  "properties": {
+    "calculated_transitions": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/BehaviorReplayTransition"
+      },
+      "title": "Calculated Transitions",
+      "type": "array"
+    },
+    "comparison_findings": {
+      "default": [],
+      "items": {
+        "discriminator": {
+          "mapping": {
+            "applied_rules_mismatch": "#/$defs/BehaviorReplayRulesFinding",
+            "occurrence_mismatch": "#/$defs/BehaviorReplayOccurrenceFinding",
+            "state_mismatch": "#/$defs/BehaviorReplayStateFinding"
+          },
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/BehaviorReplayStateFinding"
+          },
+          {
+            "$ref": "#/$defs/BehaviorReplayRulesFinding"
+          },
+          {
+            "$ref": "#/$defs/BehaviorReplayOccurrenceFinding"
+          }
+        ]
+      },
+      "title": "Comparison Findings",
+      "type": "array"
+    },
+    "completeness": {
+      "enum": [
+        "complete",
+        "prefix"
+      ],
+      "title": "Completeness",
+      "type": "string"
+    },
+    "external_state_changes": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/BehaviorReplayExternalStateChange"
+      },
+      "title": "External State Changes",
+      "type": "array"
+    },
+    "external_state_policy": {
+      "const": "recorded_changed_fields",
+      "default": "recorded_changed_fields",
+      "title": "External State Policy",
+      "type": "string"
+    },
+    "initial_state": {
+      "$ref": "#/$defs/PersonaState"
+    },
+    "mode": {
+      "enum": [
+        "verification",
+        "counterfactual"
+      ],
+      "title": "Mode",
+      "type": "string"
+    },
+    "outside_continuation_observation_ids": {
+      "default": [],
+      "items": {
+        "format": "uuid4",
+        "type": "string"
+      },
+      "title": "Outside Continuation Observation Ids",
+      "type": "array"
+    },
+    "prefix_reason": {
+      "anyOf": [
+        {
+          "maxLength": 2000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Prefix Reason"
+    },
+    "rules": {
+      "items": {
+        "$ref": "#/$defs/BehaviorRule"
+      },
+      "maxItems": 32,
+      "title": "Rules",
+      "type": "array"
+    },
+    "source_config_version": {
+      "const": "1",
+      "default": "1",
+      "title": "Source Config Version",
+      "type": "string"
+    },
+    "source_hashes": {
+      "$ref": "#/$defs/BehaviorReplaySourceHashes"
+    },
+    "version": {
+      "const": "1",
+      "default": "1",
+      "title": "Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "source_hashes",
+    "mode",
+    "initial_state",
+    "rules",
+    "completeness"
+  ],
+  "title": "BehaviorReplayResult",
+  "type": "object"
+}

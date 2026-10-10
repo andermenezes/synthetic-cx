@@ -98,6 +98,346 @@
       "title": "ArtifactRecordedEvent",
       "type": "object"
     },
+    "BehavioralObservationRecorded": {
+      "additionalProperties": false,
+      "description": "Validated batch marker; signal_count makes interrupted commits observable.",
+      "properties": {
+        "detector_ids": {
+          "items": {
+            "maxLength": 80,
+            "minLength": 1,
+            "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+            "type": "string"
+          },
+          "maxItems": 8,
+          "title": "Detector Ids",
+          "type": "array"
+        },
+        "evidence_event_ids": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^\\S+$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Evidence Event Ids",
+          "type": "array"
+        },
+        "kind": {
+          "enum": [
+            "greeting",
+            "customer_turn_completed"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "message_ids": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^\\S+$",
+            "type": "string"
+          },
+          "title": "Message Ids",
+          "type": "array"
+        },
+        "observation_id": {
+          "format": "uuid4",
+          "title": "Observation Id",
+          "type": "string"
+        },
+        "signal_count": {
+          "maximum": 256,
+          "minimum": 0,
+          "title": "Signal Count",
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/PersonaState"
+        },
+        "turn_count": {
+          "minimum": 0,
+          "title": "Turn Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "observation_id",
+        "kind",
+        "evidence_event_ids",
+        "state",
+        "turn_count",
+        "signal_count"
+      ],
+      "title": "BehavioralObservationRecorded",
+      "type": "object"
+    },
+    "BehavioralObservationRecordedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/BehavioralObservationRecorded"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "behavior_observation_recorded",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "timestamp",
+        "type",
+        "data"
+      ],
+      "title": "BehavioralObservationRecordedEvent",
+      "type": "object"
+    },
+    "BehavioralSignal": {
+      "additionalProperties": false,
+      "description": "A detector classification, not an evaluator verdict or state mutation.\n\nReferences name acknowledged evidence; membership and backward ordering\nrequire observation/journal context and are not guessed by this model.\nPayload is finite JSON, at most 8 KiB in canonical UTF-8 and 16 containers\ndeep. Rule conditions cannot inspect arbitrary payload fields.",
+      "properties": {
+        "deduplication_key": {
+          "maxLength": 200,
+          "minLength": 1,
+          "pattern": "^\\S+$",
+          "title": "Deduplication Key",
+          "type": "string"
+        },
+        "detector_id": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+          "title": "Detector Id",
+          "type": "string"
+        },
+        "detector_type": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+          "title": "Detector Type",
+          "type": "string"
+        },
+        "detector_version": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Detector Version",
+          "type": "string"
+        },
+        "observation_id": {
+          "format": "uuid4",
+          "title": "Observation Id",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Payload",
+          "type": "object"
+        },
+        "signal": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+          "title": "Signal",
+          "type": "string"
+        },
+        "source_event_ids": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^\\S+$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Source Event Ids",
+          "type": "array"
+        },
+        "source_message_ids": {
+          "default": [],
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^\\S+$",
+            "type": "string"
+          },
+          "title": "Source Message Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "detector_id",
+        "detector_type",
+        "detector_version",
+        "signal",
+        "deduplication_key",
+        "observation_id",
+        "source_event_ids"
+      ],
+      "title": "BehavioralSignal",
+      "type": "object"
+    },
+    "BehavioralSignalRecorded": {
+      "additionalProperties": false,
+      "properties": {
+        "signal": {
+          "$ref": "#/$defs/BehavioralSignal"
+        }
+      },
+      "required": [
+        "signal"
+      ],
+      "title": "BehavioralSignalRecorded",
+      "type": "object"
+    },
+    "BehavioralSignalRecordedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/BehavioralSignalRecorded"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "behavioral_signal_recorded",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "timestamp",
+        "type",
+        "data"
+      ],
+      "title": "BehavioralSignalRecordedEvent",
+      "type": "object"
+    },
+    "BehavioralStateChangedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/BehavioralStateTransition"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "behavioral_state_changed",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "timestamp",
+        "type",
+        "data"
+      ],
+      "title": "BehavioralStateChangedEvent",
+      "type": "object"
+    },
+    "BehavioralStateTransition": {
+      "additionalProperties": false,
+      "description": "Acknowledged rule-engine effect, never an evaluator finding.",
+      "properties": {
+        "after": {
+          "$ref": "#/$defs/PersonaState"
+        },
+        "applied_rule_ids": {
+          "items": {
+            "maxLength": 80,
+            "minLength": 1,
+            "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+            "type": "string"
+          },
+          "maxItems": 32,
+          "title": "Applied Rule Ids",
+          "type": "array"
+        },
+        "before": {
+          "$ref": "#/$defs/PersonaState"
+        },
+        "observation_id": {
+          "format": "uuid4",
+          "title": "Observation Id",
+          "type": "string"
+        },
+        "occurrence": {
+          "exclusiveMinimum": 0,
+          "title": "Occurrence",
+          "type": "integer"
+        },
+        "signal": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+          "title": "Signal",
+          "type": "string"
+        },
+        "signal_event_id": {
+          "minLength": 1,
+          "title": "Signal Event Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "observation_id",
+        "signal_event_id",
+        "signal",
+        "occurrence",
+        "before",
+        "after"
+      ],
+      "title": "BehavioralStateTransition",
+      "type": "object"
+    },
     "ConversationStarted": {
       "additionalProperties": false,
       "properties": {
@@ -391,6 +731,7 @@
             "configuration",
             "channel",
             "model",
+            "behavior",
             "evaluation",
             "persistence",
             "cancelled"
@@ -1599,6 +1940,9 @@
   "discriminator": {
     "mapping": {
       "artifact_recorded": "#/$defs/ArtifactRecordedEvent",
+      "behavior_observation_recorded": "#/$defs/BehavioralObservationRecordedEvent",
+      "behavioral_signal_recorded": "#/$defs/BehavioralSignalRecordedEvent",
+      "behavioral_state_changed": "#/$defs/BehavioralStateChangedEvent",
       "conversation_started": "#/$defs/ConversationStartedEvent",
       "evaluation_completed": "#/$defs/EvaluationCompletedEvent",
       "message_observed": "#/$defs/MessageObservedEvent",
@@ -1627,6 +1971,15 @@
     },
     {
       "$ref": "#/$defs/RepeatedInformationEvent"
+    },
+    {
+      "$ref": "#/$defs/BehavioralObservationRecordedEvent"
+    },
+    {
+      "$ref": "#/$defs/BehavioralSignalRecordedEvent"
+    },
+    {
+      "$ref": "#/$defs/BehavioralStateChangedEvent"
     },
     {
       "$ref": "#/$defs/PersonaOutputAmbiguityEvent"

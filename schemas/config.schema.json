@@ -1,10 +1,94 @@
 {
   "$defs": {
+    "BehavioralDetectorMetadata": {
+      "additionalProperties": false,
+      "description": "Exact configured implementation identity, without executable factories.",
+      "properties": {
+        "detector_id": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+          "title": "Detector Id",
+          "type": "string"
+        },
+        "detector_type": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+          "title": "Detector Type",
+          "type": "string"
+        },
+        "detector_version": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Detector Version",
+          "type": "string"
+        },
+        "mode": {
+          "enum": [
+            "deterministic",
+            "model_backed"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "output_signals": {
+          "items": {
+            "maxLength": 80,
+            "minLength": 1,
+            "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+            "type": "string"
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "title": "Output Signals",
+          "type": "array"
+        },
+        "signal_schemas": {
+          "maxProperties": 32,
+          "minProperties": 1,
+          "patternProperties": {
+            "^[A-Za-z][A-Za-z0-9_.-]*$": {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          },
+          "propertyNames": {
+            "maxLength": 80,
+            "minLength": 1
+          },
+          "title": "Signal Schemas",
+          "type": "object"
+        }
+      },
+      "required": [
+        "detector_id",
+        "detector_type",
+        "detector_version",
+        "mode",
+        "output_signals",
+        "signal_schemas"
+      ],
+      "title": "BehavioralDetectorMetadata",
+      "type": "object"
+    },
     "JsonValue": {}
   },
   "additionalProperties": false,
   "description": "Redacted evidence snapshot; redacted values are not replayable configuration.",
   "properties": {
+    "behavior_detectors": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/BehavioralDetectorMetadata"
+      },
+      "maxItems": 8,
+      "title": "Behavior Detectors",
+      "type": "array"
+    },
     "channel_guide_source_hash": {
       "anyOf": [
         {

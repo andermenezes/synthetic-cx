@@ -11,6 +11,8 @@ from uuid import uuid4
 from pydantic import BaseModel, TypeAdapter
 
 from syntheticcx.domain.events import (
+    BehavioralObservationRecorded,
+    BehavioralSignalRecorded,
     ConversationStarted,
     EvaluationCompleted,
     MessageObserved,
@@ -19,9 +21,11 @@ from syntheticcx.domain.events import (
     RepeatedInformationObserved,
     RunLifecycleChange,
     TypedTraceEvent,
+    committed_behavior_batches,
 )
 from syntheticcx.domain.models import (
     ArtifactRecord,
+    BehavioralStateTransition,
     ModelInteraction,
     PersonaFeedback,
     PersonaStateTransition,
@@ -38,6 +42,9 @@ EventData: TypeAlias = (
     | ConversationStarted
     | MessageObserved
     | PersonaStateTransition
+    | BehavioralObservationRecorded
+    | BehavioralSignalRecorded
+    | BehavioralStateTransition
     | RepeatedInformationObserved
     | PersonaOutputAmbiguityObserved
     | ModelInteraction
@@ -52,6 +59,9 @@ _EVENT_TYPES = {
     MessageObserved: "message_observed",
     PersonaStateTransition: "persona_state_changed",
     RepeatedInformationObserved: "repeated_information",
+    BehavioralObservationRecorded: "behavior_observation_recorded",
+    BehavioralSignalRecorded: "behavioral_signal_recorded",
+    BehavioralStateTransition: "behavioral_state_changed",
     PersonaOutputAmbiguityObserved: "persona_output_ambiguity_observed",
     ModelInteraction: "model_interaction_completed",
     EvaluationCompleted: "evaluation_completed",
@@ -107,7 +117,18 @@ class RunJournal:
         Use only for comparisons with committed evidence; this does not append or
         acknowledge an event. Append still enforces event identity and durability.
         """
-        return self._redactor.redact_model(model)
+        safe = self._redactor.redact_model(model)
+        original_data = getattr(model, "data", model)
+        safe_data = getattr(safe, "data", safe)
+        if isinstance(original_data, (BehavioralObservationRecorded, BehavioralStateTransition)):
+            if safe_data != original_data:
+                raise ValueError("redaction changed behavioral boundary or transition identity")
+        elif isinstance(original_data, BehavioralSignalRecorded):
+            original = original_data.signal.model_dump(exclude={"payload"})
+            sanitized = safe_data.signal.model_dump(exclude={"payload"})
+            if original != sanitized:
+                raise ValueError("redaction changed behavioral signal identity or references")
+        return safe
 
     async def append(self, data: EventData) -> TypedTraceEvent:
         """Allocate and append once; never advance the cursor on uncertain failure."""
@@ -145,6 +166,7 @@ class RunJournal:
                 event = safe_event
                 if any(previous.id == event.id for previous in self._events):
                     raise ValueError("duplicate generated event ID")
+                committed_behavior_batches((*self._events, event))
                 operation = self._storage.append_event(self._run_id, event.model_copy(deep=True))
                 with span("persistence.append"):
                     if self._wait is not None and self._persistence_timeout is not None:

@@ -69,6 +69,8 @@ def _persona_description(definition: PersonaDefinition) -> str:
     }
     if definition.description is not None:
         description["description"] = definition.description
+    if definition.behavior_description is not None:
+        description["behavior_description"] = definition.behavior_description
     return json.dumps(description, ensure_ascii=False)
 
 
@@ -331,6 +333,14 @@ class TinyTroupePersonaSimulator:
                     "GOAL_COMPLETE / ABANDON explicitly. DONE only ends this action batch. "
                     + persona_instruction(definition.communication.language)
                     + _writing_instructions(definition)
+                    + (
+                        " Treat behavior_description as customer behavior guidance only. "
+                        "Scenario facts, action_authorizations, structured communication settings, "
+                        "and the supplied owned state and terminal conditions take precedence. "
+                        "Never invent state changes or permissions from descriptive guidance."
+                        if definition.behavior_description is not None
+                        else ""
+                    )
                 ),
             },
             ensure_ascii=False,

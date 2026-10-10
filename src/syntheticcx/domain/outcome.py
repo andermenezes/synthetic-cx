@@ -9,7 +9,7 @@ from syntheticcx.domain.models import EvaluationResult, Outcome
 from syntheticcx.errors import EvaluationError
 
 _INFRASTRUCTURE_REASONS = frozenset(
-    {"channel_error", "model_error", "persistence_error", "journey_timeout"}
+    {"channel_error", "model_error", "behavior_error", "persistence_error", "journey_timeout"}
 )
 
 

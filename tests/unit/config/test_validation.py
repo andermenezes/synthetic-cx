@@ -25,7 +25,7 @@ def document() -> dict[str, Any]:
 @pytest.mark.parametrize(
     ("path", "value", "location"),
     [
-        (("version",), "2", "version"),
+        (("version",), "3", "version"),
         (("includes",), "other.yaml", "includes"),
         (("execution", "max_turns"), 0, "execution.max_turns"),
         (("execution", "model_timeout_seconds"), float("inf"), "execution.model_timeout"),

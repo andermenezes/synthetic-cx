@@ -231,7 +231,7 @@ def test_cli_browser_fixture_produces_explained_schema_valid_runs(
                     json.loads(line)
                     for line in (directory / "trace.jsonl").read_text().splitlines()
                 ]
-                if event["type"] == "persona_state_changed"
+                if event["type"] == "behavioral_state_changed"
             )
 
 

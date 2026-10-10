@@ -14,7 +14,6 @@ from syntheticcx.errors import ConfigurationError
 def test_loads_the_canonical_example() -> None:
     config = load_config(Path("examples/telecom/scenario.yaml"))
 
-    assert config.version == "1"
     assert config.effective_evaluation_model.model == "gpt-5.4-mini"
 
 

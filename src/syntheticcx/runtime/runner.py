@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from typing import Protocol, TypeVar, cast, runtime_checkable
 
-from syntheticcx.config.models import ExecutionLimits, ProjectConfig
+from syntheticcx.config.models import BehaviorConfig, ExecutionLimits, ProjectConfig
 from syntheticcx.domain.artifacts import ConfigArtifact, Run
 from syntheticcx.domain.events import OperationFailure, RunLifecycleChange
 from syntheticcx.domain.models import ArtifactRecord, ErrorDetail, PersonaDefinition, Scenario
@@ -22,10 +22,12 @@ from syntheticcx.errors import (
     CHANNEL_FAILURE_REASONS,
     MODEL_FAILURE_REASONS,
     ChannelFailureReason,
+    ConfigurationError,
     ErrorCategory,
     ModelError,
     SyntheticCXError,
 )
+from syntheticcx.runtime.behavior_signals import BehaviorDetectors, prepare_behavior
 from syntheticcx.runtime.capture import (
     FailureScreenshotSource,
     ScreenshotArtifactWriter,
@@ -64,6 +66,8 @@ def _failure(exc: Exception, stage: str) -> tuple[TerminationReason, ErrorDetail
                 "persona.initialize",
                 "persona.respond",
                 "persona.interactions",
+                "behavior.detect",
+                "behavior.sanitize",
                 "channel.greeting",
                 "channel.send",
                 "channel.receive",
@@ -82,6 +86,8 @@ def _failure(exc: Exception, stage: str) -> tuple[TerminationReason, ErrorDetail
         if category == "persistence"
         else "channel_error"
         if category == "channel"
+        else "behavior_error"
+        if category == "behavior"
         else "model_error"
     )
     detail = _error(category, operation)
@@ -121,6 +127,7 @@ async def run_conversation(
     wait: WaitController,
     limits: ExecutionLimits,
     project_config: ProjectConfig | None = None,
+    behavior_detectors: BehaviorDetectors | None = None,
     retain_storage: bool = False,
     on_created: Callable[[str], None] | None = None,
 ) -> RuntimeResult:
@@ -132,6 +139,29 @@ async def run_conversation(
     Only a successfully started resource is closed; a failed start is also closed
     because it may have acquired partial resources.
     """
+    if behavior_detectors is None:
+        behavior_detectors = prepare_behavior(
+            project_config.behavior if project_config is not None else BehaviorConfig(),
+            persona.behavioral_rules,
+        ).instantiate()
+    run = run.model_copy(
+        update={
+            "metadata": run.metadata.model_copy(
+                update={"behavior_detectors": behavior_detectors.metadata}
+            )
+        }
+    )
+    config_artifact = config_artifact.model_copy(
+        update={"behavior_detectors": behavior_detectors.metadata}
+    )
+    try:
+        safe_metadata = journal.sanitize_evidence(run.metadata)
+        if safe_metadata.behavior_detectors != behavior_detectors.metadata:
+            raise ValueError("behavioral metadata identity changed")
+    except Exception:
+        raise ConfigurationError(
+            "prepare behavior", "behavior detector metadata cannot be safely persisted"
+        ) from None
     progress = RuntimeProgress(persona.fresh_state())
     reason: TerminationReason | None = None
     error: ErrorDetail | None = None
@@ -259,6 +289,9 @@ async def run_conversation(
             wait=wait,
             limits=limits,
             progress=progress,
+            behavior_config=project_config.behavior if project_config is not None else None,
+            behavior_detectors=behavior_detectors,
+            remaining_time=remaining_time,
         )
         with span("conversation.run"):
             completed = await wait.run(

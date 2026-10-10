@@ -59,7 +59,7 @@ _OPERATIONS = frozenset(
     }
 )
 _CATEGORIES = frozenset(
-    {"configuration", "channel", "model", "evaluation", "persistence", "cancelled"}
+    {"configuration", "channel", "model", "behavior", "evaluation", "persistence", "cancelled"}
 )
 
 

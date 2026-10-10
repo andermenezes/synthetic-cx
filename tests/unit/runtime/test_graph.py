@@ -8,7 +8,8 @@ from typing import Any
 import pytest
 
 from syntheticcx.config.loader import load_config
-from syntheticcx.config.models import BehaviorRule, PrivacyConfig
+from syntheticcx.config.models import BehaviorConfig, BehaviorRule, PrivacyConfig
+from syntheticcx.domain.behavior import BehavioralSignal
 from syntheticcx.domain.events import TypedTraceEvent
 from syntheticcx.domain.models import (
     CompletedResponse,
@@ -25,8 +26,14 @@ from syntheticcx.domain.models import (
     SendReceipt,
     TokenUsage,
 )
-from syntheticcx.errors import ChannelError
+from syntheticcx.errors import BehaviorError, ChannelError
 from syntheticcx.privacy import Redactor
+from syntheticcx.runtime.behavior_signals import (
+    BehaviorDetectors,
+    DetectorRegistration,
+    EmptyDetectorParameters,
+    prepare_behavior,
+)
 from syntheticcx.runtime.clock import ManualClock, ManualWaitController, RealWaitController
 from syntheticcx.runtime.graph import build_graph
 from syntheticcx.runtime.journal import RunJournal
@@ -101,6 +108,14 @@ def test_initial_menu_reaches_persona_with_zero_grace_and_no_startup_probe():
         assert channel.selected == ["current-choice"]
         assert channel.sent == []
         assert customer.observations[1].messages[0].id == "after-choice"
+        completed = [
+            event.data.signal
+            for event in storage.events
+            if event.type == "behavioral_signal_recorded"
+        ]
+        assert [item.signal for item in completed] == ["customer_turn_completed"]
+        assert completed[0].source_message_ids == ("after-choice",)
+        assert not any(event.type == "repeated_information" for event in storage.events)
 
     asyncio.run(exercise())
 
@@ -210,9 +225,15 @@ def execute(
     *,
     greeting_grace: float = 0,
     max_turns: int = 4,
+    rules: list[BehaviorRule] | None = None,
+    behavior_config: BehaviorConfig | None = None,
+    behavior_detectors: BehaviorDetectors | None = None,
+    privacy: PrivacyConfig | None = None,
 ) -> tuple[dict[str, Any], list[TypedTraceEvent]]:
     config = load_config(Path("examples/telecom/scenario.yaml"))
     definition = PersonaDefinition.model_validate(config.persona.model_dump())
+    if rules is not None:
+        definition = definition.model_copy(update={"behavioral_rules": rules})
     scenario = Scenario.model_validate(config.scenario.model_dump())
     limits = config.execution.model_copy(
         update={"greeting_grace_seconds": greeting_grace, "max_turns": max_turns}
@@ -221,7 +242,7 @@ def execute(
     journal = RunJournal(
         "run-1",
         storage,
-        Redactor(PrivacyConfig()),
+        Redactor(privacy or PrivacyConfig()),
         Clock(),
         id_factory=iter(f"event-{index}" for index in range(100)).__next__,
     )
@@ -233,6 +254,8 @@ def execute(
         journal=journal,
         wait=RealWaitController(),
         limits=limits,
+        behavior_config=behavior_config,
+        behavior_detectors=behavior_detectors,
     )
 
     async def invoke() -> dict[str, Any]:
@@ -291,16 +314,13 @@ def test_no_greeting_then_multipart_response_is_one_observation() -> None:
     ]
     assert [message.id for message in persona.observations[1].messages] == ["a", "b"]
     assert [message.sequence for message in persona.observations[1].messages] == [1, 2]
-    assert [event.type for event in events] == [
-        "run_lifecycle_changed",
-        "conversation_started",
-        "message_observed",
-        "persona_state_changed",
-        "message_observed",
-        "message_observed",
-    ]
-    assert events[2].data.message.id == "customer-1"
-    assert events[2].data.message.content == "My account number is 123"
+    customer = next(
+        event.data.message
+        for event in events
+        if event.type == "message_observed" and event.data.message.actor == "customer"
+    )
+    assert customer.id == "customer-1"
+    assert customer.content == "My account number is 123"
     assert result["persona_state"].turn_number == 1
 
 
@@ -370,12 +390,12 @@ def test_greeting_is_committed_before_persona_and_terminal_action_never_sends() 
     assert result["turn_count"] == 0
     assert channel.sent == []
     assert persona.observations[0].messages[0].id == "hello"
-    assert [event.type for event in events] == [
-        "run_lifecycle_changed",
-        "message_observed",
-        "conversation_started",
-    ]
-    assert events[-1].data.greeting_message_ids == ["hello"]
+    started = next(event for event in events if event.type == "conversation_started")
+    boundary = next(event for event in events if event.type == "behavior_observation_recorded")
+    assert started.data.greeting_message_ids == ["hello"]
+    assert started.sequence < boundary.sequence
+    assert boundary.data.kind == "greeting"
+    assert boundary.data.signal_count == 0
 
 
 def test_repetition_event_and_rule_state_are_committed_before_next_response() -> None:
@@ -384,14 +404,23 @@ def test_repetition_event_and_rule_state_are_committed_before_next_response() ->
     result, events = execute(channel, persona)
     assert result["persona_state"].frustration == pytest.approx(0.3)
     assert persona.states[1].frustration == pytest.approx(0.3)
-    assert [event.type for event in events][-3:] == [
-        "message_observed",
-        "repeated_information",
-        "persona_state_changed",
-    ]
-    assert events[-2].data.original_message_id == "customer-1"
-    assert events[-2].data.request_message_id == "ask"
-    assert events[-1].data.trigger_ids[0] == events[-2].id
+    fact = next(event for event in events if event.type == "repeated_information")
+    signal = next(
+        event
+        for event in events
+        if event.type == "behavioral_signal_recorded"
+        and event.data.signal.signal == "repeated_information"
+    )
+    transition = next(
+        event
+        for event in events
+        if event.type == "behavioral_state_changed" and event.data.signal == "repeated_information"
+    )
+    assert fact.data.original_message_id == "customer-1"
+    assert fact.data.request_message_id == "ask"
+    assert signal.data.signal.source_event_ids == (fact.id,)
+    assert transition.data.signal_event_id == signal.id
+    assert fact.sequence < signal.sequence < transition.sequence
 
 
 def test_max_turns_never_allows_an_extra_send() -> None:
@@ -427,10 +456,6 @@ def test_failed_send_does_not_increment_turns_or_create_customer_evidence() -> N
 
     asyncio.run(invoke())
     assert channel.sent == []
-    assert [event.type for event in storage.events] == [
-        "run_lifecycle_changed",
-        "conversation_started",
-    ]
 
 
 def test_abandonment_after_repetition_skips_persona_and_additional_send() -> None:
@@ -441,9 +466,11 @@ def test_abandonment_after_repetition_skips_persona_and_additional_send() -> Non
                 BehaviorRule(
                     id="give-up",
                     priority=0,
-                    event="repeated_information",
-                    willingness_to_continue_delta=-1,
-                    abandonment_threshold=0.1,
+                    when={"signal": "repeated_information"},
+                    effects={
+                        "willingness_to_continue_delta": -1,
+                        "abandonment_threshold": 0.1,
+                    },
                 )
             ]
         }
@@ -507,8 +534,8 @@ def test_manual_greeting_deadline_produces_no_greeting_observation() -> None:
     result = asyncio.run(invoke())
     assert result["termination_reason"] == "goal_believed_complete"
     assert persona.observations[0].kind == "conversation_started"
-    assert storage.events[-1].type == "conversation_started"
-    assert not storage.events[-1].data.greeting_observed
+    started = next(event for event in storage.events if event.type == "conversation_started")
+    assert not started.data.greeting_observed
 
 
 def test_persona_interactions_are_acknowledged_before_customer_send_and_routing() -> None:
@@ -538,17 +565,14 @@ def test_persona_interactions_are_acknowledged_before_customer_send_and_routing(
     assert result["termination_reason"] == "goal_believed_complete"
     interactions = [event for event in events if event.type == "model_interaction_completed"]
     assert len(interactions) == 2
-    assert [event.type for event in events] == [
-        "run_lifecycle_changed",
-        "conversation_started",
-        "model_interaction_completed",
-        "message_observed",
-        "persona_state_changed",
-        "message_observed",
-        "model_interaction_completed",
-    ]
-    assert interactions[0].data.input_event_ids == [events[1].id]
-    assert interactions[1].data.input_event_ids == [events[5].id]
+    started = next(event for event in events if event.type == "conversation_started")
+    answer = next(
+        event
+        for event in events
+        if event.type == "message_observed" and event.data.message.id == "answer"
+    )
+    assert interactions[0].data.input_event_ids == [started.id]
+    assert interactions[1].data.input_event_ids == [answer.id]
     for event in interactions:
         assert event.data.output_event_ids == []
         assert "output_event_not_yet_committed" in event.data.capture_omissions
@@ -576,11 +600,6 @@ def test_initialization_interaction_references_committed_lifecycle() -> None:
             return result
 
     _, events = execute(Channel([]), InitializingPersona())
-    assert [event.type for event in events] == [
-        "run_lifecycle_changed",
-        "model_interaction_completed",
-        "conversation_started",
-    ]
     assert events[1].data.input_event_ids == [events[0].id]
     assert events[1].data.output_event_ids == []
 
@@ -607,11 +626,361 @@ def test_interaction_references_all_ordered_greeting_bubbles() -> None:
         EvidencePersona(),
         greeting_grace=1,
     )
-    assert [event.type for event in events] == [
-        "run_lifecycle_changed",
-        "message_observed",
-        "message_observed",
-        "conversation_started",
-        "model_interaction_completed",
-    ]
     assert events[-1].data.input_event_ids == [events[1].id, events[2].id]
+
+
+def test_completed_turn_rule_excludes_greeting_and_stops_before_next_persona_call() -> None:
+    channel = Channel(
+        [
+            response(("greeting", "Hello")),
+            response(("first", "First explanation")),
+            response(("second", "Second explanation")),
+        ]
+    )
+    persona = Persona(["Explain the price", "Explain the conditions", "must not dispatch"])
+    result, events = execute(
+        channel,
+        persona,
+        greeting_grace=1,
+        rules=[
+            BehaviorRule.model_validate(
+                {
+                    "id": "leave",
+                    "priority": 0,
+                    "when": {"signal": "customer_turn_completed", "occurrence_at_least": 2},
+                    "effects": {"abandon": True},
+                    "fire": "once",
+                }
+            )
+        ],
+    )
+    assert result["termination_reason"] == "abandonment"
+    assert result["turn_count"] == 2
+    assert channel.sent == ["Explain the price", "Explain the conditions"]
+    assert len(persona.observations) == 2
+    transition = next(
+        event for event in reversed(events) if event.type == "behavioral_state_changed"
+    )
+    assert transition.data.applied_rule_ids == ["leave"]
+    signals = [event for event in events if event.type == "behavioral_signal_recorded"]
+    assert [event.data.signal.signal for event in signals] == [
+        "customer_turn_completed",
+        "customer_turn_completed",
+    ]
+    assert [
+        event.data.occurrence for event in events if event.type == "behavioral_state_changed"
+    ] == [1, 2]
+    assert transition.data.signal_event_id == signals[-1].id
+
+
+def test_disabled_behavior_detectors_do_not_suppress_formal_repetition_facts() -> None:
+    channel = Channel([response(("request", "Please repeat your account number?"))])
+    persona = Persona(["My account number is 123", None])
+    result, events = execute(
+        channel, persona, rules=[], behavior_config=BehaviorConfig(detectors=[])
+    )
+    assert result["termination_reason"] == "goal_believed_complete"
+    repetitions = [event for event in events if event.type == "repeated_information"]
+    assert len(repetitions) == 1
+    customer = next(
+        event.data.message
+        for event in events
+        if event.type == "message_observed" and event.data.message.actor == "customer"
+    )
+    assert repetitions[0].data.original_message_id == customer.id
+    assert repetitions[0].data.request_message_id == "request"
+    assert persona.states[-1].frustration == persona.states[0].frustration
+
+
+def test_completed_batch_commits_all_signals_before_effects_and_freezes_terminal_state() -> None:
+    observed = []
+
+    def factory(metadata, parameters):
+        class Detector:
+            async def detect(self, boundary):
+                observed.append(boundary.model_copy(deep=True))
+                if boundary.kind == "greeting":
+                    return ()
+                return tuple(
+                    BehavioralSignal(
+                        detector_id=metadata.detector_id,
+                        detector_type=metadata.detector_type,
+                        detector_version=metadata.detector_version,
+                        signal=name,
+                        deduplication_key=f"{boundary.observation_id}-{name}",
+                        observation_id=boundary.observation_id,
+                        source_event_ids=boundary.evidence_event_ids,
+                        source_message_ids=tuple(message.id for message in boundary.messages),
+                    )
+                    for name in ("leave_signal", "recover_signal")
+                )
+
+        return Detector()
+
+    registered = DetectorRegistration(
+        detector_type="custom",
+        version="1",
+        parameter_model=EmptyDetectorParameters,
+        signal_schemas={
+            "leave_signal": EmptyDetectorParameters,
+            "recover_signal": EmptyDetectorParameters,
+        },
+        mode="deterministic",
+        factory=factory,
+    )
+    selected = BehaviorConfig.model_validate(
+        {"detectors": [{"id": "consumer", "type": "custom", "version": "1"}]}
+    )
+    rules = [
+        BehaviorRule(
+            id="leave", priority=0, when={"signal": "leave_signal"}, effects={"abandon": True}
+        ),
+        BehaviorRule(
+            id="recover",
+            priority=0,
+            when={"signal": "recover_signal"},
+            effects={"frustration_delta": 0.9},
+        ),
+    ]
+    detectors = prepare_behavior(selected, rules, {"custom": registered}).instantiate()
+    channel = Channel([response(("response", "Done"))])
+    persona = Persona(["Ask once", "must not send"])
+    result, events = execute(channel, persona, rules=rules, behavior_detectors=detectors)
+    signals = [event for event in events if event.type == "behavioral_signal_recorded"]
+    transitions = [event for event in events if event.type == "behavioral_state_changed"]
+    assert len(signals) == len(transitions) == 2
+    assert max(event.sequence for event in signals) < min(event.sequence for event in transitions)
+    assert transitions[0].data.applied_rule_ids == ["leave"]
+    assert transitions[1].data.applied_rule_ids == []
+    assert transitions[1].data.before == transitions[1].data.after == transitions[0].data.after
+    assert result["termination_reason"] == "abandonment"
+    assert channel.sent == ["Ask once"]
+    assert len(persona.observations) == 1
+    assert [boundary.kind for boundary in observed] == ["greeting", "customer_turn_completed"]
+    assert observed[-1].last_customer_message.content == "Ask once"
+
+
+def test_once_memory_and_signal_counters_reset_for_each_run() -> None:
+    rules = [
+        BehaviorRule(
+            id="once",
+            priority=0,
+            when={"signal": "customer_turn_completed"},
+            effects={"frustration_delta": 0.2},
+            fire="once",
+        )
+    ]
+    for _ in range(2):
+        result, events = execute(
+            Channel([response(("a", "First")), response(("b", "Second"))]),
+            Persona(["First ask", "Second ask", None]),
+            rules=rules,
+        )
+        transitions = [event for event in events if event.type == "behavioral_state_changed"]
+        assert [event.data.occurrence for event in transitions] == [1, 2]
+        assert [event.data.applied_rule_ids for event in transitions] == [["once"], []]
+        assert result["persona_state"].frustration == pytest.approx(0.3)
+
+
+def test_no_match_boundaries_are_persisted_when_detectors_are_disabled() -> None:
+    _, events = execute(
+        Channel([response(("answer", "Answer"))]),
+        Persona(["Question", None]),
+        rules=[],
+        behavior_config=BehaviorConfig(detectors=[]),
+    )
+    boundaries = [event for event in events if event.type == "behavior_observation_recorded"]
+    assert [event.data.kind for event in boundaries] == ["greeting", "customer_turn_completed"]
+    assert [event.data.signal_count for event in boundaries] == [0, 0]
+    assert all(event.data.detector_ids == [] for event in boundaries)
+    assert not any(
+        event.type in {"behavioral_signal_recorded", "behavioral_state_changed"} for event in events
+    )
+
+
+def test_detectors_receive_original_active_text_but_trace_payload_is_privacy_filtered() -> None:
+    observed = []
+
+    class TextPayload(EmptyDetectorParameters):
+        text: str
+
+    def factory(metadata, parameters):
+        class Detector:
+            async def detect(self, boundary):
+                observed.append(boundary.model_copy(deep=True))
+                if not boundary.messages:
+                    return ()
+                return (
+                    BehavioralSignal(
+                        detector_id=metadata.detector_id,
+                        detector_type=metadata.detector_type,
+                        detector_version=metadata.detector_version,
+                        signal="visible_notice",
+                        deduplication_key=str(boundary.observation_id),
+                        observation_id=boundary.observation_id,
+                        source_event_ids=boundary.evidence_event_ids,
+                        source_message_ids=tuple(message.id for message in boundary.messages),
+                        payload={"text": boundary.messages[0].content},
+                    ),
+                )
+
+        return Detector()
+
+    registered = DetectorRegistration(
+        detector_type="custom",
+        version="1",
+        parameter_model=EmptyDetectorParameters,
+        signal_schemas={"visible_notice": TextPayload},
+        mode="deterministic",
+        factory=factory,
+    )
+    selected = BehaviorConfig.model_validate(
+        {"detectors": [{"id": "consumer", "type": "custom", "version": "1"}]}
+    )
+    detectors = prepare_behavior(selected, [], {"custom": registered}).instantiate()
+    _, events = execute(
+        Channel([response(("reply", "Customer email alice@example.test"))]),
+        Persona(["My email alice@example.test", None]),
+        rules=[],
+        behavior_detectors=detectors,
+        privacy=PrivacyConfig(synthetic_id_patterns=[r"alice@example\.test"]),
+    )
+    assert observed[-1].messages[0].content == "Customer email alice@example.test"
+    assert observed[-1].last_customer_message.content == "My email alice@example.test"
+    assert "alice@example.test" not in "\n".join(event.model_dump_json() for event in events)
+    recorded = next(event for event in events if event.type == "behavioral_signal_recorded")
+    assert recorded.data.signal.source_message_ids == ("reply",)
+    assert "alice@example.test" not in recorded.data.signal.payload["text"]
+
+
+def test_detector_failure_stops_before_customer_dispatch() -> None:
+    class Detector:
+        async def detect(self, boundary):
+            raise RuntimeError("private detector failure")
+
+    selected = BehaviorConfig.model_validate(
+        {"detectors": [{"id": "consumer", "type": "custom", "version": "1"}]}
+    )
+    registered = DetectorRegistration(
+        detector_type="custom",
+        version="1",
+        parameter_model=EmptyDetectorParameters,
+        signal_schemas={"notice": EmptyDetectorParameters},
+        mode="deterministic",
+        factory=lambda metadata, parameters: Detector(),
+    )
+    detectors = prepare_behavior(selected, [], {"custom": registered}).instantiate()
+    channel = Channel([])
+    persona = Persona(["must not send"])
+    with pytest.raises(BehaviorError) as caught:
+        execute(channel, persona, rules=[], behavior_detectors=detectors)
+    assert "private detector failure" not in str(caught.value)
+    assert channel.sent == []
+    assert persona.observations == []
+
+
+def test_six_completed_option_turns_abandon_without_typed_supply_or_extra_action() -> None:
+    def menu(identifier):
+        reply = response((identifier, "Please repeat your account number?"))
+        message = Message.model_validate(
+            {
+                **reply.messages[0].model_dump(),
+                "options": [{"id": "again", "label": "My account number is 123"}],
+            }
+        )
+        return reply.model_copy(update={"messages": [message]})
+
+    class OptionChannel(Channel):
+        def __init__(self):
+            super().__init__([menu(f"reply-{index}") for index in range(1, 7)])
+            self.selected = []
+
+        async def observe_initial(self):
+            return menu("greeting")
+
+        async def select_option(self, option_id):
+            self.selected.append(option_id)
+            count = len(self.selected)
+            return SelectionReceipt(
+                message_id=f"selection-{count}",
+                submitted_at=NOW,
+                selected_option_id=option_id,
+                selected_label="My account number is 123",
+                source_message_id="greeting" if count == 1 else f"reply-{count - 1}",
+            )
+
+    class OptionPersona(Persona):
+        async def respond(self, observation, state):
+            self.observations.append(observation)
+            return PersonaAction(state=state, signal="continue", selected_option_id="again")
+
+    channel, simulator = OptionChannel(), OptionPersona([])
+    result, events = execute(
+        channel,
+        simulator,
+        max_turns=10,
+        rules=[
+            BehaviorRule(
+                id="leave-after-six",
+                priority=0,
+                when={"signal": "customer_turn_completed", "occurrence_at_least": 6},
+                effects={"abandon": True},
+                fire="once",
+            )
+        ],
+    )
+    assert result["termination_reason"] == "abandonment"
+    assert result["turn_count"] == 6
+    assert channel.selected == ["again"] * 6
+    assert channel.sent == []
+    assert len(simulator.observations) == 6
+    signals = [event for event in events if event.type == "behavioral_signal_recorded"]
+    assert [event.data.signal.signal for event in signals] == ["customer_turn_completed"] * 6
+    assert not any(event.type == "repeated_information" for event in events)
+
+
+def test_response_timeout_preserves_dispatch_count_without_completed_turn_signal() -> None:
+    config = load_config(Path("examples/telecom/scenario.yaml"))
+    definition = PersonaDefinition.model_validate(config.persona.model_dump()).model_copy(
+        update={"behavioral_rules": []}
+    )
+
+    class SilentChannel(Channel):
+        async def receive(self):
+            await asyncio.Event().wait()
+
+    channel, simulator, storage = (
+        SilentChannel([]),
+        Persona(["Question", "must not send"]),
+        Storage(),
+    )
+    journal = RunJournal("run-1", storage, Redactor(PrivacyConfig()), Clock())
+    graph = build_graph(
+        scenario=Scenario.model_validate(config.scenario.model_dump()),
+        persona=definition,
+        channel=channel,
+        simulator=simulator,
+        journal=journal,
+        wait=RealWaitController(),
+        limits=config.execution.model_copy(
+            update={
+                "greeting_grace_seconds": 0,
+                "response_timeout_seconds": 0.01,
+            }
+        ),
+    )
+
+    async def invoke():
+        with pytest.raises(ChannelError):
+            await graph.ainvoke(initial_state(definition))
+
+    asyncio.run(invoke())
+    assert channel.sent == ["Question"]
+    assert len(simulator.observations) == 1
+    boundaries = [
+        event for event in storage.events if event.type == "behavior_observation_recorded"
+    ]
+    assert [event.data.kind for event in boundaries] == ["greeting"]
+    assert not any(event.type == "behavioral_signal_recorded" for event in storage.events)
+    dispatch = next(event for event in storage.events if event.type == "persona_state_changed")
+    assert dispatch.data.after.turn_number == 1

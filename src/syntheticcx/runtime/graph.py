@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Literal, Protocol, cast, runtime_checkable
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from syntheticcx.config.models import ExecutionLimits, JsonObject
+from syntheticcx.config.models import BehaviorConfig, ExecutionLimits, JsonObject
+from syntheticcx.domain.behavior import BehavioralObservation, BehavioralRepetitionFact
 from syntheticcx.domain.events import (
+    BehavioralObservationRecorded,
+    BehavioralSignalRecorded,
     ConversationStarted,
     MessageObserved,
     MessageObservedEvent,
@@ -17,6 +21,7 @@ from syntheticcx.domain.events import (
     RunLifecycleChange,
 )
 from syntheticcx.domain.models import (
+    BehavioralStateTransition,
     ConversationCapabilities,
     ConversationObservation,
     CustomerScenarioContext,
@@ -36,8 +41,9 @@ from syntheticcx.domain.protocols import (
     PersonaSimulator,
     WaitController,
 )
-from syntheticcx.errors import ModelError, safe_channel_error
+from syntheticcx.errors import BehaviorError, ModelError, safe_channel_error
 from syntheticcx.runtime.behavior import apply_behavior
+from syntheticcx.runtime.behavior_signals import BehaviorDetectors, prepare_behavior
 from syntheticcx.runtime.journal import RunJournal
 from syntheticcx.runtime.repetition import RepetitionTracker
 from syntheticcx.runtime.state import RuntimeProgress, RuntimeState
@@ -59,9 +65,24 @@ def build_graph(
     wait: WaitController,
     limits: ExecutionLimits,
     progress: RuntimeProgress | None = None,
+    behavior_config: BehaviorConfig | None = None,
+    behavior_detectors: BehaviorDetectors | None = None,
+    remaining_time: Callable[[], float] | None = None,
 ) -> CompiledStateGraph[RuntimeState, None, RuntimeState, RuntimeState]:
     """Build one graph per run; its repetition tracker is deliberately not shared."""
     tracker = RepetitionTracker(scenario.information)
+    detectors = (
+        behavior_detectors
+        or prepare_behavior(
+            behavior_config if behavior_config is not None else BehaviorConfig(),
+            persona.behavioral_rules,
+        ).instantiate()
+    )
+    remaining = remaining_time or (lambda: limits.journey_timeout_seconds)
+    occurrences: dict[str, int] = {}
+    fired_rule_ids: set[str] = set()
+    boundary_event_ids: list[str] = []
+    last_customer_message: Message | None = None
 
     async def commit_interactions(input_ids: list[str]) -> None:
         """Acknowledge model evidence before any action depending on its output."""
@@ -116,6 +137,8 @@ def build_graph(
         return {"persona_state": initialized}
 
     async def greeting(state: RuntimeState) -> dict[str, object]:
+        nonlocal boundary_event_ids
+        boundary_event_ids = []
         response = None
         if isinstance(channel, InitialObservingChannel):
             try:
@@ -141,12 +164,24 @@ def build_graph(
                 ) from None
         if response is not None:
             messages: list[Message] = []
+            raw_messages: list[Message] = []
             for message in response.messages:
                 committed = await journal.append(MessageObserved(message=message))
                 assert isinstance(committed, MessageObservedEvent)
+                boundary_event_ids.append(committed.id)
                 messages.append(committed.data.message)
+                raw_messages.append(
+                    message.model_copy(
+                        update={
+                            "id": committed.data.message.id,
+                            "sequence": committed.data.message.sequence,
+                        },
+                        deep=True,
+                    )
+                )
+            raw_response = response.model_copy(update={"messages": raw_messages}, deep=True)
             response = response.model_copy(update={"messages": messages})
-        await journal.append(
+        started = await journal.append(
             ConversationStarted(
                 greeting_observed=response is not None,
                 grace_seconds=limits.greeting_grace_seconds,
@@ -155,16 +190,18 @@ def build_graph(
                 else [],
             )
         )
+        boundary_event_ids.append(started.id)
         observation = (
             ConversationObservation(kind="assistant_response", messages=response.messages)
             if response
             else ConversationObservation(kind="conversation_started")
         )
-        return {"observation": observation, "response": response}
+        return {"observation": observation, "response": raw_response if response else None}
 
     async def behavior(state: RuntimeState) -> dict[str, object]:
         response = state["response"]
         current = state["persona_state"]
+        facts: list[BehavioralRepetitionFact] = []
         if response is not None:
             for repetition in tracker.detect(response):
                 event = await journal.append(
@@ -174,21 +211,89 @@ def build_graph(
                         request_message_id=repetition.request_message_id,
                     )
                 )
-                with span("persona.update"):
-                    transition = apply_behavior(
-                        current,
-                        persona.behavioral_rules,
-                        event="repeated_information",
-                        trigger_ids=[
-                            event.id,
-                            repetition.original_message_id,
-                            repetition.request_message_id,
-                        ],
+                facts.append(
+                    BehavioralRepetitionFact(
+                        event_id=event.id,
+                        information_id=repetition.information_id,
+                        original_message_id=repetition.original_message_id,
+                        request_message_id=repetition.request_message_id,
                     )
-                    await journal.append(transition)
-                current = transition.after
-                if progress is not None:
-                    progress.persona_state = current
+                )
+        observation = BehavioralObservation(
+            kind="greeting" if state["turn_count"] == 0 else "customer_turn_completed",
+            messages=tuple(response.messages) if response is not None else (),
+            evidence_event_ids=tuple(boundary_event_ids) + tuple(fact.event_id for fact in facts),
+            state=current.model_copy(deep=True),
+            turn_count=state["turn_count"],
+            last_customer_message=last_customer_message,
+            repetition_facts=tuple(facts),
+        )
+        committed_events = journal.committed_events
+        signals = await detectors.detect(
+            observation,
+            event_ids=frozenset(event.id for event in committed_events),
+            message_ids=frozenset(
+                event.data.message.id
+                for event in committed_events
+                if isinstance(event, MessageObservedEvent)
+            ),
+            wait=wait,
+            timeout_seconds=limits.model_timeout_seconds,
+            remaining_time=remaining,
+        )
+        # Validate the complete redacted batch before its boundary is acknowledged.
+        safe_signals = []
+        try:
+            for signal in signals:
+                safe_signal = journal.sanitize_evidence(signal)
+                detectors.validate_sanitized(signal, safe_signal)
+                safe_signals.append(safe_signal)
+        except Exception:
+            raise BehaviorError(
+                "behavior.sanitize", "behavior evidence cannot be safely persisted"
+            ) from None
+        for interaction in detectors.take_interactions():
+            await journal.append(interaction)
+        await journal.append(
+            BehavioralObservationRecorded(
+                observation_id=observation.observation_id,
+                kind=observation.kind,
+                evidence_event_ids=list(observation.evidence_event_ids),
+                message_ids=[message.id for message in observation.messages],
+                detector_ids=[metadata.detector_id for metadata in detectors.metadata],
+                state=current,
+                turn_count=state["turn_count"],
+                signal_count=len(safe_signals),
+            )
+        )
+        signal_events = [
+            await journal.append(BehavioralSignalRecorded(signal=signal)) for signal in safe_signals
+        ]
+        for signal, event in zip(safe_signals, signal_events, strict=True):
+            occurrences[signal.signal] = occurrences.get(signal.signal, 0) + 1
+            transition = apply_behavior(
+                current,
+                persona.behavioral_rules,
+                signal=signal.signal,
+                trigger_ids=[event.id],
+                occurrence=occurrences[signal.signal],
+                fired_rule_ids=fired_rule_ids,
+            )
+            await journal.append(
+                BehavioralStateTransition(
+                    observation_id=observation.observation_id,
+                    signal_event_id=event.id,
+                    signal=signal.signal,
+                    occurrence=occurrences[signal.signal],
+                    before=transition.before,
+                    after=transition.after,
+                    applied_rule_ids=transition.applied_rule_ids,
+                )
+            )
+            fired_rule_ids.update(transition.applied_rule_ids)
+            current = transition.after
+            if progress is not None:
+                progress.persona_state = current
         return {
             "persona_state": current,
             "termination_reason": (
@@ -278,6 +383,7 @@ def build_graph(
         }
 
     async def send(state: RuntimeState) -> dict[str, object]:
+        nonlocal last_customer_message
         action = state["action"]
         if action is None or state["termination_reason"] is not None:
             raise ValueError("cannot send after termination or without an action")
@@ -357,7 +463,16 @@ def build_graph(
                 )
             )
         if not selection:
-            tracker.record_send(content, receipt)
+            assert isinstance(observed, MessageObservedEvent)
+            tracker.record_send(
+                content,
+                receipt.model_copy(update={"message_id": observed.data.message.id}, deep=True),
+            )
+            last_customer_message = observed.data.message.model_copy(
+                update={"content": content}, deep=True
+            )
+        else:
+            last_customer_message = None
         return {
             "receipt": receipt,
             "turn_count": state["turn_count"] + 1,
@@ -366,19 +481,33 @@ def build_graph(
         }
 
     async def receive(state: RuntimeState) -> dict[str, object]:
+        nonlocal boundary_event_ids
         try:
             with span("conversation.turn", **{"turn.number": state["turn_count"]}):
                 response = await wait.run(channel.receive(), limits.response_timeout_seconds)
         except Exception as exc:
             raise safe_channel_error(exc, "channel.receive", "assistant receive failed") from None
         messages: list[Message] = []
+        raw_messages: list[Message] = []
+        boundary_event_ids = []
         for message in response.messages:
             committed = await journal.append(MessageObserved(message=message))
             assert isinstance(committed, MessageObservedEvent)
+            boundary_event_ids.append(committed.id)
             messages.append(committed.data.message)
+            raw_messages.append(
+                message.model_copy(
+                    update={
+                        "id": committed.data.message.id,
+                        "sequence": committed.data.message.sequence,
+                    },
+                    deep=True,
+                )
+            )
+        raw_response = response.model_copy(update={"messages": raw_messages}, deep=True)
         response = response.model_copy(update={"messages": messages})
         return {
-            "response": response,
+            "response": raw_response,
             "observation": ConversationObservation(
                 kind="assistant_response", messages=response.messages
             ),

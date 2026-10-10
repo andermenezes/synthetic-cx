@@ -46,6 +46,6 @@ def test_demo_derivation_retains_named_frame_boundary(
     assert config.channel.ownership == load_config(EXAMPLE).channel.ownership
     if persona == "impatient":
         assert config.persona.initial_state.willingness_to_continue == 0.3
-        assert config.persona.behavioral_rules[0].abandonment_threshold == 0.1
+        assert config.persona.behavioral_rules[0].effects.abandonment_threshold == 0.1
     else:
         assert config.persona.initial_state.willingness_to_continue == 0.9

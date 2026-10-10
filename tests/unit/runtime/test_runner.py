@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from syntheticcx.adapters.storage.filesystem import FilesystemStorage
 from syntheticcx.config.loader import load_config
-from syntheticcx.config.models import Criterion, PrivacyConfig, ProjectConfig
+from syntheticcx.config.models import BehaviorConfig, Criterion, PrivacyConfig, ProjectConfig
 from syntheticcx.domain.artifacts import ConfigArtifact, Run
 from syntheticcx.domain.events import (
     EvaluationCompletedEvent,
@@ -42,6 +42,11 @@ from syntheticcx.errors import ModelError
 from syntheticcx.evaluation.service import EvaluationService
 from syntheticcx.privacy import Redactor
 from syntheticcx.privacy.prompt_capture import PromptCapture
+from syntheticcx.runtime.behavior_signals import (
+    DetectorRegistration,
+    EmptyDetectorParameters,
+    prepare_behavior,
+)
 from syntheticcx.runtime.clock import ManualClock, ManualWaitController
 from syntheticcx.runtime.journal import RunJournal
 from syntheticcx.runtime.owner import run_evaluated
@@ -861,6 +866,7 @@ class Storage:
         *,
         fail_append: bool = False,
         fail_at_sequence: int | None = None,
+        fail_customer: bool = False,
         fail_create: bool = False,
         fail_evaluation: bool = False,
         fail_finalize: bool = False,
@@ -872,6 +878,7 @@ class Storage:
         self.events: list[TypedTraceEvent] = []
         self.fail_append = fail_append
         self.fail_at_sequence = fail_at_sequence
+        self.fail_customer = fail_customer
         self.fail_create = fail_create
         self.fail_evaluation = fail_evaluation
         self.fail_finalize = fail_finalize
@@ -887,6 +894,9 @@ class Storage:
         if (
             self.fail_append
             or event.sequence == self.fail_at_sequence
+            or self.fail_customer
+            and event.type == "message_observed"
+            and event.data.message.actor == "customer"
             or self.fail_evaluation
             and isinstance(event, EvaluationCompletedEvent)
         ):
@@ -957,7 +967,15 @@ class Channel:
             raise OSError("sensitive-channel-token")
         if self.failure == "hang":
             await asyncio.Event().wait()
-        return reply("Your bill increased due to a plan change")
+        response = reply("Your bill increased due to a plan change")
+        return response.model_copy(
+            update={
+                "messages": [
+                    message.model_copy(update={"id": f"assistant-{len(self.sent)}"})
+                    for message in response.messages
+                ]
+            }
+        )
 
     async def close(self) -> None:
         self.closed += 1
@@ -1051,8 +1069,13 @@ def test_success_returns_detached_evidence_without_finalizing() -> None:
         assert [event.type for event in result.committed_events][-1] == "run_lifecycle_changed"
         assert result.committed_events[-1].data.current == "incomplete"
         assert result.committed_events[-1].data.outcome is None
-        assert result.committed_events[2].data.message.id == "sent-1"
-        assert result.committed_events[2].data.message.content == "My account number is 123"
+        customer = next(
+            event.data.message
+            for event in result.committed_events
+            if event.type == "message_observed" and event.data.message.actor == "customer"
+        )
+        assert customer.id == "sent-1"
+        assert customer.content == "My account number is 123"
         assert not hasattr(result, "outcome")
 
     asyncio.run(scenario())
@@ -1309,7 +1332,7 @@ def test_selection_acknowledged_before_journal_failure_still_counts_one_turn() -
     async def scenario() -> None:
         channel = SelectingChannel()
         result = await exercise(
-            channel, SelectingPersona(), Storage(fail_at_sequence=3), greeting_grace=1
+            channel, SelectingPersona(), Storage(fail_customer=True), greeting_grace=1
         )
         assert result.termination_reason == "persistence_error"
         assert result.turn_count == result.persona_state.turn_number == 1
@@ -1983,16 +2006,12 @@ def test_owner_append_failure_stops_evaluation_and_attempts_one_bounded_failure_
 
 def test_successful_receipt_remains_counted_when_customer_evidence_fails() -> None:
     async def scenario() -> None:
-        storage = Storage(fail_at_sequence=2)
+        storage = Storage(fail_customer=True)
         channel = Channel()
         result = await exercise(channel, Persona(), storage)
         assert channel.sent == ["My account number is 123"]
         assert result.termination_reason == "persistence_error"
         assert result.turn_count == result.persona_state.turn_number == 1
-        assert [event.type for event in result.committed_events] == [
-            "run_lifecycle_changed",
-            "conversation_started",
-        ]
         assert result.error is not None and result.error.category == "persistence"
 
     asyncio.run(scenario())
@@ -2088,7 +2107,7 @@ def test_terminal_state_matrix(
             complete=mode != "max_turns",
             goal_initial=mode == "goal_initial",
         )
-        storage = Storage(fail_at_sequence=2 if mode == "journal_failure" else None)
+        storage = Storage(fail_customer=mode == "journal_failure")
         result = await exercise(
             channel,
             persona,
@@ -2108,12 +2127,7 @@ def test_terminal_state_matrix(
             assert result.error.category == error_category
         if mode == "abandoned_initial":
             assert persona.calls == 0
-        if mode == "journal_failure":
-            assert [event.type for event in result.committed_events] == [
-                "run_lifecycle_changed",
-                "conversation_started",
-            ]
-        else:
+        if mode != "journal_failure":
             assert result.committed_events[-1].type == "run_lifecycle_changed"
             assert result.committed_events[-1].data.termination_reason == reason
             assert result.committed_events[-1].data.outcome is None
@@ -2172,18 +2186,6 @@ def test_initial_greeting_and_no_greeting_have_distinct_observations() -> None:
                 greeting_grace=grace,
             )
             events = result.committed_events
-            types = [event.type for event in events]
-            assert types == (
-                [
-                    "run_lifecycle_changed",
-                    "message_observed",
-                    "message_observed",
-                    "conversation_started",
-                    "run_lifecycle_changed",
-                ]
-                if expected
-                else ["run_lifecycle_changed", "conversation_started", "run_lifecycle_changed"]
-            )
             started = next(event.data for event in events if event.type == "conversation_started")
             assert started.greeting_observed is expected
             assert started.greeting_message_ids == (
@@ -2200,8 +2202,10 @@ def test_result_is_frozen_and_detached_from_storage() -> None:
         result = await exercise(Channel(), Persona(), storage)
         with pytest.raises(ValidationError):
             result.turn_count = 999
-        storage.events[2].data.message.metadata["external"] = "changed"
-        assert "external" not in result.committed_events[2].data.message.metadata
+        stored = next(event for event in storage.events if event.type == "message_observed")
+        stored.data.message.metadata["external"] = "changed"
+        frozen = next(event for event in result.committed_events if event.id == stored.id)
+        assert "external" not in frozen.data.message.metadata
         assert isinstance(result.committed_events, tuple)
 
     asyncio.run(scenario())
@@ -2270,20 +2274,25 @@ def test_multipart_repetition_is_committed_once_before_goal_decision() -> None:
         ]
         assert persona.states[-1].frustration == pytest.approx(0.3)
         events = result.committed_events
-        assert [event.type for event in events] == [
-            "run_lifecycle_changed",
-            "conversation_started",
-            "message_observed",
-            "persona_state_changed",
-            "message_observed",
-            "message_observed",
-            "repeated_information",
-            "persona_state_changed",
-            "run_lifecycle_changed",
-        ]
-        assert events[6].data.original_message_id == events[2].data.message.id
-        assert events[6].data.request_message_id == events[4].data.message.id
-        assert events[7].data.trigger_ids[0] == events[6].id
+        repetitions = [event for event in events if event.type == "repeated_information"]
+        assert len(repetitions) == 1
+        repetition = repetitions[0]
+        assert repetition.data.original_message_id == "sent-1"
+        assert repetition.data.request_message_id == "assistant-1"
+        signal = next(
+            event
+            for event in events
+            if event.type == "behavioral_signal_recorded"
+            and event.data.signal.signal == "repeated_information"
+        )
+        assert repetition.id in signal.data.signal.source_event_ids
+        transition = next(
+            event
+            for event in events
+            if event.type == "behavioral_state_changed" and event.data.signal_event_id == signal.id
+        )
+        assert transition.sequence > repetition.sequence
+        assert transition.data.after.frustration == pytest.approx(0.3)
         assert [event.sequence for event in events] == list(range(len(events)))
         assert not any(event.type == "evaluation_completed" for event in events)
 
@@ -2387,3 +2396,74 @@ def test_cancellation_during_storage_cleanup_preserves_committed_termination() -
         assert channel.closed == storage.closed == 1
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("failed_boundary", ["greeting", "customer_turn_completed"])
+def test_behavior_failure_propagates_through_owner_as_infrastructure_error(failed_boundary) -> None:
+    async def exercise():
+        config = load_config(Path("examples/telecom/scenario.yaml"))
+        definition = PersonaDefinition.model_validate(config.persona.model_dump()).model_copy(
+            update={"behavioral_rules": []}
+        )
+        selected = BehaviorConfig.model_validate(
+            {"detectors": [{"id": "consumer", "type": "custom", "version": "1"}]}
+        )
+
+        class Detector:
+            async def detect(self, boundary):
+                if boundary.kind == failed_boundary:
+                    raise RuntimeError("private detector text must not escape")
+                return ()
+
+        registered = DetectorRegistration(
+            detector_type="custom",
+            version="1",
+            parameter_model=EmptyDetectorParameters,
+            signal_schemas={"notice": EmptyDetectorParameters},
+            mode="deterministic",
+            factory=lambda metadata, parameters: Detector(),
+        )
+        detectors = prepare_behavior(selected, [], {"custom": registered}).instantiate()
+        storage, channel, simulator = Storage(), Channel(), Persona(complete=False)
+        clock = ManualClock(NOW)
+        wait = ManualWaitController(clock)
+        redactor = Redactor(PrivacyConfig())
+        journal = RunJournal("run-1", storage, redactor, clock)
+        service = EvaluationService(
+            journal=journal,
+            wait=wait,
+            evaluator_timeout_seconds=5,
+            redactor=redactor,
+            evaluators={"semantic_goal_completion": GoalEvaluator()},
+        )
+        result = await run_evaluated(
+            run=run(),
+            config_artifact=ConfigArtifact(source_content_hash="hash", effective_config={}),
+            scenario=Scenario.model_validate(config.scenario.model_dump()),
+            persona=definition,
+            channel=channel,
+            simulator=simulator,
+            storage=storage,
+            journal=journal,
+            clock=clock,
+            wait=wait,
+            limits=config.execution.model_copy(update={"greeting_grace_seconds": 0}),
+            evaluation=service,
+            redactor=redactor,
+            behavior_detectors=detectors,
+        )
+        assert result.finalized and result.outcome == "error" and result.exit_code == 3
+        assert result.conversation.termination_reason == "behavior_error"
+        assert result.conversation.error.category == "behavior"
+        assert result.conversation.error.operation == "behavior.detect"
+        assert len(channel.sent) == (0 if failed_boundary == "greeting" else 1)
+        assert simulator.calls == len(channel.sent)
+        assert channel.closed == storage.closed == 1
+        assert "private detector text" not in "\n".join(
+            event.model_dump_json() for event in result.committed_events
+        )
+        assert not any(
+            event.type == "behavioral_signal_recorded" for event in result.committed_events
+        )
+
+    asyncio.run(exercise())

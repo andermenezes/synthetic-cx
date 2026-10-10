@@ -12,6 +12,7 @@ from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
 DIRECT_LICENSES = {
+    "jsonschema": "MIT",
     "langgraph": "MIT",
     "openai": "Apache-2.0",
     "opentelemetry-api": "Apache-2.0",
@@ -20,6 +21,7 @@ DIRECT_LICENSES = {
     "pydantic": "MIT",
     "pydantic-settings": "MIT",
     "pyyaml": "MIT",
+    "referencing": "MIT",
     "tinytroupe": "MIT",
     "typer": "MIT",
 }

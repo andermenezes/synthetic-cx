@@ -482,7 +482,6 @@ def test_source_hash_uses_original_bytes(tmp_path: Path) -> None:
     loaded = load_config_with_source_hash(source)
     assert loaded.source_content_hash == sha256(source.read_bytes()).hexdigest()
     assert loaded.source_content_hash != sha256(original).hexdigest()
-    assert loaded.config.version == "1"
 
 
 @pytest.mark.parametrize("identifier", ["../escape", "/absolute", ".", "with/slash"])

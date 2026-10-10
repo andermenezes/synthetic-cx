@@ -34,9 +34,11 @@ persona:
   behavioral_rules:
     - id: repeated-information-frustration
       priority: 10
-      event: repeated_information
-      frustration_delta: 0.2
-      willingness_to_continue_delta: -0.1
+      when:
+        signal: repeated_information
+      effects:
+        frustration_delta: 0.2
+        willingness_to_continue_delta: -0.1
 channel:
   type: webchat_playwright
   url: http://127.0.0.1:8000/?variant=success

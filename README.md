@@ -331,6 +331,8 @@ Authorized headed validation on 2026-10-06 completed discovery, exact fresh repl
 
 Verified copies, commands, reports, limitations, and the project review are in [`verification/2026-10-06/`](verification/2026-10-06/README.md). Your original scenario and guide files are not replaced.
 
+These dated verification copies use the version-1 journey schema. Preserve them as evidence; when rerunning against current code, edit a separate copy's obsolete behavioral-rule fields to the current `when`/`effects` shape. Keep the journey version at 1 and leave interface guides unchanged.
+
 For Vivo discovery, use the canonical origin and a fresh output path:
 
 ```bash
@@ -370,7 +372,7 @@ Learning may select a currently issued guarded informational option. Every recor
 
 ## Configure a journey
 
-A version-1 YAML document contains all configuration inline. Unknown fields, unsupported versions, invalid limits, and invalid adapter choices are rejected before external activity.
+A version-1 journey YAML document contains all configuration inline or references a local channel guide. Journey and discovery-draft configuration remain version 1; behavioral rules use the current `when`/`effects` contract. Unknown fields, unsupported versions, invalid limits, and invalid adapter choices fail validation.
 
 The canonical example is [`examples/telecom/scenario.yaml`](examples/telecom/scenario.yaml). Its configured port is illustrative; use `run_demo.py` or change `channel.url` to the address of your own controlled target.
 
@@ -413,9 +415,11 @@ persona:
   behavioral_rules:
     - id: repeated-information-frustration
       priority: 10
-      event: repeated_information
-      frustration_delta: 0.2
-      willingness_to_continue_delta: -0.1
+      when:
+        signal: repeated_information
+      effects:
+        frustration_delta: 0.2
+        willingness_to_continue_delta: -0.1
 
 channel:
   type: webchat_playwright_dynamic
@@ -499,9 +503,144 @@ persona:
 
 Narratives cannot override structured language/tone/style/length/error settings, customer action rules, current behavioral state, or scenario facts. Omitted/null descriptions and message length plus grammar probability `0` preserve legacy persona prompts. Narrative background does not replace deterministic `behavioral_rules` or change evaluator success criteria.
 
-Use synthetic data in descriptions. The selected persona model receives the original prose. Effective configuration is persisted under the normal privacy policy even when prompt capture is disabled. Add `description` and/or `writing_description` to `privacy.redaction_keys` to redact those complete fields and exact echoes in persisted evidence/captured prompts; free-text sensitive substrings still require configured patterns, known secrets, or whole-field redaction. Automatic PII detection is not provided.
+Use synthetic data in descriptions. The selected persona model receives the original prose. Effective configuration is persisted under the normal privacy policy even when prompt capture is disabled. Add `description`, `writing_description`, and/or `behavior_description` to `privacy.redaction_keys` to redact those complete fields and exact echoes in persisted evidence/captured prompts; free-text sensitive substrings still require configured patterns, known secrets, or whole-field redaction. Automatic PII detection is not provided.
 
-The MVP supports the `repeated_information` behavioral event. Matching rules execute by `priority` and then `id`; deltas accumulate before values are clamped. When `willingness_to_continue` reaches a rule's `abandonment_threshold`, the persona abandons and no further customer message is sent.
+Optional `persona.behavior_description` describes how the customer behaves (nonblank, up to 2,000 characters). It guides the persona but cannot override scenario facts, action permissions, structured communication, owned state, or terminal conditions. It does not let the model mutate behavioral state.
+
+Version-1 rules separate `when` from `effects`. Built-in signals are `repeated_information` and `customer_turn_completed`; a completed turn requires a successful customer action **and** a completed assistant response. Greetings and failed responses do not count as completed turns. Occurrences are per signal/per run, not per rule or information ID. Conditions optionally use `occurrence_at_least` (positive integer, default 1) and inclusive `state.frustration`/`state.willingness_to_continue` bounds (`gte`/`lte`). `fire` is `every_match` (default) or `once`.
+
+For example, add this rule to an existing persona to abandon after at least six completed turns when willingness is at most 0.5:
+
+```yaml
+behavioral_rules:
+  - id: leave-after-six-turns
+    priority: 20
+    when:
+      signal: customer_turn_completed
+      occurrence_at_least: 6
+      state:
+        willingness_to_continue: {lte: 0.5}
+    effects:
+      abandon: true
+    fire: once
+```
+
+All matching rules evaluate against the same pre-signal state, execute by `priority` then `id`, and sum deltas before clamping. Effects allow frustration/willingness deltas in `[-1,1]`, an optional `abandonment_threshold`, or `abandon: true`; empty/no-op effects are rejected. Abandonment is terminal. At most 32 rules are allowed; IDs/signal names start with an ASCII letter and contain letters, digits, `_`, `.`, or `-`, up to 80 characters.
+
+Omitting `behavior.detectors` enables both built-ins. An explicit list selects only those detectors (maximum 8); `behavior: {detectors: []}` disables behavioral signals and requires no signal-dependent rules. Each entry supplies `id`, `type`, `version: "1"`, and `parameters`; built-ins accept only empty parameters. Duplicate signal ownership, unregistered types, unavailable versions, invalid typed parameters, and rules referring to disabled signals fail preparation before credentials/model/browser work. Disabling signals does not suppress formal repeated-information evidence or observation boundaries.
+
+#### Trusted custom detectors
+
+Register extensions in Python through `execute_run(..., behavior_registry=...)`. YAML selects an existing registration; it cannot import code or evaluate expressions. The standard CLI exposes built-ins only. Each registration declares a parameter model, signal payload models, implementation version, deterministic/model-backed mode, and a factory. Factories create fresh instances per run. This is trusted application code, not a security sandbox.
+
+For example, a deterministic extension can classify customer patience without adding a core enum:
+
+```python
+import asyncio
+from pathlib import Path
+from typing import cast
+
+from pydantic import BaseModel, Field
+from syntheticcx.application.run import execute_run
+from syntheticcx.config.models import StrictModel
+from syntheticcx.domain.behavior import BehavioralObservation, BehavioralSignal
+from syntheticcx.domain.models import BehavioralDetectorMetadata
+from syntheticcx.runtime.behavior_signals import DetectorRegistration
+
+
+class PatienceParameters(StrictModel):
+    after_turn: int = Field(default=6, ge=1, strict=True)
+
+
+class PatiencePayload(StrictModel):
+    pass
+
+
+class PatienceDetector:
+    def __init__(self, metadata: BehavioralDetectorMetadata, parameters: BaseModel):
+        self.metadata = metadata
+        self.parameters = cast(PatienceParameters, parameters)
+
+    async def detect(self, observation: BehavioralObservation):
+        if (
+            observation.kind != "customer_turn_completed"
+            or observation.turn_count < self.parameters.after_turn
+        ):
+            return ()
+        return (
+            BehavioralSignal(
+                detector_id=self.metadata.detector_id,
+                detector_type=self.metadata.detector_type,
+                detector_version=self.metadata.detector_version,
+                signal="patience_exhausted",
+                deduplication_key=f"turn-{observation.turn_count}",
+                observation_id=observation.observation_id,
+                source_event_ids=observation.evidence_event_ids,
+                source_message_ids=tuple(message.id for message in observation.messages),
+                payload={},
+            ),
+        )
+
+
+registration = DetectorRegistration(
+    detector_type="patience",
+    version="1",
+    parameter_model=PatienceParameters,
+    signal_schemas={"patience_exhausted": PatiencePayload},
+    mode="deterministic",
+    factory=PatienceDetector,
+)
+result = asyncio.run(
+    execute_run(
+        Path("scenario.yaml"),
+        behavior_registry={"patience": registration},
+    )
+)
+```
+
+Add this selection to a complete version-1 scenario and set a rule's `when.signal` to `patience_exhausted`:
+
+```yaml
+behavior:
+  detectors:
+    - id: customer-patience
+      type: patience
+      version: "1"
+      parameters: {after_turn: 6}
+```
+
+Observations contain detached customer-visible messages, owned state, and committed evidence references, not evaluator criteria or browser/provider handles. Detectors classify; only the deterministic engine changes state. Detection is bounded by configured timeouts and remaining journey time. At most 32 signals per detector are accepted at a boundary; payloads must satisfy their registered schema, finite JSON limits, and privacy filtering. Exact duplicate identities are ignored; conflicting duplicates fail. Detector order follows configuration, not completion timing. Model-backed registrations must also expose bounded `ModelInteraction` evidence; no shipped semantic classifier is implied.
+
+#### Durable evidence and offline behavior replay
+
+Runs persist detector identities and self-contained payload schemas in configuration/metadata. Every boundary records `behavior_observation_recorded`, followed by all accepted `behavioral_signal_recorded` events, then sequential `behavioral_state_changed` transitions with occurrences, before/after state, and applied rule IDs. Signals have backward references to committed evidence. Evidence failure stops further dispatch. Reports separate these transitions from formal repeated-information findings, evaluation, and subjective feedback.
+
+```bash
+synthetic-cx replay-behavior RUN_DIRECTORY --output /tmp/behavior-replay.json
+synthetic-cx replay-behavior RUN_DIRECTORY --output /tmp/counterfactual.json --rules /tmp/rules.yaml
+```
+
+The first command verifies recorded transitions using the same pure engine. The second accepts only `{version: "1", rules: [...]}`, using the same rule shape as `persona.behavioral_rules`. Replay requires no credentials, browser, provider, persona, or detector instantiation. It reads `config.yaml`, `metadata.json`, and `trace.jsonl`; hashes the exact source bytes; validates ordering, references, detector schemas, counters, and state continuity; and never mutates the source. Output is exclusive/no-clobber and must be outside the source run directory.
+
+Replay JSON follows `behavior-replay.schema.json`, with version `"1"`, mode, completeness, calculated transitions, and comparison findings. Incomplete runs can verify only complete committed batches, explicitly labeled a prefix. Legacy traces without detector metadata are unsupported; replay never reconstructs missing signals from prose. Counterfactuals reuse recorded signals, stop after earlier abandonment, and mark later observations outside the customer's continuation. Nonbehavioral transitions apply only their recorded changed fields (`external_state_policy: recorded_changed_fields`); this is an explicit assumption, not a generated alternate conversation or evaluation outcome.
+
+| Replay exit | Meaning |
+| --- | --- |
+| `0` | Complete verification without mismatches, or complete counterfactual calculation |
+| `2` | Invalid/unsupported source or invalid rules |
+| `3` | Output failure or existing output |
+| `4` | Complete verification with mismatches; result written |
+| `5` | Verified committed prefix only; result written |
+
+Privacy filtering must preserve replay identities, rules, and payload schemas. Persisted payload schemas omit nonvalidation prose annotations, so redacting persona/rule `description` fields does not alter the replay contract. If a whole-field redaction key collides with a JSON Schema property name, preparation rejects the altered schema; use a targeted synthetic-ID pattern for sensitive values instead. Invalid redacted payloads fail explicitly rather than retaining secrets or fabricating evidence.
+
+Local native Chromium smoke exercised repeated-information abandonment after two turns, completed-turn abandonment after six turns, and a registered custom detector after two turns. Actual offline CLI replay verified all three with no mismatches and version `"1"`. These deterministic-adapter checks do not establish hosted-model quality or live-target acceptance.
+
+The documented Python registration example also passed preparation, factory creation and classification. Offline wheel/sdist builds, archive checks, and independent clean installs of both the wheel and sdist-rebuilt wheel passed CLI/import smoke verification. CI-scope mypy (97 files), Ruff lint/format (188 files), and direct dependency license inventory passed.
+
+Final integrated regression: **1,749 passed, 4 opt-in skips, 3 dependency deprecation warnings**, 435.88 seconds; all ten exported schemas matched generated output. Counterfactual subprocess CLI smoke abandoned at completed-turn occurrence 2 and marked four later recorded observations outside continuation. Source runs remained unchanged.
+
+**Updating behavioral rules:** preserve the journey's `version: "1"`. Replace each rule's obsolete `event` field with `when: {signal: ...}` and move delta/threshold fields into `effects`; no scenario-version migration is needed. Keep the interface guide and historical evidence unchanged.
 
 ### Evaluators
 

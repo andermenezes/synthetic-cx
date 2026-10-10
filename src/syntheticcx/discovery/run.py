@@ -26,6 +26,7 @@ from syntheticcx.config.models import (
     OpenAIModelConfig,
     ResolvedModelSettings,
 )
+from syntheticcx.config.settings import validate_behavior
 from syntheticcx.discovery.calibrate import calibrate_candidate
 from syntheticcx.discovery.explore import DiscoveryCandidate, explore
 from syntheticcx.discovery.hints import launcher_id
@@ -94,6 +95,7 @@ async def discover_candidate(
     """Validate credentials, probe the selected model, and explore with owned resources."""
     id_launcher_requested = launcher_id(chat_hint) is not None
     draft = load_discovery_draft(scenario)
+    validate_behavior(draft.behavior, draft.persona.behavioral_rules)
     if on_progress is not None:
         on_progress("scenario draft loaded")
     model = _selected_model(discovery_model_config, draft.model)
@@ -221,6 +223,7 @@ async def discover_guide(
     if target_url.username is not None or target_url.password is not None:
         raise ConfigurationError("discover URL", "URL credentials are not permitted")
     draft = load_discovery_draft(scenario)
+    validate_behavior(draft.behavior, draft.persona.behavioral_rules)
     model = _selected_model(discovery_model_config, draft.model)
     if isinstance(model, OpenAICompatibleModelConfig) and (
         not model.capabilities.chat_completions or not model.capabilities.structured_output

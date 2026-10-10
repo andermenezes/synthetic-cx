@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Literal, get_args
 
 ErrorCategory = Literal[
-    "configuration", "channel", "model", "evaluation", "persistence", "cancelled"
+    "configuration", "channel", "model", "behavior", "evaluation", "persistence", "cancelled"
 ]
 
 ChannelFailureReason = Literal[
@@ -89,6 +89,13 @@ class ModelError(SyntheticCXError):
     ) -> None:
         super().__init__("model", operation, message, retryable)
         object.__setattr__(self, "reason_code", reason_code)
+
+
+class BehaviorError(SyntheticCXError):
+    """Behavioral detection or processing failed; classifications are not retried."""
+
+    def __init__(self, operation: str, message: str) -> None:
+        super().__init__("behavior", operation, message)
 
 
 class EvaluationError(SyntheticCXError):

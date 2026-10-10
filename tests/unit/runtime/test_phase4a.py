@@ -126,10 +126,12 @@ def rule(
     return BehaviorRule(
         id=identifier,
         priority=priority,
-        event="repeated_information",
-        frustration_delta=frustration,
-        willingness_to_continue_delta=willingness,
-        abandonment_threshold=threshold,
+        when={"signal": "repeated_information"},
+        effects={
+            "frustration_delta": frustration,
+            "willingness_to_continue_delta": willingness,
+            "abandonment_threshold": threshold,
+        },
     )
 
 
@@ -139,7 +141,7 @@ def test_rules_sort_accumulate_clamp_and_abandon_without_mutation() -> None:
     transition = apply_behavior(
         state,
         rules,
-        event="repeated_information",
+        signal="repeated_information",
         trigger_ids=["repeated_information:account", "sent-1", "ask-1"],
     )
     assert transition.applied_rule_ids == ["first", "a", "z"]
@@ -150,13 +152,13 @@ def test_rules_sort_accumulate_clamp_and_abandon_without_mutation() -> None:
     assert transition.after.abandoned
     assert transition.trigger_ids == ["repeated_information:account", "sent-1", "ask-1"]
     assert apply_behavior(
-        transition.after, rules, event="repeated_information", trigger_ids=["next"]
+        transition.after, rules, signal="repeated_information", trigger_ids=["next"]
     ).after.abandoned
 
 
 def test_nonmatching_event_preserves_state() -> None:
     state = PersonaState()
-    result = apply_behavior(state, [rule("a", 1, 0.5, -0.5)], event="other", trigger_ids=["x"])
+    result = apply_behavior(state, [rule("a", 1, 0.5, -0.5)], signal="other", trigger_ids=["x"])
     assert result.after == state
     assert result.applied_rule_ids == []
 

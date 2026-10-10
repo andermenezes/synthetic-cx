@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Protocol, TypedDict, TypeVar, runtime_checkable
 
 from syntheticcx.domain.artifacts import ConfigArtifact, EvaluationContext, Run
+from syntheticcx.domain.behavior import BehavioralObservation, BehavioralSignal
 from syntheticcx.domain.events import TypedTraceEvent
 from syntheticcx.domain.models import (
     CompletedResponse,
@@ -75,6 +76,12 @@ class PersonaReflector(Protocol):
     @property
     def reflection_available(self) -> bool: ...
     async def reflect(self, request: PersonaReflectionRequest) -> PersonaFeedbackResponse: ...
+
+
+class BehavioralSignalDetector(Protocol):
+    """Trusted async classifier; no SDK, dispatch, state, or outcome authority."""
+
+    async def detect(self, observation: BehavioralObservation) -> tuple[BehavioralSignal, ...]: ...
 
 
 class Evaluator(Protocol):

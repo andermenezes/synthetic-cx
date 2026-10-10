@@ -19,6 +19,7 @@ from syntheticcx.domain.artifacts import (
     EvaluationArtifact,
     MetadataArtifact,
 )
+from syntheticcx.domain.behavior import BehaviorReplayResult
 from syntheticcx.domain.events import TypedTraceEvent
 from syntheticcx.domain.models import Report
 
@@ -49,6 +50,7 @@ def export_schemas(destination: Path) -> list[Path]:
         "trace-event": TypeAdapter(TypedTraceEvent).json_schema(),
         "discovery-draft": DiscoveryDraft.model_json_schema(),
         "channel-guide": InterfaceChannelGuide.model_json_schema(),
+        "behavior-replay": BehaviorReplayResult.model_json_schema(),
     }
     paths = [export_project_schema(destination / "project.schema.json")]
     for name, schema in schemas.items():

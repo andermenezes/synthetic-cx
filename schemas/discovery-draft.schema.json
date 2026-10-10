@@ -62,9 +62,111 @@
       "title": "ActionAuthorization",
       "type": "object"
     },
-    "BehaviorRule": {
+    "BehaviorCondition": {
       "additionalProperties": false,
       "properties": {
+        "occurrence_at_least": {
+          "default": 1,
+          "exclusiveMinimum": 0,
+          "title": "Occurrence At Least",
+          "type": "integer"
+        },
+        "signal": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+          "title": "Signal",
+          "type": "string"
+        },
+        "state": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BehaviorStateConditions"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "signal"
+      ],
+      "title": "BehaviorCondition",
+      "type": "object"
+    },
+    "BehaviorConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "detectors": {
+          "items": {
+            "$ref": "#/$defs/BehaviorDetectorConfig"
+          },
+          "maxItems": 8,
+          "title": "Detectors",
+          "type": "array"
+        }
+      },
+      "title": "BehaviorConfig",
+      "type": "object"
+    },
+    "BehaviorDetectorConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "parameters": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Parameters",
+          "type": "object"
+        },
+        "type": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+          "title": "Type",
+          "type": "string"
+        },
+        "version": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "version"
+      ],
+      "title": "BehaviorDetectorConfig",
+      "type": "object"
+    },
+    "BehaviorEffects": {
+      "additionalProperties": false,
+      "properties": {
+        "abandon": {
+          "anyOf": [
+            {
+              "const": true,
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Abandon"
+        },
         "abandonment_threshold": {
           "anyOf": [
             {
@@ -79,26 +181,12 @@
           "default": null,
           "title": "Abandonment Threshold"
         },
-        "event": {
-          "const": "repeated_information",
-          "title": "Event",
-          "type": "string"
-        },
         "frustration_delta": {
           "default": 0,
           "maximum": 1,
           "minimum": -1,
           "title": "Frustration Delta",
           "type": "number"
-        },
-        "id": {
-          "minLength": 1,
-          "title": "Id",
-          "type": "string"
-        },
-        "priority": {
-          "title": "Priority",
-          "type": "integer"
         },
         "willingness_to_continue_delta": {
           "default": 0,
@@ -108,12 +196,125 @@
           "type": "number"
         }
       },
+      "title": "BehaviorEffects",
+      "type": "object"
+    },
+    "BehaviorRule": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "effects": {
+          "$ref": "#/$defs/BehaviorEffects"
+        },
+        "fire": {
+          "default": "every_match",
+          "enum": [
+            "every_match",
+            "once"
+          ],
+          "title": "Fire",
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "priority": {
+          "title": "Priority",
+          "type": "integer"
+        },
+        "when": {
+          "$ref": "#/$defs/BehaviorCondition"
+        }
+      },
       "required": [
         "id",
         "priority",
-        "event"
+        "when",
+        "effects"
       ],
       "title": "BehaviorRule",
+      "type": "object"
+    },
+    "BehaviorStateCondition": {
+      "additionalProperties": false,
+      "properties": {
+        "gte": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gte"
+        },
+        "lte": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lte"
+        }
+      },
+      "title": "BehaviorStateCondition",
+      "type": "object"
+    },
+    "BehaviorStateConditions": {
+      "additionalProperties": false,
+      "properties": {
+        "frustration": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BehaviorStateCondition"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "willingness_to_continue": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BehaviorStateCondition"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "BehaviorStateConditions",
       "type": "object"
     },
     "CommunicationConfig": {
@@ -639,10 +840,26 @@
     "PersonaConfig": {
       "additionalProperties": false,
       "properties": {
+        "behavior_description": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Behavior Description"
+        },
         "behavioral_rules": {
           "items": {
             "$ref": "#/$defs/BehaviorRule"
           },
+          "maxItems": 32,
           "title": "Behavioral Rules",
           "type": "array"
         },
@@ -1011,6 +1228,9 @@
   "additionalProperties": false,
   "description": "Scenario and model settings validated without channel controls.",
   "properties": {
+    "behavior": {
+      "$ref": "#/$defs/BehaviorConfig"
+    },
     "evaluation_model": {
       "anyOf": [
         {

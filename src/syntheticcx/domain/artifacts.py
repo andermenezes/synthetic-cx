@@ -9,6 +9,7 @@ from syntheticcx.config.models import Criterion, JsonObject
 from syntheticcx.domain.events import TypedTraceEvent
 from syntheticcx.domain.models import (
     ArtifactRecord,
+    BehavioralDetectorMetadata,
     DomainModel,
     ErrorDetail,
     EvaluationResult,
@@ -74,3 +75,4 @@ class ConfigArtifact(DomainModel):
     source_content_hash: Identifier
     channel_guide_source_hash: Identifier | None = None
     effective_config: JsonObject
+    behavior_detectors: tuple[BehavioralDetectorMetadata, ...] = Field(default=(), max_length=8)

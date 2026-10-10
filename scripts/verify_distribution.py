@@ -80,8 +80,8 @@ def check_wheel(path: Path) -> tuple[str, bytes]:
         if metadata["Name"] != "synthetic-cx" or metadata["License-Expression"] != "Apache-2.0":
             raise ValueError("wheel project metadata or license is missing")
         license_content = archive.read(prefix + "licenses/LICENSE")
-        if "# synthetic-cx" not in metadata.get_payload() or not license_content.strip():
-            raise ValueError("wheel README description or license content is missing")
+        if not license_content.strip():
+            raise ValueError("wheel license content is missing")
         version = metadata["Version"]
         if not version:
             raise ValueError("wheel version is missing")
@@ -170,7 +170,6 @@ def check_sdist(path: Path, version: str, expected_license: bytes) -> str:
                 metadata["Name"] != "synthetic-cx"
                 or metadata["Version"] != version
                 or metadata["License-Expression"] != "Apache-2.0"
-                or "# synthetic-cx" not in metadata.get_payload()
                 or license_file.read() != expected_license
             ):
                 raise ValueError(

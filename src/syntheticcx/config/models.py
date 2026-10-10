@@ -1,4 +1,4 @@
-"""Version-one YAML models for SyntheticCX."""
+"""Versioned YAML models for SyntheticCX."""
 
 from __future__ import annotations
 
@@ -28,6 +28,10 @@ Normalized = Annotated[float, Field(ge=0, le=1)]
 PositiveSeconds = Annotated[float, Field(gt=0)]
 EnvironmentVariable = Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
 PersonaDescription = Annotated[str, Field(min_length=1, max_length=2000, pattern=r"\S")]
+BehaviorIdentifier = Annotated[
+    str, Field(min_length=1, max_length=80, pattern=r"^[A-Za-z][A-Za-z0-9_.-]*$")
+]
+BehaviorDetectorVersion = Annotated[str, Field(min_length=1, max_length=80, pattern=r"\S")]
 
 
 class StrictModel(BaseModel):  # type: ignore[misc]
@@ -55,13 +59,93 @@ class PersonaStateConfig(StrictModel):
     turn_number: int = Field(default=0, ge=0)
 
 
-class BehaviorRule(StrictModel):
-    id: str = Field(min_length=1)
-    priority: int
-    event: Literal["repeated_information"]
+class BehaviorStateCondition(StrictModel):
+    gte: Normalized | None = None
+    lte: Normalized | None = None
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> BehaviorStateCondition:
+        if self.gte is None and self.lte is None:
+            raise ValueError("state comparison requires at least one bound")
+        if self.gte is not None and self.lte is not None and self.gte > self.lte:
+            raise ValueError("state comparison lower bound must not exceed upper bound")
+        return self
+
+
+class BehaviorStateConditions(StrictModel):
+    frustration: BehaviorStateCondition | None = None
+    willingness_to_continue: BehaviorStateCondition | None = None
+
+    @model_validator(mode="after")
+    def require_comparison(self) -> BehaviorStateConditions:
+        if self.frustration is None and self.willingness_to_continue is None:
+            raise ValueError("state conditions require at least one comparison")
+        return self
+
+
+class BehaviorCondition(StrictModel):
+    signal: BehaviorIdentifier
+    occurrence_at_least: int = Field(default=1, gt=0, strict=True)
+    state: BehaviorStateConditions | None = None
+
+
+class BehaviorEffects(StrictModel):
     frustration_delta: float = Field(default=0, ge=-1, le=1)
     willingness_to_continue_delta: float = Field(default=0, ge=-1, le=1)
     abandonment_threshold: Normalized | None = None
+    abandon: Literal[True] | None = None
+
+    @field_validator("abandon", mode="before")
+    @classmethod
+    def require_explicit_abandonment(cls, value: Any) -> Any:
+        if value is not None and value is not True:
+            raise ValueError("abandon must be true or null")
+        return value
+
+    @model_validator(mode="after")
+    def require_effect(self) -> BehaviorEffects:
+        if (
+            self.frustration_delta == 0
+            and self.willingness_to_continue_delta == 0
+            and self.abandonment_threshold is None
+            and self.abandon is None
+        ):
+            raise ValueError("behavior effects require an effective configured effect")
+        return self
+
+
+class BehaviorRule(StrictModel):
+    id: BehaviorIdentifier
+    priority: int = Field(strict=True)
+    description: PersonaDescription | None = None
+    when: BehaviorCondition
+    effects: BehaviorEffects
+    fire: Literal["every_match", "once"] = "every_match"
+
+
+class BehaviorDetectorConfig(StrictModel):
+    id: BehaviorIdentifier
+    type: BehaviorIdentifier
+    version: BehaviorDetectorVersion
+    parameters: JsonObject = Field(default_factory=dict)
+
+
+def _default_behavior_detectors() -> list[BehaviorDetectorConfig]:
+    return [
+        BehaviorDetectorConfig(id="repeated-information", type="repeated_information", version="1"),
+        BehaviorDetectorConfig(id="completed-turn", type="customer_turn_completed", version="1"),
+    ]
+
+
+class BehaviorConfig(StrictModel):
+    detectors: list[BehaviorDetectorConfig] = Field(
+        default_factory=_default_behavior_detectors, max_length=8
+    )
+
+    @model_validator(mode="after")
+    def require_unique_detectors(self) -> BehaviorConfig:
+        _require_unique_ids(self.detectors, "detectors")
+        return self
 
 
 class TurnCountParameters(StrictModel):
@@ -236,10 +320,11 @@ class PersonaConfig(StrictModel):
     id: str = Field(min_length=1)
     name: str | None = None
     description: PersonaDescription | None = None
+    behavior_description: PersonaDescription | None = None
     traits: dict[str, Normalized] = Field(default_factory=dict)
     communication: CommunicationConfig
     initial_state: PersonaStateConfig
-    behavioral_rules: list[BehaviorRule] = Field(default_factory=list)
+    behavioral_rules: list[BehaviorRule] = Field(default_factory=list, max_length=32)
 
     @model_validator(mode="after")
     def require_unique_rules(self) -> PersonaConfig:
@@ -677,6 +762,7 @@ class ProjectSettings(StrictModel):
     version: Literal["1"]
     scenario: ScenarioConfig
     persona: PersonaConfig
+    behavior: BehaviorConfig = Field(default_factory=BehaviorConfig)
     execution: ExecutionLimits
     model: ModelConfig
     evaluation_model: ModelConfig | None = None

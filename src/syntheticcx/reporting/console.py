@@ -21,9 +21,14 @@ def render_report(report: Report, *, report_omitted: bool = False) -> str:
         f"Turns: {report.turn_count}",
         f"Duration (seconds): {report.duration_seconds}",
         f"Repetition findings: {report.repetition_count}",
+        f"Behavior evidence: {report.behavior_completeness} (not formal evaluation)",
+        f"Behavior observations: {report.behavior_observation_count}",
+        f"Behavior signals/transitions: {report.behavior_signal_count}",
         f"Errors: {errors or 'none'}",
         f"Artifacts: {report.artifact_location}",
     ]
+    if report.behavior_prefix_reason is not None:
+        lines.append(f"Behavior prefix limitation: {report.behavior_prefix_reason}")
     if report_omitted:
         lines.append("report.json: omitted by storage configuration")
     if any(

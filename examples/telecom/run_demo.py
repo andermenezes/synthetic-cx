@@ -19,7 +19,7 @@ CANONICAL = Path(__file__).with_name("scenario.yaml")
 def configured_example(
     fixture_url: str, *, variant: str, persona: str, run_root: Path
 ) -> dict[str, object]:
-    """Derive one strict v1 document without altering the authoritative example."""
+    """Derive one strict version-1 journey without altering the authoritative example."""
     source = yaml.safe_load(CANONICAL.read_text(encoding="utf-8"))
     # The named iframe is the fixture's independently attested chat boundary.
     source["channel"]["url"] = f"{fixture_url}/?variant={variant}&view=frame"
@@ -28,7 +28,7 @@ def configured_example(
         source["persona"]["id"] = "impatient-customer"
         source["persona"]["name"] = "Alex Impatient"
         source["persona"]["initial_state"]["willingness_to_continue"] = 0.3
-        source["persona"]["behavioral_rules"][0].update(
+        source["persona"]["behavioral_rules"][0]["effects"].update(
             frustration_delta=0.5,
             willingness_to_continue_delta=-0.3,
             abandonment_threshold=0.1,
