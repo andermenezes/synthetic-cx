@@ -20,7 +20,7 @@ from syntheticcx.adapters.llm import OpenAICompatibleProvider, OpenAIProvider
 from syntheticcx.adapters.llm.preflight import _probe_role
 from syntheticcx.config.loader import load_discovery_draft
 from syntheticcx.config.models import (
-    InterfaceChannelGuide,
+    AnyChannelGuide,
     ModelConfig,
     OpenAICompatibleModelConfig,
     OpenAIModelConfig,
@@ -30,6 +30,7 @@ from syntheticcx.config.settings import validate_behavior
 from syntheticcx.discovery.calibrate import calibrate_candidate
 from syntheticcx.discovery.explore import DiscoveryCandidate, explore
 from syntheticcx.discovery.hints import launcher_id
+from syntheticcx.discovery.policy import require_discovery_probe, require_discovery_target
 from syntheticcx.errors import ChannelError, ConfigurationError
 from syntheticcx.language import Language, first_probe
 from syntheticcx.privacy import Redactor
@@ -205,12 +206,42 @@ async def discover_guide(
     probe_message: str | None = None,
     language: Language | None = None,
     on_progress: Callable[[str], None] | None = None,
-) -> InterfaceChannelGuide:
+    channel_type: str = "webchat",
+    browser_profile: Path | None = None,
+    recipient: str | None = None,
+) -> AnyChannelGuide:
     """Own model preflight, one learning browser and one fresh replay deadline."""
+    require_discovery_probe(probe_message)
+    require_discovery_target(url)
     from syntheticcx.discovery.budget import DiscoveryBudget
-    from syntheticcx.discovery.learn import learn
+    from syntheticcx.discovery.learn import explore_website, learn
     from syntheticcx.discovery.replay import replay
     from syntheticcx.language import second_probe, third_probe
+
+    if channel_type == "whatsapp_web":
+        from syntheticcx.discovery.whatsapp import discover_whatsapp_guide
+
+        if browser_profile is None:
+            raise ConfigurationError("WhatsApp profile", "--browser-profile is required")
+        return await discover_whatsapp_guide(
+            scenario,
+            url,
+            browser_profile=browser_profile,
+            recipient=recipient,
+            discovery_model_config=discovery_model_config,
+            headed=headed,
+            chat_hint=chat_hint,
+            max_discovery_attempts=max_discovery_attempts,
+            probe_message=probe_message,
+            language=language,
+            on_progress=on_progress,
+        )
+    if channel_type != "webchat":
+        raise ConfigurationError("discover channel", "supported channels: webchat, whatsapp_web")
+    if browser_profile is not None:
+        raise ConfigurationError("browser profile", "browser profiles are only used by WhatsApp")
+    if recipient is not None:
+        raise ConfigurationError("recipient", "--recipient is only used by WhatsApp")
 
     if not 1 <= max_discovery_attempts <= 5:
         raise ConfigurationError(
@@ -292,6 +323,7 @@ async def discover_guide(
             learning = NativeChatBroker(
                 url, limits, headed=headed, chat_hint=chat_hint, contract=None
             )
+            learning.discovery_only = True
             await budget.run(
                 learning.start(on_progress=on_progress), limits.browser_action_timeout_seconds
             )
@@ -300,11 +332,30 @@ async def discover_guide(
                 remaining * 0.5,
                 3 * limits.response_timeout_seconds + limits.close_timeout_seconds,
             )
+            learning_budget = DiscoveryBudget(budget.deadline, reserve)
+            await explore_website(
+                learning,
+                provider,
+                redactor,
+                budget=learning_budget,
+                exploration_context={
+                    "description": draft.scenario.description,
+                    "goal": draft.scenario.goal,
+                    "starting_context": draft.scenario.starting_context,
+                    "language": selected_language,
+                },
+                website_action_limit=limits.website_action_limit,
+                website_observation_limit=limits.website_observation_limit,
+                model_timeout_seconds=limits.model_timeout_seconds,
+                browser_action_timeout_seconds=limits.browser_action_timeout_seconds,
+                max_discovery_attempts=max_discovery_attempts,
+                on_progress=on_progress,
+            )
             learned = await learn(
                 learning,
                 provider,
                 redactor,
-                budget=DiscoveryBudget(budget.deadline, reserve),
+                budget=learning_budget,
                 probes=probes,
                 model_timeout_seconds=limits.model_timeout_seconds,
                 browser_action_timeout_seconds=limits.browser_action_timeout_seconds,
@@ -324,6 +375,7 @@ async def discover_guide(
             fresh = NativeChatBroker(
                 url, limits, headed=headed, chat_hint=chat_hint, contract=learned.config
             )
+            fresh.discovery_only = True
             await budget.run(
                 fresh.start(on_progress=on_progress), limits.browser_action_timeout_seconds
             )

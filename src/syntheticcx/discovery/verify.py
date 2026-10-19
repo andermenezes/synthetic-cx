@@ -10,6 +10,11 @@ from urllib.parse import urlsplit
 from syntheticcx.adapters.channel.playwright import PlaywrightChannel
 from syntheticcx.config.models import ChannelGuide, ExecutionLimits, GuideValidation
 from syntheticcx.discovery.explore import DiscoveryCandidate
+from syntheticcx.discovery.policy import (
+    portability_flow,
+    require_discovery_probe,
+    require_discovery_target,
+)
 from syntheticcx.domain.models import SelectionReceipt
 from syntheticcx.errors import ChannelError
 from syntheticcx.language import Language, require_language, second_probe
@@ -36,6 +41,8 @@ async def verify_candidate(
     on_progress: Callable[[str], None] | None = None,
 ) -> ChannelGuide:
     """Exercise the precise candidate that later runs will consume."""
+    require_discovery_probe(probe_message)
+    require_discovery_target(str(candidate.channel.url))
     if not probe_message.strip():
         raise ChannelError("discover probe", "synthetic probe cannot be blank")
     language = require_language(language)
@@ -62,12 +69,18 @@ async def verify_candidate(
             if on_progress is not None:
                 on_progress("waiting briefly for an optional assistant greeting")
             try:
-                await asyncio.wait_for(
+                greeting = await asyncio.wait_for(
                     channel.receive(on_progress=on_progress)
                     if on_progress is not None
                     else channel.receive(),
                     limits.greeting_grace_seconds,
                 )
+                if greeting is not None and any(
+                    portability_flow(message.content) for message in greeting.messages
+                ):
+                    raise ChannelError(
+                        "discover probe", "number-portability flows are forbidden in discovery"
+                    )
             except TimeoutError:
                 pass
             except ChannelError as error:
@@ -128,6 +141,10 @@ async def verify_candidate(
                 limits.response_timeout_seconds,
             )
             _require_target_origin(channel, expected_origin)
+            if any(portability_flow(message.content) for message in response.messages):
+                raise ChannelError(
+                    "discover probe", "number-portability flows are forbidden in discovery"
+                )
             if not response.messages or any(
                 not item.content.strip() and not getattr(item, "options", [])
                 for item in response.messages
@@ -145,7 +162,6 @@ async def verify_candidate(
         if on_progress is not None:
             on_progress("native channel verification passed")
         return ChannelGuide(
-            version="1",
             channel=candidate.channel,
             validation=GuideValidation(
                 status="verified",

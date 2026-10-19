@@ -12,8 +12,8 @@ import yaml
 from pydantic import TypeAdapter, ValidationError
 
 from syntheticcx.config.models import (
+    AnyChannelGuide,
     DiscoveryDraft,
-    InterfaceChannelGuide,
     ProjectConfig,
     ReferencedProjectConfig,
 )
@@ -70,14 +70,18 @@ def _validate(document: Mapping[str, Any], model: Any) -> Any:
             if (
                 len(parts) > 1
                 and parts[0] == "channel"
-                and parts[1] in {"webchat_playwright", "webchat_playwright_stateful"}
+                and parts[1]
+                in {
+                    "webchat_playwright",
+                    "webchat_playwright_stateful",
+                    "webchat_playwright_dynamic",
+                    "whatsapp_web_playwright",
+                }
             ):
                 parts.pop(1)
             if detail["type"] in {"union_tag_invalid", "union_tag_not_found"}:
                 if parts == ["channel"]:
                     parts.append("type")
-                elif not parts and model is InterfaceChannelGuide:
-                    parts.append("version")
             location = ".".join(str(part) for part in parts) or "configuration"
             # Union-tag diagnostics include the supplied value in their message.
             message = (
@@ -107,7 +111,7 @@ def load_config_with_source_hash(path: Path) -> LoadedConfig:
     if not location.is_file():
         raise ConfigurationError("resolve channel guide", "channel_guide must name a local file")
     guide_text, guide_source = _read_text(location, "read channel guide")
-    guide = _validate(_parse_mapping(guide_text), InterfaceChannelGuide)
+    guide = _validate(_parse_mapping(guide_text), AnyChannelGuide)
     resolved = _validate(
         {
             **reference.model_dump(mode="json", exclude={"channel_guide"}),

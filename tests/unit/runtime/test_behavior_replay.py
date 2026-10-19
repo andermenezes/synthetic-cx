@@ -62,12 +62,9 @@ def source(
         "source_content_hash": "source-hash",
         "behavior_detectors": [metadata],
         "effective_config": {
-            "version": "1",
             "persona": {"initial_state": PersonaState().model_dump(), "behavioral_rules": selected},
             "behavior": {
-                "detectors": [
-                    {"id": "completed-turn", "type": "customer_turn_completed", "version": "1"}
-                ]
+                "detectors": [{"id": "completed-turn", "type": "customer_turn_completed"}]
             },
         },
     }
@@ -385,9 +382,7 @@ def test_legacy_evidence_is_actionably_unsupported(tmp_path):
 def test_earlier_counterfactual_abandonment_marks_outside_continuation(tmp_path):
     directory, events, *_ = source(tmp_path, turns=6, rules=[rule(occurrence=6, abandon=True)])
     override = tmp_path / "rules.yaml"
-    override.write_text(
-        yaml.safe_dump({"version": "1", "rules": [rule(occurrence=2, abandon=True)]})
-    )
+    override.write_text(yaml.safe_dump({"rules": [rule(occurrence=2, abandon=True)]}))
     result = replay_behavior(directory, rules=override)
     assert result.mode == "counterfactual" and result.completeness == "complete"
     assert len(result.calculated_transitions) == 2
@@ -404,10 +399,10 @@ def test_earlier_counterfactual_abandonment_marks_outside_continuation(tmp_path)
 @pytest.mark.parametrize(
     "document",
     [
-        {"version": "2", "rules": []},
-        {"version": "1", "rules": [], "persona": {}},
-        {"version": "1", "rules": [rule(), rule()]},
-        {"version": "1", "rules": [{**rule(), "when": {"signal": "unknown"}}]},
+        {"unexpected": "value", "rules": []},
+        {"rules": [], "persona": {}},
+        {"rules": [rule(), rule()]},
+        {"rules": [{**rule(), "when": {"signal": "unknown"}}]},
     ],
 )
 def test_counterfactual_rules_only_contract_is_strict(tmp_path, document):
@@ -432,6 +427,7 @@ def test_no_match_boundaries_and_run_isolation(tmp_path):
 
 def test_actual_cli_is_offline_and_no_clobber(tmp_path, monkeypatch):
     from syntheticcx import cli
+    from syntheticcx.adapters.channel import dynamic, whatsapp
     from syntheticcx.application import run as application
     from syntheticcx.runtime import behavior_signals
 
@@ -441,7 +437,6 @@ def test_actual_cli_is_offline_and_no_clobber(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(cli, "execute_run", forbidden)
     for name in [
-        "PlaywrightChannel",
         "OpenAIProvider",
         "OpenAICompatibleProvider",
         "TinyTroupePersonaSimulator",
@@ -449,6 +444,8 @@ def test_actual_cli_is_offline_and_no_clobber(tmp_path, monkeypatch):
         "prepare_settings",
     ]:
         monkeypatch.setattr(application, name, forbidden)
+    monkeypatch.setattr(whatsapp, "WhatsAppWebChannel", forbidden)
+    monkeypatch.setattr(dynamic, "DynamicPlaywrightChannel", forbidden)
     monkeypatch.setattr(behavior_signals, "prepare_behavior", forbidden)
     monkeypatch.setattr(behavior_signals, "BehaviorDetectors", forbidden)
     directory, *_ = source(tmp_path)
@@ -496,9 +493,7 @@ def test_actual_cli_counterfactual_rules_option(tmp_path):
 
     directory, *_ = source(tmp_path, turns=6, rules=[rule(occurrence=6, abandon=True)])
     override = tmp_path / "rules.yaml"
-    override.write_text(
-        yaml.safe_dump({"version": "1", "rules": [rule(occurrence=2, abandon=True)]})
-    )
+    override.write_text(yaml.safe_dump({"rules": [rule(occurrence=2, abandon=True)]}))
     output = tmp_path / "counterfactual.json"
     result = CliRunner().invoke(
         app, ["replay-behavior", str(directory), "--output", str(output), "--rules", str(override)]
@@ -526,7 +521,7 @@ def test_recorded_persona_changed_fields_preserve_counterfactual_other_values(tm
     override = tmp_path / "rules.yaml"
     alternate = rule()
     alternate["effects"] = {"frustration_delta": 0.1}
-    override.write_text(yaml.safe_dump({"version": "1", "rules": [alternate]}))
+    override.write_text(yaml.safe_dump({"rules": [alternate]}))
     result = replay_behavior(directory, rules=override)
     assert result.external_state_policy == "recorded_changed_fields"
     assert result.calculated_transitions[1].before.frustration == 0.1
@@ -566,7 +561,7 @@ def test_counterfactual_does_not_accept_corrupted_original_counters(tmp_path):
     ] = 9
     publish(directory, events, config, metadata)
     override = tmp_path / "rules.yaml"
-    override.write_text(yaml.safe_dump({"version": "1", "rules": []}))
+    override.write_text(yaml.safe_dump({"rules": []}))
     with pytest.raises(BehaviorReplayError, match="occurrence count"):
         replay_behavior(directory, rules=override)
 
@@ -652,7 +647,7 @@ def test_remaining_signals_in_abandonment_batch_are_terminal_frozen(tmp_path):
     assert result.calculated_transitions[1].before == result.calculated_transitions[1].after
     assert not result.calculated_transitions[1].applied_rule_ids
     override = tmp_path / "rules.yaml"
-    override.write_text(yaml.safe_dump({"version": "1", "rules": [rule(abandon=True)]}))
+    override.write_text(yaml.safe_dump({"rules": [rule(abandon=True)]}))
     assert len(replay_behavior(directory, rules=override).calculated_transitions) == 2
     # A transition from an otherwise acknowledged final batch is not a complete
     # batch: dropping the second transition excludes both signals.

@@ -127,7 +127,8 @@
         "kind": {
           "enum": [
             "greeting",
-            "customer_turn_completed"
+            "customer_turn_completed",
+            "assistant_update"
           ],
           "title": "Kind",
           "type": "string"

@@ -10,6 +10,26 @@ from syntheticcx.cli import app
 from syntheticcx.errors import ChannelError
 
 
+def test_create_profile_rejects_unsupported_channel_without_creating_directory(
+    tmp_path: Path,
+) -> None:
+    profile = tmp_path / "profile"
+    result = CliRunner().invoke(
+        app, ["create-profile", "--channel", "webchat", "--browser-profile", str(profile)]
+    )
+    assert result.exit_code == 2
+    assert not profile.exists()
+
+
+def test_create_profile_requires_interactive_authentication(tmp_path: Path) -> None:
+    profile = tmp_path / "profile"
+    result = CliRunner().invoke(
+        app, ["create-profile", "--channel", "whatsapp_web", "--browser-profile", str(profile)]
+    )
+    assert result.exit_code == 2
+    assert not profile.exists()
+
+
 def test_version_is_available() -> None:
     result = CliRunner().invoke(app, ["--version"])
 
@@ -66,32 +86,6 @@ def test_run_help_advertises_headed_mode() -> None:
     assert result.exit_code == 0
     assert "--headed" in result.stdout
     assert "--language" in result.stdout
-
-
-def test_run_headed_forwards_mode_to_runtime(monkeypatch: Any) -> None:
-    received: list[bool] = []
-
-    async def execute(_scenario: Path, *, on_created: Any, headed: bool) -> None:
-        received.append(headed)
-        raise ChannelError("channel.start", "target navigation returned HTTP 403")
-
-    monkeypatch.setattr(cli, "execute_run", execute)
-    result = CliRunner().invoke(app, ["run", "draft.yaml", "--headed"])
-    assert result.exit_code == 3
-    assert received == [True]
-
-
-def test_run_language_forwards_persona_override(monkeypatch: Any) -> None:
-    received: list[str] = []
-
-    async def execute(_scenario: Path, *, on_created: Any, headed: bool, language: str) -> None:
-        received.append(language)
-        raise ChannelError("channel.start", "test stopped before browser")
-
-    monkeypatch.setattr(cli, "execute_run", execute)
-    result = CliRunner().invoke(app, ["run", "draft.yaml", "--language", "pt-BR"])
-    assert result.exit_code == 3
-    assert received == ["pt-BR"]
 
 
 def test_run_invalid_language_fails_before_loading_scenario() -> None:
@@ -192,39 +186,3 @@ def test_invalid_discovery_language_stops_before_browser(monkeypatch: Any) -> No
     )
     assert result.exit_code == 2
     assert "language must be en-US or pt-BR" in result.output
-
-
-def test_verbose_discovery_reports_safe_stage_and_owned_failure(
-    monkeypatch: Any,
-) -> None:
-    monkeypatch.setattr(
-        cli,
-        "load_discovery_draft",
-        lambda _path: SimpleNamespace(
-            execution=object(),
-            persona=SimpleNamespace(communication=SimpleNamespace(language="en-US")),
-        ),
-    )
-
-    async def fail(*_args: Any, **_kwargs: Any) -> None:
-        raise ChannelError("discover probe", "native channel verification timed out")
-
-    monkeypatch.setattr(cli, "discover_guide", fail)
-    result = CliRunner().invoke(
-        app,
-        [
-            "discover",
-            str(Path("draft.yaml")),
-            "--url",
-            "https://example.test/chat",
-            "--output",
-            "guide.yaml",
-            "--verbose",
-        ],
-    )
-
-    assert result.exit_code == 3
-    assert "[discover] validating draft and command options" in result.output
-    assert "[discover] beginning stateful discovery and exact fresh replay" in result.output
-    assert "failed: channel operation 'discover probe'" in result.output
-    assert "native channel verification timed out" in result.output

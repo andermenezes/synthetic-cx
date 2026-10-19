@@ -134,19 +134,11 @@
           "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
           "title": "Type",
           "type": "string"
-        },
-        "version": {
-          "maxLength": 80,
-          "minLength": 1,
-          "pattern": "\\S",
-          "title": "Version",
-          "type": "string"
         }
       },
       "required": [
         "id",
-        "type",
-        "version"
+        "type"
       ],
       "title": "BehaviorDetectorConfig",
       "type": "object"
@@ -705,6 +697,20 @@
           "exclusiveMinimum": 0,
           "title": "Response Timeout Seconds",
           "type": "number"
+        },
+        "website_action_limit": {
+          "default": 32,
+          "maximum": 128,
+          "minimum": 1,
+          "title": "Website Action Limit",
+          "type": "integer"
+        },
+        "website_observation_limit": {
+          "default": 64,
+          "maximum": 256,
+          "minimum": 1,
+          "title": "Website Observation Limit",
+          "type": "integer"
         }
       },
       "required": [
@@ -774,6 +780,14 @@
         },
         "message_identity": {
           "$ref": "#/$defs/MessageIdentityConfig"
+        },
+        "navigation_steps": {
+          "items": {
+            "$ref": "#/$defs/WebsiteNavigationStep"
+          },
+          "maxItems": 128,
+          "title": "Navigation Steps",
+          "type": "array"
         },
         "open_locator": {
           "anyOf": [
@@ -1204,7 +1218,22 @@
           "$ref": "#/$defs/BehaviorConfig"
         },
         "channel": {
-          "$ref": "#/$defs/InterfaceChannelConfig"
+          "discriminator": {
+            "mapping": {
+              "webchat_playwright_dynamic": "#/$defs/InterfaceChannelConfig",
+              "whatsapp_web_playwright": "#/$defs/WhatsAppChannelConfig"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/InterfaceChannelConfig"
+            },
+            {
+              "$ref": "#/$defs/WhatsAppChannelConfig"
+            }
+          ],
+          "title": "Channel"
         },
         "evaluation_model": {
           "anyOf": [
@@ -1270,15 +1299,9 @@
         },
         "telemetry": {
           "$ref": "#/$defs/TelemetryConfig"
-        },
-        "version": {
-          "const": "1",
-          "title": "Version",
-          "type": "string"
         }
       },
       "required": [
-        "version",
         "scenario",
         "persona",
         "execution",
@@ -1399,15 +1422,9 @@
         },
         "telemetry": {
           "$ref": "#/$defs/TelemetryConfig"
-        },
-        "version": {
-          "const": "1",
-          "title": "Version",
-          "type": "string"
         }
       },
       "required": [
-        "version",
         "scenario",
         "persona",
         "execution",
@@ -1685,6 +1702,84 @@
         }
       },
       "title": "TelemetryConfig",
+      "type": "object"
+    },
+    "WebsiteNavigationStep": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "click",
+            "hover",
+            "follow_link",
+            "scroll_down",
+            "scroll_up",
+            "back",
+            "wait"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "locator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocatorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "title": "WebsiteNavigationStep",
+      "type": "object"
+    },
+    "WhatsAppChannelConfig": {
+      "additionalProperties": false,
+      "description": "Website entry and recipient binding; account credentials remain operational.",
+      "properties": {
+        "navigation_steps": {
+          "items": {
+            "$ref": "#/$defs/WebsiteNavigationStep"
+          },
+          "maxItems": 128,
+          "title": "Navigation Steps",
+          "type": "array"
+        },
+        "quiet_interval_seconds": {
+          "default": 1.0,
+          "exclusiveMinimum": 0,
+          "maximum": 10,
+          "title": "Quiet Interval Seconds",
+          "type": "number"
+        },
+        "recipient_environment_variable": {
+          "default": "SYNTHETICCX_WHATSAPP_RECIPIENT",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "title": "Recipient Environment Variable",
+          "type": "string"
+        },
+        "type": {
+          "const": "whatsapp_web_playwright",
+          "title": "Type",
+          "type": "string"
+        },
+        "url": {
+          "format": "uri",
+          "minLength": 1,
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "url"
+      ],
+      "title": "WhatsAppChannelConfig",
       "type": "object"
     }
   },

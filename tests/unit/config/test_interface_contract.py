@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock
 import pytest
 import yaml
 from jsonschema import Draft202012Validator
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from syntheticcx.config.loader import load_config, load_config_with_source_hash
 from syntheticcx.config.models import (
@@ -35,7 +35,6 @@ from syntheticcx.errors import ChannelError, ConfigurationError
 
 def document():
     return {
-        "version": "1",
         "channel": {
             "type": "webchat_playwright_dynamic",
             "url": "https://chat.example/support",
@@ -79,12 +78,9 @@ def test_dynamic_publication_roundtrip_and_no_clobber(tmp_path):
     assert output.read_bytes() == saved
 
 
-@pytest.mark.parametrize(
-    "version,kind", [("1", "webchat_playwright"), ("2", "webchat_playwright_stateful")]
-)
-def test_old_guides_rejected_without_conversion(tmp_path, version, kind):
+@pytest.mark.parametrize("kind", ["webchat_playwright", "webchat_playwright_stateful"])
+def test_old_guides_rejected_without_conversion(tmp_path, kind):
     old = document()
-    old["version"] = version
     old["channel"]["type"] = kind
     source = draft_file(tmp_path)
     reference = yaml.safe_load(source.read_text())
@@ -94,7 +90,7 @@ def test_old_guides_rejected_without_conversion(tmp_path, version, kind):
     with pytest.raises(ConfigurationError):
         load_config(source)
     with pytest.raises(ValidationError):
-        AnyChannelGuide.model_validate(old)
+        TypeAdapter(AnyChannelGuide).validate_python(old)
 
 
 @pytest.mark.parametrize(
@@ -156,9 +152,7 @@ def test_publication_revalidates_and_preserves_selectors():
     assert sanitized_channel_guide(guide, PrivacyConfig()) == deepcopy(
         guide.model_dump(mode="json", exclude_none=True)
     )
-    unsafe = guide.model_copy(update={"version": "2"})
-    with pytest.raises(ConfigurationError, match="invalid channel guide contract"):
-        sanitized_channel_guide(unsafe, PrivacyConfig())
+    assert "version" not in guide.model_dump()
 
 
 def test_publication_rolls_back_when_ordinary_loader_rejects(tmp_path, monkeypatch):

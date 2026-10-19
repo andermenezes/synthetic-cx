@@ -54,7 +54,7 @@ class BehavioralObservation(DomainModel):
     """
 
     observation_id: UUID4 = Field(default_factory=uuid4)
-    kind: Literal["greeting", "customer_turn_completed"]
+    kind: Literal["greeting", "customer_turn_completed", "assistant_update"]
     messages: tuple[Message, ...] = ()
     evidence_event_ids: tuple[EvidenceReference, ...] = Field(min_length=1)
     state: PersonaState
@@ -83,8 +83,10 @@ class BehavioralObservation(DomainModel):
         if self.kind == "greeting":
             if self.turn_count != 0 or self.last_customer_message is not None:
                 raise ValueError("greeting precedes any customer turn")
-        elif self.turn_count == 0 or not self.messages:
+        elif self.kind == "customer_turn_completed" and (self.turn_count == 0 or not self.messages):
             raise ValueError("completed customer turn requires a turn and assistant response")
+        elif self.kind == "assistant_update" and not self.messages:
+            raise ValueError("assistant update requires fresh assistant messages")
         return self
 
 

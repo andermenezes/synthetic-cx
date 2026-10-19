@@ -246,10 +246,7 @@ def prepare_behavior(
             registration = registrations.get(configured.type)
             if registration is None:
                 raise ValueError("unregistered detector")
-            if (
-                registration.detector_type != configured.type
-                or registration.version != configured.version
-            ):
+            if registration.detector_type != configured.type:
                 raise ValueError("unavailable implementation")
             metadata = BehavioralDetectorMetadata(
                 detector_id=configured.id,

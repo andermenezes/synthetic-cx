@@ -21,6 +21,11 @@ class DiscoveryDecision(StrictModel):
         "observe",
         "wait",
         "open",
+        "hover",
+        "follow_link",
+        "scroll_down",
+        "scroll_up",
+        "back",
         "bind_scope",
         "bind_reader",
         "bind_state",
@@ -49,6 +54,17 @@ class DiscoveryDecision(StrictModel):
         ]
         | None
     )
+
+
+class WebsiteBroker(Protocol):
+    """Native website evidence and opaque single-revision navigation only."""
+
+    chat_hint: str | None
+
+    async def observe_website(self) -> dict[str, Any]: ...
+    async def act_website(
+        self, revision: str, action: str, target_id: str | None = None
+    ) -> None: ...
 
 
 class LearningBroker(Protocol):

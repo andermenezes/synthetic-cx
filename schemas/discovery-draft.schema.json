@@ -134,19 +134,11 @@
           "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
           "title": "Type",
           "type": "string"
-        },
-        "version": {
-          "maxLength": 80,
-          "minLength": 1,
-          "pattern": "\\S",
-          "title": "Version",
-          "type": "string"
         }
       },
       "required": [
         "id",
-        "type",
-        "version"
+        "type"
       ],
       "title": "BehaviorDetectorConfig",
       "type": "object"
@@ -680,6 +672,20 @@
           "exclusiveMinimum": 0,
           "title": "Response Timeout Seconds",
           "type": "number"
+        },
+        "website_action_limit": {
+          "default": 32,
+          "maximum": 128,
+          "minimum": 1,
+          "title": "Website Action Limit",
+          "type": "integer"
+        },
+        "website_observation_limit": {
+          "default": 64,
+          "maximum": 256,
+          "minimum": 1,
+          "title": "Website Observation Limit",
+          "type": "integer"
         }
       },
       "required": [
@@ -1295,15 +1301,9 @@
     },
     "telemetry": {
       "$ref": "#/$defs/TelemetryConfig"
-    },
-    "version": {
-      "const": "1",
-      "title": "Version",
-      "type": "string"
     }
   },
   "required": [
-    "version",
     "scenario",
     "persona",
     "execution",

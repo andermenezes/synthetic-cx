@@ -4,6 +4,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from typing import TypedDict
 
 import typer
 from pydantic import AnyHttpUrl, TypeAdapter, ValidationError
@@ -22,6 +23,13 @@ from syntheticcx.runtime.behavior_replay import (
     replay_behavior,
     write_behavior_replay,
 )
+
+
+class _DiscoveryChannelOptions(TypedDict, total=False):
+    channel_type: str
+    browser_profile: Path | None
+    recipient: str | None
+
 
 app = typer.Typer(
     add_completion=False,
@@ -45,6 +53,48 @@ def _choose_in_place(interactive: bool) -> bool:
         typer.echo("Configuration error: choose c or i; no guide was written.", err=True)
         raise typer.Exit(2)
     return choice.lower() == "i"
+
+
+@app.command("create-profile")
+def create_profile(
+    channel: str = typer.Option(..., "--channel", help="Session channel: whatsapp_web."),
+    browser_profile: Path | None = typer.Option(
+        None, "--browser-profile", help="Dedicated profile directory to create or reopen."
+    ),
+) -> None:
+    """Create a dedicated browser profile and log in manually."""
+    if channel != "whatsapp_web":
+        typer.echo("Configuration error: supported profile channels: whatsapp_web.", err=True)
+        raise typer.Exit(2)
+    if not sys.stdin.isatty():
+        typer.echo(
+            "Configuration error: profile creation requires an interactive terminal.", err=True
+        )
+        raise typer.Exit(2)
+    profile = browser_profile or Path.home() / ".syntheticcx" / "whatsapp-profile"
+
+    def confirm() -> None:
+        input("Log in to WhatsApp Web, then press Enter here to save and close: ")
+
+    try:
+        from syntheticcx.application.profile import create_browser_profile
+
+        saved = create_browser_profile(profile, confirm=confirm)
+    except ConfigurationError as error:
+        typer.echo(f"Configuration error: {error}", err=True)
+        raise typer.Exit(2) from None
+    except (KeyboardInterrupt, EOFError):
+        typer.echo("Profile setup cancelled after browser cleanup.", err=True)
+        raise typer.Exit(130) from None
+    except Exception:
+        typer.echo(
+            "Profile setup failed. Ensure Chromium is installed and the profile is not in use.",
+            err=True,
+        )
+        raise typer.Exit(3) from None
+    typer.echo(f"Browser profile saved: {saved}")
+    typer.echo("Login was manual; authentication has not been automatically verified.")
+    typer.echo(f'Use --browser-profile "{saved}" for discovery and runs.')
 
 
 @app.command()
@@ -85,8 +135,19 @@ def discover(
         "--verbose",
         help="Show safe discovery progress and owned failure details.",
     ),
+    channel: str = typer.Option(
+        "webchat", "--channel", help="Entry channel: webchat or whatsapp_web."
+    ),
+    browser_profile: Path | None = typer.Option(
+        None, "--browser-profile", help="Dedicated authenticated WhatsApp browser profile."
+    ),
+    recipient: str | None = typer.Option(
+        None,
+        "--recipient",
+        help="WhatsApp business recipient in international digits; overrides the environment.",
+    ),
 ) -> None:
-    """Discover and verify web-chat controls, then save a reusable guide."""
+    """Discover a website chat entry and verify a reusable channel guide."""
 
     def progress(message: str) -> None:
         typer.echo(f"[discover] {message}", err=True)
@@ -94,6 +155,18 @@ def discover(
     try:
         if verbose:
             progress("validating draft and command options")
+        if channel not in {"webchat", "whatsapp_web"}:
+            raise ConfigurationError(
+                "discover channel", "supported channels: webchat, whatsapp_web"
+            )
+        if channel == "whatsapp_web" and browser_profile is None:
+            raise ConfigurationError("WhatsApp profile", "--browser-profile is required")
+        if channel == "webchat" and browser_profile is not None:
+            raise ConfigurationError(
+                "browser profile", "browser profiles are only used by WhatsApp"
+            )
+        if channel == "webchat" and recipient is not None:
+            raise ConfigurationError("recipient", "--recipient is only used by WhatsApp")
         draft = load_discovery_draft(scenario)
         target_url = TypeAdapter(AnyHttpUrl).validate_python(url)
         if target_url.username is not None or target_url.password is not None:
@@ -120,7 +193,12 @@ def discover(
         raise typer.Exit(2) from None
     try:
         if verbose:
-            progress("beginning stateful discovery and exact fresh replay")
+            progress("beginning channel discovery and fresh browser verification")
+        channel_options: _DiscoveryChannelOptions = {}
+        if channel == "whatsapp_web":
+            channel_options = {"channel_type": channel, "browser_profile": browser_profile}
+            if recipient is not None:
+                channel_options["recipient"] = recipient
         guide = asyncio.run(
             discover_guide(
                 scenario,
@@ -132,6 +210,7 @@ def discover(
                 probe_message=probe_message,
                 language=selected_language,
                 on_progress=progress if verbose else None,
+                **channel_options,
             )
         )
     except ConfigurationError as error:
@@ -201,8 +280,16 @@ def run(
     language: str | None = typer.Option(
         None, "--language", help="Override the persona language: en-US or pt-BR."
     ),
+    browser_profile: Path | None = typer.Option(
+        None, "--browser-profile", help="Dedicated authenticated WhatsApp browser profile."
+    ),
+    recipient: str | None = typer.Option(
+        None,
+        "--recipient",
+        help="WhatsApp business recipient in international digits; overrides the environment.",
+    ),
 ) -> None:
-    """Run one scenario and persona through a configured web chat."""
+    """Run one synthetic customer journey and evaluate its conversation goal."""
 
     def created(run_id: str, directory: Path) -> None:
         typer.echo(f"Run ID: {run_id} | Evidence: {directory}")
@@ -210,15 +297,16 @@ def run(
 
     try:
         selected_language = require_language(language) if language is not None else None
-        if selected_language is not None:
-            execution = execute_run(
-                scenario, on_created=created, headed=headed, language=selected_language
+        result = asyncio.run(
+            execute_run(
+                scenario,
+                on_created=created,
+                headed=headed,
+                language=selected_language,
+                browser_profile=browser_profile,
+                recipient=recipient,
             )
-        elif headed:
-            execution = execute_run(scenario, on_created=created, headed=True)
-        else:
-            execution = execute_run(scenario, on_created=created)
-        result = asyncio.run(execution)
+        )
     except ConfigurationError as error:
         typer.echo(f"Configuration error: {error}", err=True)
         raise typer.Exit(2) from None

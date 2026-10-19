@@ -1,12 +1,12 @@
-"""Versioned YAML models for SyntheticCX."""
+"""YAML models for SyntheticCX configuration."""
 
 from __future__ import annotations
 
 import ipaddress
 import re
 import unicodedata
-from typing import Annotated, Any, Literal, TypeAlias
-from urllib.parse import parse_qs, urlsplit
+from typing import Annotated, Any, ClassVar, Literal, TypeAlias
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from pydantic import (
     AnyHttpUrl,
@@ -126,14 +126,13 @@ class BehaviorRule(StrictModel):
 class BehaviorDetectorConfig(StrictModel):
     id: BehaviorIdentifier
     type: BehaviorIdentifier
-    version: BehaviorDetectorVersion
     parameters: JsonObject = Field(default_factory=dict)
 
 
 def _default_behavior_detectors() -> list[BehaviorDetectorConfig]:
     return [
-        BehaviorDetectorConfig(id="repeated-information", type="repeated_information", version="1"),
-        BehaviorDetectorConfig(id="completed-turn", type="customer_turn_completed", version="1"),
+        BehaviorDetectorConfig(id="repeated-information", type="repeated_information"),
+        BehaviorDetectorConfig(id="completed-turn", type="customer_turn_completed"),
     ]
 
 
@@ -345,6 +344,17 @@ class LocatorConfig(StrictModel):
         return self
 
 
+class WebsiteNavigationStep(StrictModel):
+    action: Literal["click", "hover", "follow_link", "scroll_down", "scroll_up", "back", "wait"]
+    locator: LocatorConfig | None = None
+
+    @model_validator(mode="after")
+    def validate_locator(self) -> WebsiteNavigationStep:
+        if (self.action in {"click", "hover", "follow_link"}) != (self.locator is not None):
+            raise ValueError("website control actions require a locator; other actions forbid one")
+        return self
+
+
 class MessageIdentityConfig(StrictModel):
     strategy: Literal["attribute", "dom_node", "actor_sequence_content_hash"]
     attribute_name: str | None = None
@@ -516,6 +526,7 @@ class StatefulChannelConfig(StrictModel):
     type: Literal["webchat_playwright_stateful"]
     url: AnyHttpUrl
     open_locator: LocatorConfig | None = None
+    navigation_steps: list[WebsiteNavigationStep] = Field(default_factory=list, max_length=128)
     frame_locator: LocatorConfig | None = None
     ownership: ChatOwnership
     assistant_message_locator: LocatorConfig
@@ -602,6 +613,7 @@ class InterfaceChannelConfig(StrictModel):
     type: Literal["webchat_playwright_dynamic"]
     url: AnyHttpUrl
     open_locator: LocatorConfig | None = None
+    navigation_steps: list[WebsiteNavigationStep] = Field(default_factory=list, max_length=128)
     frame_locator: LocatorConfig | None = None
     ownership: ChatOwnership
     assistant_message_locator: LocatorConfig
@@ -642,7 +654,33 @@ class InterfaceChannelConfig(StrictModel):
         return self
 
 
-ResolvedChannelConfig = InterfaceChannelConfig
+class WhatsAppChannelConfig(StrictModel):
+    """Website entry and recipient binding; account credentials remain operational."""
+
+    type: Literal["whatsapp_web_playwright"]
+    url: AnyHttpUrl
+    navigation_steps: list[WebsiteNavigationStep] = Field(default_factory=list, max_length=128)
+    recipient_environment_variable: EnvironmentVariable = "SYNTHETICCX_WHATSAPP_RECIPIENT"
+    quiet_interval_seconds: float = Field(default=1.0, gt=0, le=10)
+
+    @field_validator("url")
+    @classmethod
+    def forbid_url_credentials(cls, value: AnyHttpUrl) -> AnyHttpUrl:
+        if value.username is not None or value.password is not None:
+            raise ValueError("WhatsApp website URL must not contain credentials")
+        if value.query or value.fragment:
+            raise ValueError("WhatsApp website URL must not contain query data or a fragment")
+        path = value.path or ""
+        while (decoded := unquote(path)) != path:
+            path = decoded
+        if re.search(r"\+?[0-9][0-9 ().-]{4,}[0-9]", path):
+            raise ValueError("WhatsApp website URL must not contain a recipient identifier")
+        return value
+
+
+ResolvedChannelConfig = Annotated[
+    InterfaceChannelConfig | WhatsAppChannelConfig, Field(discriminator="type")
+]
 
 
 class ExecutionLimits(StrictModel):
@@ -650,6 +688,8 @@ class ExecutionLimits(StrictModel):
     journey_timeout_seconds: PositiveSeconds
     greeting_grace_seconds: float = Field(ge=0)
     browser_action_timeout_seconds: PositiveSeconds
+    website_action_limit: int = Field(default=32, ge=1, le=128, strict=True)
+    website_observation_limit: int = Field(default=64, ge=1, le=256, strict=True)
     echo_observation_seconds: PositiveSeconds = 0.25
     response_timeout_seconds: PositiveSeconds
     model_timeout_seconds: PositiveSeconds
@@ -759,7 +799,7 @@ class ReportingConfig(StrictModel):
 class ProjectSettings(StrictModel):
     """Fields shared by inline runs, referenced runs, and discovery drafts."""
 
-    version: Literal["1"]
+    version: ClassVar[Literal["1"]] = "1"
     scenario: ScenarioConfig
     persona: PersonaConfig
     behavior: BehaviorConfig = Field(default_factory=BehaviorConfig)
@@ -837,7 +877,6 @@ class GuideValidation(StrictModel):
 class ChannelGuide(StrictModel):
     """Verified channel controls imported by a referenced run document."""
 
-    version: Literal["1"]
     channel: ChannelConfig
     validation: GuideValidation
 
@@ -897,7 +936,6 @@ class StatefulGuideValidation(StrictModel):
 
 
 class StatefulChannelGuide(StrictModel):
-    version: Literal["2"]
     channel: StatefulChannelConfig
     validation: StatefulGuideValidation
 
@@ -959,9 +997,8 @@ class InterfaceGuideValidation(StrictModel):
 
 
 class InterfaceChannelGuide(StrictModel):
-    """Public dynamic interface contract; legacy guide versions are not converted."""
+    """Public dynamic interface contract."""
 
-    version: Literal["1"]
     channel: InterfaceChannelConfig
     validation: InterfaceGuideValidation
 
@@ -984,8 +1021,50 @@ class InterfaceChannelGuide(StrictModel):
         return self
 
 
-# Compatibility import name only: this no longer accepts either legacy guide shape.
-AnyChannelGuide = InterfaceChannelGuide
+class WhatsAppGuideValidation(StrictModel):
+    """Browser replay evidence; it never implies a reset business conversation."""
+
+    status: Literal["verified"]
+    verified_at: AwareDatetime
+    target_origin: AnyHttpUrl
+    observed_behaviors: list[Literal["open", "send", "receive", "completion"]]
+    replay_verified: Literal[True]
+    server_state_reset: Literal[False] = False
+
+    @model_validator(mode="after")
+    def validate_evidence(self) -> WhatsAppGuideValidation:
+        required = {"open", "send", "receive", "completion"}
+        if set(self.observed_behaviors) != required or len(self.observed_behaviors) != 4:
+            raise ValueError("WhatsApp guide requires a complete exchange and browser replay")
+        return self
+
+
+class WhatsAppChannelGuide(StrictModel):
+    """Verified website-to-WhatsApp handoff without account data or conversation history."""
+
+    channel: WhatsAppChannelConfig
+    validation: WhatsAppGuideValidation
+
+    @model_validator(mode="after")
+    def validate_boundary(self) -> WhatsAppChannelGuide:
+        if not self.channel.navigation_steps:
+            raise ValueError("verified WhatsApp guide requires a nonempty website navigation route")
+        target = urlsplit(str(self.channel.url))
+        origin = urlsplit(str(self.validation.target_origin))
+        if (
+            (target.scheme, target.hostname, target.port)
+            != (origin.scheme, origin.hostname, origin.port)
+            or origin.username is not None
+            or origin.password is not None
+            or origin.path not in {"", "/"}
+            or origin.query
+            or origin.fragment
+        ):
+            raise ValueError("validation.target_origin must match channel.url origin")
+        return self
+
+
+AnyChannelGuide = InterfaceChannelGuide | WhatsAppChannelGuide
 
 
 class ResolvedModelSettings(StrictModel):

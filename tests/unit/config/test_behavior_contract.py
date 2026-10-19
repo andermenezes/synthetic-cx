@@ -1,4 +1,4 @@
-"""Structural behavioral configuration contracts and independent version cutovers."""
+"""Structural behavioral configuration contracts without user-facing version fields."""
 
 from __future__ import annotations
 
@@ -42,13 +42,12 @@ def rule(**changes: Any) -> dict[str, Any]:
 
 
 def detector(**changes: Any) -> dict[str, Any]:
-    return {"id": "custom-detector", "type": "extension.custom.v1", "version": "1", **changes}
+    return {"id": "custom-detector", "type": "extension.custom.v1", **changes}
 
 
 @pytest.fixture
 def document() -> dict[str, Any]:
     return {
-        "version": "1",
         "scenario": {
             "id": "billing",
             "description": "Explain an invoice.",
@@ -96,7 +95,6 @@ def document() -> dict[str, Any]:
 
 def guide_document(channel: dict[str, Any]) -> dict[str, Any]:
     return {
-        "version": "1",
         "channel": channel,
         "validation": {
             "status": "verified",
@@ -300,15 +298,14 @@ def test_optional_behavior_prose_rejects_invalid_values(
             BehaviorRule.model_validate(rule(description=value))
 
 
-@pytest.mark.parametrize("version", ["1", "custom-build", "x" * 80])
-def test_detector_version_is_bounded_meaningful_text(version: str) -> None:
-    assert BehaviorDetectorConfig.model_validate(detector(version=version)).version == version
+def test_detector_schema_does_not_expose_implementation_versions() -> None:
+    assert "version" not in BehaviorDetectorConfig.model_fields
+    assert "version" not in BehaviorDetectorConfig.model_json_schema()["properties"]
 
 
-@pytest.mark.parametrize("version", ["", " \n", "x" * 81, 1, None])
-def test_detector_version_rejects_invalid_values(version: Any) -> None:
-    with pytest.raises(ValidationError):
-        BehaviorDetectorConfig.model_validate(detector(version=version))
+def test_detector_implementation_version_is_owned_by_registration() -> None:
+    config = BehaviorDetectorConfig.model_validate(detector())
+    assert not hasattr(config, "version")
 
 
 def test_detector_parameters_accept_nested_json_objects() -> None:
@@ -413,9 +410,7 @@ def test_omitted_detector_selection_supports_both_builtin_rules(document: dict[s
     assert prepared.persona.credential.get_secret_value() == "test-credential"
 
 
-def test_legacy_flat_rule_shape_is_rejected_under_current_journey_version(
-    document: dict[str, Any],
-) -> None:
+def test_legacy_flat_rule_shape_is_rejected(document: dict[str, Any]) -> None:
     document["persona"]["behavioral_rules"] = [
         {"id": "legacy", "priority": 10, "event": "repeated_information", "frustration_delta": 0.2}
     ]
@@ -423,12 +418,13 @@ def test_legacy_flat_rule_shape_is_rejected_under_current_journey_version(
         load_config_text(yaml.safe_dump(document))
 
 
-@pytest.mark.parametrize("version", ["2", 2, 3, True, ["1"], {"unsupported": "1"}])
-def test_unsupported_journey_versions_fail_as_configuration_errors(
-    version: Any, document: dict[str, Any]
+def test_journey_configuration_does_not_expose_a_version_field(
+    document: dict[str, Any],
 ) -> None:
-    document["version"] = version
+    assert "version" not in ProjectConfig.model_fields
+    assert "version" not in ProjectConfig.model_json_schema()["properties"]
     with pytest.raises(ConfigurationError):
+        document["version"] = "1"
         load_config_text(yaml.safe_dump(document))
 
 
@@ -444,21 +440,17 @@ def test_journey_one_references_guide_one_without_changing_guide_contract(
     loaded = load_config_with_source_hash(journey_path)
     assert loaded.config.version == "1"
     assert loaded.guide_source_hash is not None
-    assert InterfaceChannelGuide.model_validate(guide).version == "1"
+    assert "version" not in InterfaceChannelGuide.model_validate(guide).model_dump()
     changed = deepcopy(guide)
-    changed["version"] = "2"
+    changed["version"] = "1"
     with pytest.raises(ValidationError):
         InterfaceChannelGuide.model_validate(changed)
-    guide_path.write_text(yaml.safe_dump(changed))
-    with pytest.raises(ConfigurationError):
-        load_config_with_source_hash(journey_path)
 
 
 @pytest.mark.parametrize(
     "detectors,rules",
     [
         ([detector(type="unregistered_type")], []),
-        ([detector(type="repeated_information", version="2")], []),
         ([detector(type="repeated_information", parameters={"unsupported": True})], []),
         (
             [

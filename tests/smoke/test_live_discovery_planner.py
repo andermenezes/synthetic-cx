@@ -113,7 +113,6 @@ def test_real_configured_planner_learns_unmarked_loopback_widget(tmp_path):
         server.server_close()
         thread.join(timeout=5)
     assert isinstance(guide, InterfaceChannelGuide)
-    assert guide.version == "1"
     assert load_config(completed).channel.type == "webchat_playwright_dynamic"
     assert not hasattr(guide.channel, "verification_recipe")
     assert events.count("probe") % 2 == 0

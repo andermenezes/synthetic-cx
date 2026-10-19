@@ -55,7 +55,6 @@ class BehaviorReplayError(ConfigurationError):
 class BehaviorReplayRules(StrictModel):
     """Rules-only counterfactual input; cannot replace the source observations."""
 
-    version: Literal["1"]
     rules: list[BehaviorRule] = Field(max_length=32)
 
     @model_validator(mode="after")
@@ -93,7 +92,7 @@ def _load_rules(path: Path, advertised: set[str]) -> list[BehaviorRule]:
         document = BehaviorReplayRules.model_validate(yaml.safe_load(source))
     except (OSError, UnicodeError, yaml.YAMLError, ValidationError, ValueError):
         raise BehaviorReplayError(
-            "invalid_rules", "rules must be a version-1 rules-only mapping with valid unique rules"
+            "invalid_rules", "rules must be a rules-only mapping with valid unique rules"
         ) from None
     if any(rule.when.signal not in advertised for rule in document.rules):
         raise BehaviorReplayError("invalid_rules", "rule references an unrecorded detector signal")
@@ -140,7 +139,7 @@ def _metadata(
             "legacy run lacks behavioral detector evidence; "
             "record a new run with behavioral journaling",
         )
-    if effective.get("version") != "1" or metadata.metadata.configuration_version != "1":
+    if metadata.metadata.configuration_version != "1":
         raise BehaviorReplayError(
             "unsupported_source", "source configuration version is unsupported"
         )
@@ -158,10 +157,8 @@ def _metadata(
     detector_metadata = artifact.behavior_detectors
     if detector_metadata != metadata.metadata.behavior_detectors:
         raise BehaviorReplayError("invalid_source", "detector metadata snapshots disagree")
-    configured = [(item.id, item.type, item.version) for item in selection.detectors]
-    recorded = [
-        (item.detector_id, item.detector_type, item.detector_version) for item in detector_metadata
-    ]
+    configured = [(item.id, item.type) for item in selection.detectors]
+    recorded = [(item.detector_id, item.detector_type) for item in detector_metadata]
     names = [name for item in detector_metadata for name in item.output_signals]
     if configured != recorded or len(names) != len(set(names)):
         raise BehaviorReplayError(
@@ -295,6 +292,11 @@ def _validate_batches(
                         "invalid_source", "greeting lacks conversation-start evidence"
                     )
                 greeted = True
+            elif boundary.kind == "assistant_update":
+                if not greeted or boundary.turn_count != previous_turn:
+                    raise BehaviorReplayError(
+                        "invalid_source", "assistant-update observation is out of order"
+                    )
             elif not greeted or boundary.turn_count != previous_turn + 1:
                 raise BehaviorReplayError(
                     "invalid_source", "completed-turn observation is out of order"
@@ -383,9 +385,13 @@ def _validate_batches(
                     raise BehaviorReplayError(
                         "invalid_source", "detector signal batch exceeds its bound"
                     )
-                if boundary.kind == "greeting" and signal.signal == "customer_turn_completed":
+                if (
+                    boundary.kind != "customer_turn_completed"
+                    and signal.signal == "customer_turn_completed"
+                ):
                     raise BehaviorReplayError(
-                        "invalid_source", "greeting cannot complete a customer turn"
+                        "invalid_source",
+                        "supplemental observations cannot complete a customer turn",
                     )
             if any(
                 not set(change.data.applied_rule_ids).issubset(rule_ids)

@@ -155,7 +155,6 @@ def run_native_case(
                     {
                         "id": "custom-patience",
                         "type": "custom_patience",
-                        "version": "1",
                         "parameters": {"after_turn": 2, "private_note": "PRIVATE-DETECTOR-CANARY"},
                     }
                 ]
@@ -199,7 +198,7 @@ def test_native_version_one_rule_and_actual_offline_replay(
     assert matching[0]["data"]["after"]["abandoned"] is True
     assert report["repetition_count"] == (2 if case == "repeated_information" else 0)
     config = yaml.safe_load((directory / "config.yaml").read_text())
-    assert config["effective_config"]["version"] == "1"
+    assert "version" not in config["effective_config"]
     positions = {event["id"]: event["sequence"] for event in events}
     for event in events:
         if event["type"] == "behavioral_signal_recorded":
@@ -244,7 +243,6 @@ def test_native_version_one_rule_and_actual_offline_replay(
         rules.write_text(
             yaml.safe_dump(
                 {
-                    "version": "1",
                     "rules": [
                         {
                             "id": "earlier-exit",

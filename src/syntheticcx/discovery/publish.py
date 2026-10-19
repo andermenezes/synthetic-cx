@@ -12,7 +12,7 @@ import yaml
 from pydantic import ValidationError
 
 from syntheticcx.config.loader import load_config, load_discovery_draft
-from syntheticcx.config.models import InterfaceChannelGuide, ReferencedProjectConfig
+from syntheticcx.config.models import AnyChannelGuide, ReferencedProjectConfig
 from syntheticcx.config.sanitize import sanitized_channel_guide
 from syntheticcx.errors import ConfigurationError
 from syntheticcx.language import Language
@@ -55,7 +55,7 @@ def _replace(path: Path, data: bytes) -> None:
 def publish_guide(
     source: Path,
     output: Path,
-    guide: InterfaceChannelGuide,
+    guide: AnyChannelGuide,
     *,
     in_place: bool,
     language: Language | None = None,

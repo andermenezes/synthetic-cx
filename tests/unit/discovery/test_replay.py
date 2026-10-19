@@ -94,7 +94,6 @@ async def test_fresh_option_id_and_exact_coverage():
     broker, learned = setup_replay([{"id": "fresh-id", "label": " Help "}])
     guide = await replay(broker, learned, budget=DiscoveryBudget.create(30))
     broker.select_option.assert_awaited_once_with("fresh-id")
-    assert guide.version == "1"
     assert guide.channel.type == "webchat_playwright_dynamic"
     assert "select_option" in guide.validation.observed_behaviors
     assert not hasattr(guide.channel, "states")

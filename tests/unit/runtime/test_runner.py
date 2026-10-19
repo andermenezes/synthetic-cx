@@ -2406,7 +2406,7 @@ def test_behavior_failure_propagates_through_owner_as_infrastructure_error(faile
             update={"behavioral_rules": []}
         )
         selected = BehaviorConfig.model_validate(
-            {"detectors": [{"id": "consumer", "type": "custom", "version": "1"}]}
+            {"detectors": [{"id": "consumer", "type": "custom"}]}
         )
 
         class Detector:
@@ -2467,3 +2467,59 @@ def test_behavior_failure_propagates_through_owner_as_infrastructure_error(faile
         )
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(
+    ("route_length", "journey_timeout", "expected_reason"),
+    [(0, 200, "channel_error"), (4, 200, "goal_believed_complete"), (4, 5, "journey_timeout")],
+)
+def test_startup_allows_replaying_multiple_actions_but_retains_journey_deadline(
+    route_length, journey_timeout, expected_reason
+):
+    class StartingChannel(Channel):
+        def __init__(self):
+            super().__init__()
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def start(self):
+            self.started += 1
+            self.entered.set()
+            await self.release.wait()
+
+    async def scenario():
+        from syntheticcx.config.models import WebsiteNavigationStep
+
+        config = load_config(Path("examples/telecom/scenario.yaml"))
+        config = config.model_copy(
+            update={
+                "channel": config.channel.model_copy(
+                    update={
+                        "navigation_steps": [WebsiteNavigationStep(action="wait")] * route_length,
+                    }
+                ),
+            }
+        )
+        clock = ManualClock(NOW)
+        channel = StartingChannel()
+        operation = asyncio.create_task(
+            exercise(
+                channel,
+                Persona(),
+                Storage(),
+                clock=clock,
+                project_config=config,
+                timeout=journey_timeout,
+            )
+        )
+        await channel.entered.wait()
+        await clock.advance(config.execution.browser_action_timeout_seconds + 1)
+        for _ in range(5):
+            await asyncio.sleep(0)
+        channel.release.set()
+        result = await operation
+        assert result.termination_reason == expected_reason
+        assert channel.closed == 1
+        assert bool(channel.sent) == (expected_reason == "goal_believed_complete")
+
+    asyncio.run(scenario())

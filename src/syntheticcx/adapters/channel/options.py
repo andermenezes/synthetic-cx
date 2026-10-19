@@ -15,6 +15,7 @@ from playwright.async_api import Error as PlaywrightError
 
 from syntheticcx.adapters.channel.reading import READING_HELPERS
 from syntheticcx.config.models import ChannelConfig, LocatorConfig
+from syntheticcx.discovery.policy import portability_flow
 from syntheticcx.domain.models import ReplyOption
 from syntheticcx.errors import ChannelError
 
@@ -145,6 +146,8 @@ def eligibility(
     if not metadata.get("visible") or not metadata.get("enabled"):
         return "unavailable_control"
     context, choice = _words(prose), _words(label)
+    if not dynamic_runtime and portability_flow(prose, label):
+        return "portability_forbidden_in_discovery"
     if dynamic_runtime:
         if _UTILITY.search(choice):
             return "utility_control"

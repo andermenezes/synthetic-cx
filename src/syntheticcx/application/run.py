@@ -14,7 +14,6 @@ from pathlib import Path
 from uuid import uuid4
 
 from syntheticcx import __version__
-from syntheticcx.adapters.channel.playwright import PlaywrightChannel
 from syntheticcx.adapters.llm import OpenAICompatibleProvider, OpenAIProvider
 from syntheticcx.adapters.llm.preflight import CapabilityPreflight, preflight_models
 from syntheticcx.adapters.persona.tinytroupe import TinyTroupePersonaSimulator
@@ -146,10 +145,35 @@ async def execute_run(
     headed: bool = False,
     language: Language | None = None,
     behavior_registry: Mapping[str, DetectorRegistration] | None = None,
+    browser_profile: Path | None = None,
+    recipient: str | None = None,
 ) -> RunExecution:
     """Validate, probe, compose, execute, and read the committed report."""
     loaded = load_config_with_source_hash(path)
     config = loaded.config
+    whatsapp_recipient: str | None = None
+    if config.channel.type == "whatsapp_web_playwright":
+        from syntheticcx.adapters.channel.whatsapp import (
+            resolve_recipient,
+            validate_browser_profile,
+        )
+
+        if browser_profile is None:
+            raise ConfigurationError("WhatsApp profile", "--browser-profile is required")
+        browser_profile = validate_browser_profile(browser_profile)
+        whatsapp_recipient = resolve_recipient(config.channel, recipient)
+        if not config.channel.navigation_steps:
+            raise ConfigurationError(
+                "WhatsApp channel", "discover the website entry before running"
+            )
+        if config.storage.store_screenshots or config.storage.store_video:
+            raise ConfigurationError(
+                "WhatsApp privacy", "account-wide screenshots and video are not supported"
+            )
+    elif browser_profile is not None:
+        raise ConfigurationError("browser profile", "browser profiles are only used by WhatsApp")
+    elif recipient is not None:
+        raise ConfigurationError("recipient", "--recipient is only used by WhatsApp")
     if language is not None:
         selected = require_language(language)
         config = config.model_copy(
@@ -167,10 +191,18 @@ async def execute_run(
         config.behavior, config.persona.behavioral_rules, behavior_registry
     )
     settings = prepare_settings(config, behavior_registry=behavior_registry)
-    secrets = (
+    secrets: tuple[str, ...] = (
         settings.persona.credential.get_secret_value(),
         settings.evaluation.credential.get_secret_value(),
     )
+    if config.channel.type == "whatsapp_web_playwright":
+        assert whatsapp_recipient is not None
+        recipient_value = (
+            recipient
+            if recipient is not None
+            else os.environ.get(config.channel.recipient_environment_variable, "")
+        )
+        secrets += (whatsapp_recipient, recipient_value)
     redactor = Redactor(
         config.privacy,
         resolved_secrets=secrets,
@@ -201,14 +233,8 @@ async def execute_run(
                 {key: value for key, value in rule.items() if key != "description"}
                 for rule in original_persona["behavioral_rules"]
             ]
-            or [
-                {key: detector[key] for key in ("id", "type", "version")}
-                for detector in safe_detectors
-            ]
-            != [
-                {key: detector[key] for key in ("id", "type", "version")}
-                for detector in original_detectors
-            ]
+            or [{key: detector[key] for key in ("id", "type")} for detector in safe_detectors]
+            != [{key: detector[key] for key in ("id", "type")} for detector in original_detectors]
             or any(
                 redactor.redact_model(metadata) != metadata
                 for metadata in prepared_behavior.metadata
@@ -302,7 +328,22 @@ async def execute_run(
             redactor=redactor,
             provider=provider,
         )
-        if config.channel.type == "webchat_playwright_dynamic":
+        if config.channel.type == "whatsapp_web_playwright":
+            from syntheticcx.adapters.channel.whatsapp import WhatsAppWebChannel
+
+            assert browser_profile is not None
+            channel = WhatsAppWebChannel(
+                config.channel,
+                config.execution,
+                browser_profile=browser_profile,
+                recipient=whatsapp_recipient,
+                headed=headed,
+                action_authorizations=[
+                    authorization.model_dump(mode="json")
+                    for authorization in config.scenario.action_authorizations
+                ],
+            )
+        else:
             from syntheticcx.adapters.channel.dynamic import DynamicPlaywrightChannel
 
             channel = DynamicPlaywrightChannel(
@@ -313,16 +354,6 @@ async def execute_run(
                     authorization.model_dump(mode="json")
                     for authorization in config.scenario.action_authorizations
                 ],
-            )
-        elif config.channel.type == "webchat_playwright_stateful":
-            from syntheticcx.adapters.channel.stateful import StatefulPlaywrightChannel
-
-            channel = StatefulPlaywrightChannel(config.channel, config.execution, headed=headed)
-        else:
-            channel = (
-                PlaywrightChannel(config.channel, config.execution, headed=True)
-                if headed
-                else PlaywrightChannel(config.channel, config.execution)
             )
         simulator = TinyTroupePersonaSimulator(
             config.model,

@@ -55,7 +55,7 @@ class BehavioralObservationRecorded(DomainModel):
     """Validated batch marker; signal_count makes interrupted commits observable."""
 
     observation_id: UUID4
-    kind: Literal["greeting", "customer_turn_completed"]
+    kind: Literal["greeting", "customer_turn_completed", "assistant_update"]
     evidence_event_ids: list[EvidenceReference] = Field(min_length=1)
     message_ids: list[EvidenceReference] = Field(default_factory=list)
     detector_ids: list[BehaviorIdentifier] = Field(default_factory=list, max_length=8)
@@ -76,6 +76,8 @@ class BehavioralObservationRecorded(DomainModel):
             self.turn_count == 0 or not self.message_ids
         ):
             raise ValueError("completed turn requires response messages")
+        if self.kind == "assistant_update" and not self.message_ids:
+            raise ValueError("assistant update requires response messages")
         return self
 
 

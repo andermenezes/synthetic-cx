@@ -15,6 +15,7 @@ from syntheticcx.config.models import (
 )
 from syntheticcx.discovery.budget import DiscoveryBudget
 from syntheticcx.discovery.contracts import LearningBroker, LearnResult
+from syntheticcx.discovery.policy import portability_flow, require_discovery_probe
 from syntheticcx.domain.models import CompletedResponse, SelectionReceipt, SendReceipt
 from syntheticcx.errors import ChannelError
 
@@ -38,6 +39,10 @@ async def replay(
     on_progress: Callable[[str], None] | None = None,
 ) -> InterfaceChannelGuide:
     config = learned.config
+    for probe in learned.probes.values():
+        require_discovery_probe(probe)
+    if any(portability_flow(t.option_label or "") for t in config.transitions):
+        raise ChannelError("discover replay", "number-portability flows are forbidden in discovery")
     states = {state.id: state for state in config.states}
     transitions = {item.id: item for item in config.transitions}
     budget.check()
@@ -94,6 +99,10 @@ async def replay(
         response = await budget.run(browser.receive(), response_timeout_seconds)
         if not isinstance(response, CompletedResponse):
             raise ChannelError("discover replay", "fresh response is incomplete")
+        if any(portability_flow(message.content) for message in response.messages):
+            raise ChannelError(
+                "discover replay", "number-portability flows are forbidden in discovery"
+            )
         budget.consume("observations")
         await budget.run(browser.observe(), browser_action_timeout_seconds)
         guard_state(browser.current_state, states[transition.to_state])
@@ -110,7 +119,6 @@ async def replay(
         exclude={"type", "initial_state_id", "states", "transitions", "verification_recipe"},
     )
     return InterfaceChannelGuide(
-        version="1",
         channel=InterfaceChannelConfig.model_validate(
             {
                 **boundary,

@@ -1,4 +1,3 @@
-version: "1"
 scenario:
   id: unexpected-bill-increase
   description: A subscriber needs to understand a higher mobile invoice.

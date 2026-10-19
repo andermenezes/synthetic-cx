@@ -28,7 +28,6 @@ from syntheticcx.errors import ConfigurationError
 def guide_document() -> dict[str, Any]:
     locator = {"strategy": "test_id", "value": "assistant-message"}
     return {
-        "version": "2",
         "channel": {
             "type": "webchat_playwright_stateful",
             "url": "https://chat.example/support",
@@ -91,7 +90,6 @@ def interface_document() -> dict[str, Any]:
     for field in ("initial_state_id", "states", "transitions", "verification_recipe"):
         channel.pop(field)
     channel["type"] = "webchat_playwright_dynamic"
-    private["version"] = "1"
     private["validation"].pop("verified_state_ids")
     private["validation"].pop("verified_transition_ids")
     return private
@@ -138,7 +136,6 @@ def test_only_interface_version_is_publicly_supported() -> None:
     legacy["input_locator"] = {"strategy": "test_id", "value": "chat-input"}
     legacy["send_strategy"] = {"type": "press_enter"}
     v1 = {
-        "version": "1",
         "channel": original["channel"],
         "validation": {
             "status": "verified",
@@ -308,20 +305,6 @@ def test_three_step_menu_chain_covers_four_states() -> None:
         StatefulChannelGuide.model_validate(document)
 
 
-def test_unknown_version_diagnostic_never_contains_supplied_value(tmp_path: Path) -> None:
-    source = draft_file(tmp_path)
-    document = yaml.safe_load(source.read_text())
-    document["channel_guide"] = "chat.yaml"
-    source.write_text(yaml.safe_dump(document))
-    guide = guide_document()
-    guide["version"] = "private-secret-version"
-    (tmp_path / "chat.yaml").write_text(yaml.safe_dump(guide))
-    with pytest.raises(ConfigurationError) as caught:
-        load_config(source)
-    assert "version:" in str(caught.value)
-    assert "private-secret-version" not in str(caught.value)
-
-
 def test_sensitive_selectors_rejected_not_silently_changed(tmp_path: Path) -> None:
     document = interface_document()
     document["channel"]["bootstrap_input_locator"] = {
@@ -432,7 +415,6 @@ def test_legacy_userinfo_validation_is_unchanged() -> None:
     channel["message_identity"] = {"strategy": "dom_node"}
     guide = ChannelGuide.model_validate(
         {
-            "version": "1",
             "channel": channel,
             "validation": {
                 "status": "verified",

@@ -19,6 +19,7 @@ class RuntimeState(TypedDict):
     persona_state: PersonaState
     observation: ConversationObservation | None
     response: CompletedResponse | None
+    response_is_update: bool
     action: PersonaAction | None
     pending_message: str | None  # Legacy text slot; selections are carried by action directly.
     receipt: SendReceipt | None
@@ -40,6 +41,7 @@ def initial_state(persona: PersonaDefinition) -> RuntimeState:
         persona_state=persona.fresh_state(),
         observation=None,
         response=None,
+        response_is_update=False,
         action=None,
         pending_message=None,
         receipt=None,

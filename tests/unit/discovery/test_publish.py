@@ -21,7 +21,6 @@ def inputs(tmp_path: Path) -> tuple[Path, InterfaceChannelGuide]:
     path.write_text(yaml.safe_dump(source))
     return path, InterfaceChannelGuide.model_validate(
         {
-            "version": "1",
             "channel": channel,
             "validation": {
                 "status": "verified",

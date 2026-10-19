@@ -728,9 +728,7 @@ def test_completed_batch_commits_all_signals_before_effects_and_freezes_terminal
         mode="deterministic",
         factory=factory,
     )
-    selected = BehaviorConfig.model_validate(
-        {"detectors": [{"id": "consumer", "type": "custom", "version": "1"}]}
-    )
+    selected = BehaviorConfig.model_validate({"detectors": [{"id": "consumer", "type": "custom"}]})
     rules = [
         BehaviorRule(
             id="leave", priority=0, when={"signal": "leave_signal"}, effects={"abandon": True}
@@ -834,9 +832,7 @@ def test_detectors_receive_original_active_text_but_trace_payload_is_privacy_fil
         mode="deterministic",
         factory=factory,
     )
-    selected = BehaviorConfig.model_validate(
-        {"detectors": [{"id": "consumer", "type": "custom", "version": "1"}]}
-    )
+    selected = BehaviorConfig.model_validate({"detectors": [{"id": "consumer", "type": "custom"}]})
     detectors = prepare_behavior(selected, [], {"custom": registered}).instantiate()
     _, events = execute(
         Channel([response(("reply", "Customer email alice@example.test"))]),
@@ -858,9 +854,7 @@ def test_detector_failure_stops_before_customer_dispatch() -> None:
         async def detect(self, boundary):
             raise RuntimeError("private detector failure")
 
-    selected = BehaviorConfig.model_validate(
-        {"detectors": [{"id": "consumer", "type": "custom", "version": "1"}]}
-    )
+    selected = BehaviorConfig.model_validate({"detectors": [{"id": "consumer", "type": "custom"}]})
     registered = DetectorRegistration(
         detector_type="custom",
         version="1",

@@ -8,8 +8,8 @@ from pathlib import Path
 from pydantic import TypeAdapter
 
 from syntheticcx.config.models import (
+    AnyChannelGuide,
     DiscoveryDraft,
-    InterfaceChannelGuide,
     ProjectConfig,
     ReferencedProjectConfig,
 )
@@ -49,7 +49,7 @@ def export_schemas(destination: Path) -> list[Path]:
         "report": Report.model_json_schema(),
         "trace-event": TypeAdapter(TypedTraceEvent).json_schema(),
         "discovery-draft": DiscoveryDraft.model_json_schema(),
-        "channel-guide": InterfaceChannelGuide.model_json_schema(),
+        "channel-guide": TypeAdapter(AnyChannelGuide).json_schema(),
         "behavior-replay": BehaviorReplayResult.model_json_schema(),
     }
     paths = [export_project_schema(destination / "project.schema.json")]

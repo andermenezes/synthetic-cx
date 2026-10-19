@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Controlled WhatsApp-shaped fixture</title>
+<style>footer [contenteditable] { min-height: 24px; min-width: 200px; border: 1px solid #ccc; }</style>
+<div id="sidebar">Private account sidebar: never capture this.</div>
+<section id="main">
+<header><span title="+15551234567">Controlled Business</span></header>
+<div id="messages">
+<div data-id="false_15551234567@c.us_history"><span class="selectable-text">Your invoice is corrected. The refund is approved.</span></div>
+</div>
+<footer><div role="textbox" contenteditable="true" aria-label="Type a message">WEBSITE PREFILLED TEXT</div></footer>
+</section>
+<script>
+// Fixtures only. Production never inspects these state variables or special hosts.
+window.sent=[]; window.variant='resolved'; window.delay=30; window.counter=0;
+window.uncertain=false; window.menuKind='buttons';
+const main=document.querySelector('#main'), messages=document.querySelector('#messages');
+messages.dataset.testid='conversation-panel-messages';
+function bubble(actor,text,options){
+ const node=document.createElement('div');
+ node.dataset.id=(actor==='customer'?'true_':'false_')+'15551234567@c.us_'+(++counter);
+ const prose=document.createElement('span'); prose.className='selectable-text'; prose.textContent=text;
+ node.append(prose); if(options) options(node); messages.append(node); return node;
+}
+window.incoming=(text,options)=>bubble('assistant',text,options);
+function customer(text,echoText=text){
+ sent.push(text); if(uncertain)return;
+  bubble('customer',echoText);
+ setTimeout(()=>{
+  if(text==='Plans'||text==='Coverage') incoming('What is your account reference?');
+  else if(sent.length===1) incoming('Choose an option for invoice help.',node=>{
+   if(menuKind==='buttons') ['Plans','Coverage'].forEach(label=>{
+    const button=document.createElement('button'); button.type='button';button.textContent=label;
+    button.onclick=()=>customer(label);node.append(button);
+   });
+   else if(menuKind==='native-list') {
+    const opener=document.createElement('button');opener.type='button';opener.title='View options';
+    opener.innerHTML='<svg><title>ic-format-list-bulleted</title></svg><span>View options</span>';
+    opener.onclick=()=>{
+     const dialog=document.createElement('div');dialog.setAttribute('role','dialog');
+     dialog.innerHTML='<div data-testid="confirm-popup"><div data-testid="popup-contents">'
+       +'<div data-testid="drawer-title-body">View options</div></div></div>';
+     const contents=dialog.querySelector('[data-testid="popup-contents"]');
+     ['Plans','Coverage','Buy subscription'].forEach(label=>{
+      const cell=document.createElement('div');cell.dataset.testid='cell-frame-container';
+      const title=document.createElement('div');title.dataset.testid='cell-frame-title';title.textContent=label;
+      const description=document.createElement('div');description.dataset.testid='cell-frame-secondary';
+      description.textContent=label==='Buy subscription'?'Purchase a subscription':'Compare available plans';
+      const radio=document.createElement('button');radio.setAttribute('role','radio');
+      radio.setAttribute('aria-label',label);radio.setAttribute('aria-checked','false');
+      radio.onclick=()=>{setTimeout(()=>{dialog.dataset.selected=label;radio.setAttribute('aria-checked','true');
+       radio.replaceWith(radio.cloneNode(true));
+       if(dialog.querySelector('[data-testid="list-msg-modal-button"]'))return;
+       const send=document.createElement('div');send.setAttribute('role','button');
+       send.dataset.testid='list-msg-modal-button';
+       send.innerHTML='<svg data-icon="wds-ic-send-filled"><title>wds-ic-send-filled</title></svg>';
+       send.onclick=()=>{dialog.remove();customer(dialog.dataset.selected,label+'\n'+description.textContent);};contents.append(send);
+      },window.radioDelay||0);};
+      cell.append(title,description,radio);contents.append(cell);
+     });
+     document.body.append(dialog);
+    };node.append(opener);
+   }
+   else {
+    const opener=document.createElement('button');opener.type='button';opener.textContent='View options';
+    opener.setAttribute('aria-haspopup','dialog');opener.setAttribute('aria-controls','invoice-list');
+    opener.onclick=()=>{
+     const dialog=document.createElement('div');dialog.id='invoice-list';dialog.setAttribute('role','dialog');
+     ['Plans','Coverage'].forEach(label=>{
+      const row=document.createElement('div');row.setAttribute('role','radio');row.tabIndex=0;row.textContent=label;
+      row.onclick=()=>{dialog.dataset.selected=label;row.setAttribute('aria-checked','true');};dialog.append(row);
+     });
+     const submit=document.createElement('button');submit.type='button';submit.textContent='Send';
+     submit.onclick=()=>{const selected=dialog.dataset.selected;dialog.remove();customer(selected);};
+     dialog.append(submit);document.body.append(dialog);
+    };node.append(opener);
+   }
+  });
+  else if(variant==='resolved') incoming('Your invoice is corrected. The refund is approved.');
+  else incoming('I cannot resolve your invoice. Please contact support.');
+ },delay);
+}
+main.querySelector('[role=textbox]').addEventListener('keydown',event=>{
+ if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();const text=event.target.innerText;
+  event.target.textContent='';customer(text);}
+});
+</script></html>

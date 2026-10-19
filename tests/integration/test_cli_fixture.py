@@ -530,7 +530,7 @@ def test_discovered_guide_runs_through_normal_cli(
         completed = tmp_path / "draft.completed.yaml"
         assert guide.exists() and completed.exists()
         published = yaml.safe_load(guide.read_text())
-        assert published["version"] == "1"
+        assert "version" not in published
         assert published["channel"]["type"] == "webchat_playwright_dynamic"
         assert "states" not in published["channel"]
         output = CliRunner().invoke(app, ["run", str(completed), "--language", "pt-BR"])

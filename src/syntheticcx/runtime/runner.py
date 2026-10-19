@@ -272,10 +272,12 @@ async def run_conversation(
         if remaining_time() <= 0:
             raise TimeoutError("journey deadline expired")
         channel_attempted = True
+        # A verified route is several individually bounded browser actions.
+        # Do not truncate its replay to the timeout for a single click.
+        route_steps = len(project_config.channel.navigation_steps) if project_config else 0
+        startup_timeout = limits.browser_action_timeout_seconds * (route_steps + 1)
         with span("browser.start"):
-            await wait.run(
-                channel.start(), min(limits.browser_action_timeout_seconds, remaining_time())
-            )
+            await wait.run(channel.start(), min(startup_timeout, remaining_time()))
         stage = "graph"
         remaining = remaining_time()
         if remaining <= 0:

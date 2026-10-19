@@ -6,6 +6,8 @@ SyntheticCX is an open-source Python framework for exercising and evaluating a r
 
 The MVP is designed for controlled, text-based web chats. It opens the configured site with Playwright, lets a TinyTroupe-backed customer persona interact through the visible chat controls, records the journey, and produces deterministic and semantic findings with supporting evidence.
 
+An experimental WhatsApp Web channel follows an authorized service website's entry link and uses a dedicated authenticated browser profile. It runs the same goal-driven customer simulation and evaluation pipeline. Controlled Chromium journeys and dated live exchanges on the observed Claro surface are verified; arbitrary WhatsApp compatibility is not guaranteed.
+
 **Current release:** `0.1.0` (pre-alpha) • **Python:** 3.11–3.13 • **License:** Apache-2.0
 
 ---
@@ -39,7 +41,7 @@ SyntheticCX owns its domain contracts—configuration, scenarios, personas, mess
 | Configuration and schemas | YAML + Pydantic v2 |
 | Orchestration | LangGraph |
 | Synthetic persona | TinyTroupe adapter |
-| Customer channel | Async Playwright web-chat adapter |
+| Customer channel | Async Playwright web-chat and WhatsApp Web adapters |
 | Models | OpenAI and explicitly configured OpenAI-compatible endpoints |
 | Evaluation | Deterministic evaluators and an LLM-based semantic goal evaluator |
 | Evidence and reports | Local filesystem, JSON, JSONL |
@@ -194,7 +196,13 @@ An infrastructure error takes precedence over evaluation findings. A journey tim
 
 ## Discover a web-chat channel
 
-`synthetic-cx discover` uses bounded, model-planned native Playwright exploration to learn an interface guide. One browser retains state while discovering controls and completing interactions; **one separate fresh browser replays the same successful interactions** before publication. Ordinary `synthetic-cx run` resolves current safe controls natively inside the verified conversation root, without a browser-planning model. The private discovery sample graph is replay evidence, not runtime authority.
+`synthetic-cx discover` uses one shared, bounded, model-planned native Playwright website explorer for web-chat and WhatsApp discovery. It reads the current page, offers safe visible controls without a chat-keyword filter, and inspects each activation's result, including widgets and intermediate pages. Channel-specific verification begins only after reaching the selected channel. For web chat, one browser retains state while discovering controls and completing interactions; **one separate fresh browser replays the same navigation and successful interactions** before publication. Ordinary `synthetic-cx run` resolves current safe controls natively inside the verified conversation root, without a browser-planning model. The private discovery sample graph is replay evidence, not runtime authority.
+
+Website discovery is autonomous and homepage-first. The planner uses current page/overlay context, bounded observation memory, action history, result feedback and scenario context to choose a relevant contact route. It can click, hover, follow an observed link, scroll, wait, follow a resulting popup, and backtrack to a previously observed page or tab. Intermediate options and generic menus are part of exploration; no website-specific path is coded into discovery. Scenario context selects the contact route, not permission to complete the business goal during navigation.
+
+Both channels emit a specific `channel.navigation_steps` route. Each step has an `action`: `click`, `hover`, `follow_link`, `scroll_down`, `scroll_up`, `back`, or `wait`; click/hover/follow-link steps require a `locator`. Locators must uniquely identify the observed control, including visible semantic matches when IDs/titles are duplicated. `click` runs the site's handler; `follow_link` navigates to that observed link's natively rechecked destination without running its click handler. It is a distinct planned/replayed action, never an automatic failed-click fallback. The model cannot author URLs. Web chat may retain an explicitly pinned initial `open_locator`. Verification and customer runs replay the specific route without model planning. Old locator-only routes and WhatsApp `entry_locator`/`entry_steps` are rejected: regenerate existing guides.
+
+After entering a recipient-attested WhatsApp landing page, recipient handoff links offer `follow_link` rather than another simulated click. Exact replay waits within the browser action timeout for the recorded control to become visible and uncovered; it never dismisses unknown overlays or searches for replacement controls. Contradictory claims that no supported controls exist are corrected against the native inventory; genuine ambiguity or unsafe consequences can still stop exploration.
 
 Install the Python `discovery` extra and Chromium. The CLI opens native Playwright directly; it does not launch a Playwright MCP server or require Node.js/`npx`:
 
@@ -203,7 +211,7 @@ uv sync --locked --group dev --extra discovery
 uv run playwright install chromium
 ```
 
-Prepare a version-1 scenario draft with its normal `scenario`, `persona`, `execution`, and `model` sections, but without `channel`. For a safe first test, start the controlled telecom fixture, copy `examples/telecom/scenario.yaml` to a draft, and remove its inline `channel` section. Use the fixture URL and ephemeral port it prints:
+Prepare a scenario draft with the usual `scenario`, `persona`, `execution`, and `model` sections, but without `channel`.
 
 In one terminal, keep the fixture running:
 
@@ -248,13 +256,13 @@ Discovery allows **at most three conversational actions while learning and repla
 
 The agent learns the interaction in this order:
 
-1. Navigate, activate a safe launcher if needed, and wait for usable chat controls inside a proven conversation root.
+1. Explore the website through observed safe controls, inspect each result, and wait for a lazily rendered launcher or independently proven conversation root.
 2. Bind observed controls and readers. A composer without marked readers can submit its first owned probe to learn them from an actual exchange.
 3. Observe a completed reply and explicitly bind the resulting composer, menu, mixed or terminal state. Continue exploring within the action budget, or finish after a complete verified interaction.
 4. Close the learning browser and replay the exact recorded actions in one fresh browser, using native checks without model planning.
-5. Publish the version-1 `InterfaceChannelGuide` and completed scenario only after replay and privacy validation succeed. The public guide contains fixed interface/readers and content-free validation evidence, not sample states, edges or a replay recipe.
+5. Publish the verified `InterfaceChannelGuide` and completed scenario only after replay and privacy validation succeed. The public guide contains the website route, fixed interface/readers and content-free validation evidence, not sample conversation states, edges or the private conversational replay recipe.
 
-Learning permits at most 24 model cycles, 24 observations and four explicit waits, plus one launcher activation per session. These limits share the configured journey deadline and operation timeouts; replay and cleanup retain reserved time. `--max-discovery-attempts` does not enlarge these limits.
+Website exploration has separate optional limits: `execution.website_action_limit` defaults to 32 (1–128), and `execution.website_observation_limit` defaults to 64 (1–256). These do not consume the three conversational probes or extend `execution.journey_timeout_seconds`. Browser actions retain `browser_action_timeout_seconds`; replay startup allows the recorded multi-step route rather than imposing one click's timeout on the entire path. Verification and cleanup retain reserved time within the absolute deadline. Increase the journey timeout for complex websites when necessary.
 
 The browser generates bounded, revision-scoped control/reader candidates. The model selects opaque IDs; owned code compiles locators, proves conversation ownership and executes actions against actual nodes. It cannot provide executable JavaScript, arbitrary CSS or unrestricted browser commands. Redacted bounded observations remain in memory, not in the guide or progress output. Origin checks, private handles, latest-reply option ownership and one-use capabilities remain enforced.
 
@@ -262,7 +270,7 @@ Supported languages are `en-US` and `pt-BR`. `--language` selects owned probe wo
 
 Discovery and normal runs are headless by default. `discover --headed` shows learning and fresh replay in separate browsers; no cookies/storage are shared. Headed success does not prove headless compatibility; use `run --headed` when needed. A `--chat-hint` helps identify a launcher but never bypasses safe-control checks.
 
-`--max-discovery-attempts` bounds invalid-decision corrections, not browser retries. This includes premature `finish` requests: a completed interaction, learned reader and bound resulting state are required before finishing. The planner receives next actions and concrete current-ID choices supported by native evidence; native guards still authorize execution. Already bound controls are offered again only when learning a resulting state. Opening has its own one-activation-per-session bound; planning, observation and waiting share the overall discovery deadline. A claim of missing controls/readers is corrected when current evidence offers a composer or reader-learning path. Unsafe or ambiguous evidence still permits immediate stop, and rejected decisions never force a probe. The model must choose observed, safe controls and cannot infer missing authorization from a hint.
+`--max-discovery-attempts` bounds invalid-decision corrections, not browser retries. Web-chat learning cannot finish without a completed interaction, learned reader and bound resulting state. Website decisions must use a current revision and an offered native action. Offscreen controls require scrolling; covered controls require resolving their blocker. Unavailable controls are evidence, not selectable IDs. If a control changes or becomes covered before dispatch, discovery refreshes its observation without performing the action. The agent may abstain when consequences are unclear. Dispatched effects, including waits and backtracking, are recorded for exact replay. Unchanged results are feedback, not proof of access; uncertain dispatches are not retried.
 
 Add `--verbose` for safe stage progress and owned failure categories. Inventory, prompts, probe contents, credentials and raw browser exceptions are not printed. Origin is checked around conversational actions. Discovery does not authenticate, complete business goals, or repair guides automatically during ordinary runs.
 
@@ -285,7 +293,7 @@ Internal documentation and historical checkpoints are indexed in [DOCUMENTATION_
 | `--url URL` | Required page URL to explore. |
 | `--output PATH` | Required destination for the verified channel guide; existing files are not overwritten. |
 | `--headed` | Show native learning and fresh replay browsers; requires a desktop/display. |
-| `--chat-hint TEXT` | Optional observed launcher label or exact `id=<DOM-ID>` hint; 1–256 characters. Does not bypass safe-control checks. |
+| `--chat-hint TEXT` | Optional natural-language guidance; it does not keyword-filter the bounded control inventory. `id=<DOM-ID>` pins an observed launcher ID. Does not bypass safe-control checks. |
 | `--language en-US\|pt-BR` | Owned probe language, persisted in the completed scenario. Defaults to the persona language, otherwise `en-US`. |
 | `--max-discovery-attempts N` | Up to 1–5 corrections per invalid model decision (default 3), never conversational retries. |
 | `--verbose` | Show safe stage progress, readiness counts, allowlisted decision-rejection reasons and SyntheticCX error category/operation. Raw page content, prompts, probe text, credentials and raw exceptions are not printed. |
@@ -302,9 +310,9 @@ Discovery targets inspectable text/menu chats with independently verifiable owne
 
 Model/provider failures, rejected decisions, missing ownership/reader evidence and fresh replay drift are distinct from successful browser interactions. A failed decision may occur after earlier actions; sanitized progress is not a transcript. Increasing correction limits cannot fix an unsafe menu, ambiguous composer or missing chat proof.
 
-Scope candidates are offered only after native ownership and uniqueness checks; binding rechecks the selected node. With `--verbose`, an exact-ID launcher reports successful activation and learning reports how many proven chat roots are available. If an activated launcher has not produced a proven root yet, discovery observes again using its existing finite wait and journey budgets. Missing proof ends discovery without another launcher click, probe or guide publication. An ID-bearing page region alone is not chat ownership evidence.
+Scope candidates are offered only after native ownership and uniqueness checks; binding rechecks the selected node. Website exploration observes the result of each activation before another decision. Missing or delayed proof may consume existing observation/wait budgets, but cannot authorize a probe or guide publication. An ID-bearing page region alone is not chat ownership evidence.
 
-Opening a panel is separate from interaction readiness. Native startup observation waits within the existing browser and journey deadlines for a lazily rendered launcher or root, then for one available safe composer or an assistant-owned menu. Visible native buttons and non-navigating `<a role="button">` launchers are supported. Accessible labels, titles, and the user-supplied text hint are rechecked at activation; ordinary links, forms, disabled controls and consequential actions are not launchers. Header/settings buttons and loading panels do not establish readiness, and the planner is not asked to stop while that bounded startup wait is in progress.
+Opening a panel is separate from interaction readiness. Native startup observation waits within the existing browser and journey deadlines for lazily rendered controls, then for one available safe composer or an assistant-owned menu. Website exploration supports observed native buttons and guarded same-origin links; channel handoffs have additional destination checks. Accessible labels, titles, optional exact-ID hints, enabled state, form context and action safety are rechecked at activation. Header/settings buttons and loading panels do not establish conversational readiness.
 
 For composer chats without actor markers, the agent can learn readers after one owned probe. Native code retains the pre-send node baseline and exposes compiled, opaque reader candidates only when it observes a fresh exact customer echo and a distinct response outside that customer's newly appended message container. When the fresh response also appends control buttons, assistant reader candidates are restricted to containers that own those controls, so a learned reader can never exclude its reply's menu. The agent selects candidate IDs; native checks reject overlap, headers, controls, notifications, incomplete formatted fragments, customer delivery metadata and conflicting actor markers. Reader attribution and response completion share the original response deadline. During attribution no second submission, option selection, state binding or finish is allowed.
 
@@ -331,7 +339,7 @@ Authorized headed validation on 2026-10-06 completed discovery, exact fresh repl
 
 Verified copies, commands, reports, limitations, and the project review are in [`verification/2026-10-06/`](verification/2026-10-06/README.md). Your original scenario and guide files are not replaced.
 
-These dated verification copies use the version-1 journey schema. Preserve them as evidence; when rerunning against current code, edit a separate copy's obsolete behavioral-rule fields to the current `when`/`effects` shape. Keep the journey version at 1 and leave interface guides unchanged.
+These dated verification copies use an older journey schema. Preserve them as evidence; when rerunning against current code, edit a separate copy's obsolete behavioral-rule fields to the current `when`/`effects` shape and remove obsolete document/detector version fields.
 
 For Vivo discovery, use the canonical origin and a fresh output path:
 
@@ -352,7 +360,7 @@ Malformed decisions receive bounded, value-free corrections without browser acti
 
 Option-enabled channels represent an assistant reply as **prose plus offered options**, or as an options-only reply. The same customer persona chooses either typed text or one current option; it cannot do both in a turn. A successful selection counts as one customer turn and is recorded as a selected option, not a typed message or supplied account information.
 
-The current guide is version-1 `InterfaceChannelGuide` with channel type `webchat_playwright_dynamic`. Old version-1 text/option guides and version-2 stateful guides are rejected: regenerate through discovery; there is no conversion. A verified interface can begin with a menu-only chat root. Detached/global button bars remain unsupported. Startup menus are presented to the persona even with zero greeting grace; discovery probes and recipes never autoplay during customer startup.
+The current `InterfaceChannelGuide` uses `webchat_playwright_dynamic` with content-free fresh-replay validation. Old text/option and stateful guide shapes are rejected: regenerate through discovery; there is no conversion. A verified interface can begin with a menu-only chat root. Detached/global button bars remain unsupported. Startup menus are presented to the persona even with zero greeting grace; discovery probes and recipes never autoplay during customer startup.
 
 Ordinary current assistant-owned choices are offered to the scenario-driven persona without an informational-label or prompt-keyword whitelist. The browser still checks reply ownership, actual node identity, visibility, enabled state, uniqueness and current capability identity before one normal click. Utility controls, links, forms and controls outside the pinned widget are not conversation options. Stale, replaced or consumed options cannot be retried or substituted with typed labels after an uncertain click. These guards cannot prove the semantics of opaque website event handlers; run only on authorized targets.
 
@@ -370,14 +378,85 @@ Learning may select a currently issued guarded informational option. Every recor
 
 ---
 
+## Discover and run a WhatsApp Web journey
+
+WhatsApp discovery uses the same website explorer and strict action protocol as web-chat discovery, not a separate entry-link planner. It inspects bounded page excerpts and safe visible controls, activates model-selected opaque current IDs, and follows widgets or intermediate pages until the expected WhatsApp recipient can be verified. Dedicated WhatsApp native logic then attests the recipient before sending one owned text probe. After closing and relaunching the dedicated browser, verification replays the exact discovered navigation path and exact probe without model planning or alternative-control scanning. A guide is published only after both fresh exchanges are verified. The business conversation is **not reset** by relaunching the browser; use an authorized target that supports repeatable probes.
+
+### Dedicated authenticated profile
+
+Use a dedicated Playwright user-data directory, not your normal Chrome/Edge/Brave profile. An active session in your normal browser is not automatically available here. Create or reopen a dedicated profile:
+
+```bash
+uv run --extra discovery synthetic-cx create-profile --channel whatsapp_web
+
+# Optional custom directory (use this same path for discovery and runs):
+uv run --extra discovery synthetic-cx create-profile --channel whatsapp_web \
+  --browser-profile "$HOME/.syntheticcx/whatsapp-profile"
+```
+
+The default directory is `~/.syntheticcx/whatsapp-profile`. Scan the QR code using your phone, wait until WhatsApp Web is logged in, then press Enter in the terminal to save and close. The command requires an interactive terminal and does not automatically verify authentication. Keep the profile private: it contains the session. Currently only `--channel whatsapp_web` supports profile provisioning. Install Chromium first with `uv run --extra discovery playwright install chromium` if needed.
+
+SyntheticCX does not automate authentication, copy session credentials, or delete the supplied profile. Only one invocation may use the profile at a time; close the provisioning browser before discovery or a run. Expired authentication fails safely.
+
+After the website handoff, startup waits for recipient metadata, validates an unambiguous match, and waits for a visible, enabled, editable text composer before clearing the website draft or allowing a probe. This native readiness phase is bounded by `execution.browser_action_timeout_seconds` and the overall journey deadline; a visible loading container is not sufficient. Missing metadata may hydrate, including replacement of the loading container, but wrong/conflicting recipients and malformed message identities fail immediately. A display name or handoff URL alone is not recipient proof. Timeout errors identify the pending stage; for slow initial loads, increase the existing browser-action timeout and allow enough journey time for both probes and fresh replay. After binding, identity loss still revokes dispatch rather than restarting the readiness wait.
+
+An initially empty named business chat may expose neither a header phone number nor message identities. For that case, the adapter opens contact info from the current chat's unique header control and verifies the numeric phone field in the newly opened drawer's dedicated phone section. It then closes that verified drawer through its scoped close control, retaining a guarded binding to the chat root, header, message panel and available history anchor. Unexpected drawer closure during verification, replacement, a changed phone/chat identity, or ambiguous evidence revokes dispatch. Ordinary typing-status and unrelated profile-detail updates do not revoke an unchanged identity. Discovery's `--verbose` output distinguishes composer readiness, probe submission, outgoing-echo verification and waiting for a fresh completed reply.
+
+### Discovery and customer run
+
+Prepare the usual scenario draft without `channel`, including its customer goal and required success criteria. Supply the expected authorized business recipient—not your logged-in account's number—using international digits (an optional leading `+` is accepted):
+
+```bash
+uv run synthetic-cx discover billing-draft.yaml \
+  --channel whatsapp_web \
+  --recipient 'YOUR_AUTHORIZED_BUSINESS_NUMBER_IN_DIGITS' \
+  --url 'https://your-authorized-service.example/support' \
+  --browser-profile "$HOME/.syntheticcx/whatsapp-profile" \
+  --chat-hint 'WhatsApp' \
+  --output billing-whatsapp.yaml --headed --verbose
+uv run synthetic-cx run billing-draft.completed.yaml \
+  --browser-profile "$HOME/.syntheticcx/whatsapp-profile" \
+  --recipient 'YOUR_AUTHORIZED_BUSINESS_NUMBER_IN_DIGITS' --headed
+```
+
+`--recipient` is supported by WhatsApp `discover` and `run` only. An explicit value overrides the guide-configured environment variable (default `SYNTHETICCX_WHATSAPP_RECIPIENT`). If omitted, the existing environment fallback applies; an empty or invalid explicit value fails rather than falling back. The recipient is held in memory and redacted from application diagnostics and evidence, not saved into the guide or completed scenario: supply it again for each command, or use the environment. CLI arguments may still be visible in shell history and local process listings; the environment fallback avoids putting the number in the command arguments.
+
+Replace the number and website with your authorized target. Existing model credentials are still required. `--chat-hint` is guidance, not a text filter: the planner sees a bounded inventory of visible safe controls, including controls whose labels do not mention chat or WhatsApp. `id=<DOM-ID>` restricts selection to an observed launcher ID, not arbitrary CSS. Discovery may open a visible support button/widget, read its visible page text and controls, and follow a bounded path of safe site controls. It verifies the configured recipient before sending any WhatsApp probe.
+
+The generated channel uses `type: whatsapp_web_playwright`, the service website `url`, typed `navigation_steps`, `recipient_environment_variable` (default `SYNTHETICCX_WHATSAPP_RECIPIENT`), and `quiet_interval_seconds` (default 1 second, greater than zero and at most 10). The guide stores browser actions and content-free locators, not page text, exploration history, probe text, recipient numbers, or credentials. Website URLs must be public, without query data, fragments, userinfo, or phone-shaped paths; do not put session tokens or recipient numbers in portable configuration.
+
+Website handoffs transfer the exact observed WhatsApp URL into a fresh owned tab before interaction. Opaque message IDs require a recipient-matching contact-info check; the adapter then closes that drawer using its verified close control, leaving the conversation visible. The verified chat root, header, message panel and available history anchor remain guarded after closing; a display name alone is never identity evidence. If WhatsApp marks an outgoing probe as not sent, discovery stops with `channel.delivery` and does not retry or publish a guide. Check messaging manually in the same dedicated profile before attempting another discovery; a connected page or a local outgoing bubble does not establish delivery.
+
+The recipient-bearing handoff URL is retained from the observed main-frame navigation before WhatsApp clears its query. Empty, explicitly virtualized pre-run history rows are recorded by ID without waiting for their contents; later hydration cannot turn them into fresh replies. A new unread message that becomes virtualized still fails closed. Opening contact info during startup is expected recipient verification, not account-profile navigation.
+
+An authorized live Claro discovery on 2026-10-17 verified both the initial probe exchange and exact fresh-browser replay, publishing a verified guide. The adapter handles opaque IDs, incrementally rendered message shells and consecutive bubbles without direction tails. This proves the discovery exchanges on that observed surface, not a completed customer business goal or arbitrary WhatsApp compatibility.
+
+Runtime uses native keyboard input to clear website-prefilled drafts and type the persona's message. Emoji text is preserved; quoted messages are context, not part of the newly authored message. A supported list-menu opener is clicked to reveal its owned choices without sending a message. Native radio selection and its separate send-icon confirmation are checked and authorized before dispatch. An authorized live run completed five turns with no channel errors and stopped at the configured `max_turns: 5`; its business goal failed, which is distinct from channel access.
+
+**Discovery must never enter portabilidade / number-portability flows.** This hard exclusion applies to starting URLs, observed website controls and links, explicit probes, chat-menu choices and fresh discovery replay—even if requested by the scenario or model. Ordinary runtime permissions are separate and unchanged.
+
+### Conversation and evidence boundaries
+
+- Opening a chat is not a goal pass. The existing persona pursues `scenario.goal`; existing evaluators judge `success_criteria` with current-run message citations. Persona belief, delivery ticks, menu choices, and reply settling do not establish business success.
+- Website-prefilled text is cleared, never automatically sent. Historical or unsolicited incoming content before the first owned outgoing echo is excluded from goal evidence. The owned echo establishes the chronological run boundary; later history insertion before that boundary or identity loss fails closed.
+- Text, message-owned reply buttons, and natively owned list dialogs are supported. Choice permissions include descriptive dialog terms and rechecked final-confirmation context. An unavailable choice is never replaced with typed text.
+- Late incoming replies observed while the persona is deciding are journaled and supplied to a new decision before dispatch. Their `assistant_update` behavioral boundaries preserve the customer turn count and do not fire the completed-turn detector. Offline behavioral replay supports these same-turn boundaries.
+- Recipient evidence is checked on handoff, observations, and native input/click dispatch. Wrong or ambiguous recipients, missing sessions, unsafe controls, and uncertain submissions terminate safely; uncertain messages are never resent.
+- Guides contain no conversation history, probe text, recipient numbers, or account credentials. Evidence IDs are opaque; browser exceptions are content-free. Account-wide screenshots and video are rejected for this channel.
+
+Discovery explores intermediate choices within configurable budgets, without a fixed five-click route. Same-origin site controls and recipient-bound WhatsApp destinations are allowed; unrelated external destinations are rejected. A web-chat widget is not automatically a WhatsApp channel: the agent may seek a safe handoff, backtrack or abstain without sending. The recipient is verified before any WhatsApp probe. Native classification does not prove arbitrary website handler semantics. Business short-code links, groups, media uploads, calls, payments, WhatsApp Flows, external forms, unsupported message identities, and list dialogs without native ownership evidence remain outside the supported surface.
+
+**Verification limit:** Real-model CLI loopback discovery has published verified guides for both channels after exact fresh-browser route replay and owned exchanges. Chromium regressions exercise mixed browser actions beyond five steps, intermediate choices, popup handoffs, and safety boundaries. These checks and the dated live exchanges do not establish arbitrary WhatsApp compatibility or completion of a live business goal.
+
+---
+
 ## Configure a journey
 
-A version-1 journey YAML document contains all configuration inline or references a local channel guide. Journey and discovery-draft configuration remain version 1; behavioral rules use the current `when`/`effects` contract. Unknown fields, unsupported versions, invalid limits, and invalid adapter choices fail validation.
+A journey YAML file contains scenario, persona, execution, and model settings inline, with either an inline channel or a local channel-guide reference. No configuration, guide, or detector version fields are required. Unknown fields, invalid limits, and invalid adapter choices fail validation.
 
 The canonical example is [`examples/telecom/scenario.yaml`](examples/telecom/scenario.yaml). Its configured port is illustrative; use `run_demo.py` or change `channel.url` to the address of your own controlled target.
 
 ```yaml
-version: "1"
 
 scenario:
   id: unexpected-bill-increase
@@ -507,7 +586,7 @@ Use synthetic data in descriptions. The selected persona model receives the orig
 
 Optional `persona.behavior_description` describes how the customer behaves (nonblank, up to 2,000 characters). It guides the persona but cannot override scenario facts, action permissions, structured communication, owned state, or terminal conditions. It does not let the model mutate behavioral state.
 
-Version-1 rules separate `when` from `effects`. Built-in signals are `repeated_information` and `customer_turn_completed`; a completed turn requires a successful customer action **and** a completed assistant response. Greetings and failed responses do not count as completed turns. Occurrences are per signal/per run, not per rule or information ID. Conditions optionally use `occurrence_at_least` (positive integer, default 1) and inclusive `state.frustration`/`state.willingness_to_continue` bounds (`gte`/`lte`). `fire` is `every_match` (default) or `once`.
+Behavior rules separate `when` conditions from `effects`. Built-in signals are `repeated_information` and `customer_turn_completed`; a completed turn requires a successful customer action **and** a completed assistant response. Greetings and failed responses do not count as completed turns. Occurrences are per signal/per run, not per rule or information ID. Conditions optionally use `occurrence_at_least` (positive integer, default 1) and inclusive `state.frustration`/`state.willingness_to_continue` bounds (`gte`/`lte`). `fire` is `every_match` (default) or `once`.
 
 For example, add this rule to an existing persona to abandon after at least six completed turns when willingness is at most 0.5:
 
@@ -527,7 +606,7 @@ behavioral_rules:
 
 All matching rules evaluate against the same pre-signal state, execute by `priority` then `id`, and sum deltas before clamping. Effects allow frustration/willingness deltas in `[-1,1]`, an optional `abandonment_threshold`, or `abandon: true`; empty/no-op effects are rejected. Abandonment is terminal. At most 32 rules are allowed; IDs/signal names start with an ASCII letter and contain letters, digits, `_`, `.`, or `-`, up to 80 characters.
 
-Omitting `behavior.detectors` enables both built-ins. An explicit list selects only those detectors (maximum 8); `behavior: {detectors: []}` disables behavioral signals and requires no signal-dependent rules. Each entry supplies `id`, `type`, `version: "1"`, and `parameters`; built-ins accept only empty parameters. Duplicate signal ownership, unregistered types, unavailable versions, invalid typed parameters, and rules referring to disabled signals fail preparation before credentials/model/browser work. Disabling signals does not suppress formal repeated-information evidence or observation boundaries.
+Omitting `behavior.detectors` enables both built-ins. An explicit list selects only those detectors (maximum 8); `behavior: {detectors: []}` disables behavioral signals and requires no signal-dependent rules. Each entry supplies `id`, `type`, and `parameters`; code selects the registered implementation for each type. Duplicate signal ownership, unregistered types, invalid typed parameters, and rules referring to disabled signals fail preparation before credentials/model/browser work. Disabling signals does not suppress formal repeated-information evidence or observation boundaries.
 
 #### Trusted custom detectors
 
@@ -598,14 +677,13 @@ result = asyncio.run(
 )
 ```
 
-Add this selection to a complete version-1 scenario and set a rule's `when.signal` to `patience_exhausted`:
+Add this selection to a complete scenario and set a rule's `when.signal` to `patience_exhausted`:
 
 ```yaml
 behavior:
   detectors:
     - id: customer-patience
       type: patience
-      version: "1"
       parameters: {after_turn: 6}
 ```
 
@@ -620,7 +698,7 @@ synthetic-cx replay-behavior RUN_DIRECTORY --output /tmp/behavior-replay.json
 synthetic-cx replay-behavior RUN_DIRECTORY --output /tmp/counterfactual.json --rules /tmp/rules.yaml
 ```
 
-The first command verifies recorded transitions using the same pure engine. The second accepts only `{version: "1", rules: [...]}`, using the same rule shape as `persona.behavioral_rules`. Replay requires no credentials, browser, provider, persona, or detector instantiation. It reads `config.yaml`, `metadata.json`, and `trace.jsonl`; hashes the exact source bytes; validates ordering, references, detector schemas, counters, and state continuity; and never mutates the source. Output is exclusive/no-clobber and must be outside the source run directory.
+The first command verifies recorded transitions using the same pure engine. The second accepts only `{rules: [...]}`, using the same rule shape as `persona.behavioral_rules`. Replay requires no credentials, browser, provider, persona, or detector instantiation. It reads `config.yaml`, `metadata.json`, and `trace.jsonl`; hashes the exact source bytes; validates ordering, references, detector schemas, counters, and state continuity; and never mutates the source. Output is exclusive/no-clobber and must be outside the source run directory.
 
 Replay JSON follows `behavior-replay.schema.json`, with version `"1"`, mode, completeness, calculated transitions, and comparison findings. Incomplete runs can verify only complete committed batches, explicitly labeled a prefix. Legacy traces without detector metadata are unsupported; replay never reconstructs missing signals from prose. Counterfactuals reuse recorded signals, stop after earlier abandonment, and mark later observations outside the customer's continuation. Nonbehavioral transitions apply only their recorded changed fields (`external_state_policy: recorded_changed_fields`); this is an explicit assumption, not a generated alternate conversation or evaluation outcome.
 
@@ -640,11 +718,11 @@ The documented Python registration example also passed preparation, factory crea
 
 Final integrated regression: **1,749 passed, 4 opt-in skips, 3 dependency deprecation warnings**, 435.88 seconds; all ten exported schemas matched generated output. Counterfactual subprocess CLI smoke abandoned at completed-turn occurrence 2 and marked four later recorded observations outside continuation. Source runs remained unchanged.
 
-**Updating behavioral rules:** preserve the journey's `version: "1"`. Replace each rule's obsolete `event` field with `when: {signal: ...}` and move delta/threshold fields into `effects`; no scenario-version migration is needed. Keep the interface guide and historical evidence unchanged.
+**Updating behavioral rules:** replace each rule's obsolete `event` field with `when: {signal: ...}` and move delta/threshold fields into `effects`. Keep interface guides and historical evidence unchanged.
 
 ### Evaluators
 
-Version 1 supports these evaluator types:
+Built-in success-criterion evaluators:
 
 | Evaluator | Result | Configuration |
 | --- | --- | --- |
@@ -688,7 +766,7 @@ The submitted customer text is canonical after a successful send. In marked-read
 
 For append-only chats without message IDs, `message_identity: { strategy: dom_node }` tracks actual browser node references in memory. It does not inject IDs into the page or use content hashes. Repeated identical replies remain distinct, and streaming changes retain the same identity. Removing/replacing observed nodes, reordering them, or changing finalized text fails closed. Node tracking is bounded to 120 nodes per actor and is released with the browser session. Prefer stable attributes when available; virtualized/re-rendered transcripts may not support this strategy.
 
-The public `InterfaceChannelGuide` uses `version: "1"` and `webchat_playwright_dynamic`, with content-free fresh-replay validation. The private sample graph is used only during discovery/replay; it is not loaded as runtime authority or published. Old guide shapes require rediscovery, even if they also say version 1. Inline journey channels use the same dynamic interface contract; old text/stateful channel shapes are not accepted as current run configuration.
+The public `InterfaceChannelGuide` uses `webchat_playwright_dynamic` with content-free fresh-replay validation; no guide version field is required. The private sample graph is used only during discovery/replay; it is not loaded as runtime authority or published. Old guide shapes require rediscovery. Inline journey channels use the same dynamic interface contract; old text/stateful channel shapes are not accepted as current run configuration.
 
 ### Model providers
 
@@ -820,7 +898,7 @@ This check calls the selected model API and launches local Chromium. It tests de
 
 ## Scope and limitations
 
-SyntheticCX 0.1.0 is a pre-alpha MVP. It does **not** currently provide a hosted UI, HTTP API, population simulation, dashboard, selector self-healing, voice/IVR/WhatsApp/API channels, arbitrary-widget compatibility guarantees, or a fully local/offline model adapter. Web-chat discovery is an optional, explicit setup command; it does not repair guides during runs. Its tested browser target is Chromium on Linux CI; headed Chromium can help local diagnosis.
+SyntheticCX 0.1.0 is a pre-alpha MVP. It does **not** currently provide a hosted UI, HTTP API, population simulation, dashboard, selector self-healing, voice/IVR/API channels, arbitrary-widget compatibility guarantees, or a fully local/offline model adapter. WhatsApp Web support is experimental. Web-chat discovery is an optional, explicit setup command; it does not repair guides during runs. Its tested browser target is Chromium on Linux CI; headed Chromium can help local diagnosis.
 
 Runs are best-effort reproducible: model, sampling parameters, requested seed, configuration, trace, and available model metadata are stored, but LLM behavior can still vary. Use only authorized, controlled targets and synthetic data. Do not run uncontrolled journeys against production systems.
 

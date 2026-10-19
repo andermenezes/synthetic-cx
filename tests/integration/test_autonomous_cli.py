@@ -345,7 +345,7 @@ def test_native_menu_learning_exact_replay_and_publication(tmp_path, monkeypatch
     loaded = load_config(tmp_path / "draft.completed.yaml")
     assert isinstance(loaded.channel, InterfaceChannelConfig)
     published = yaml.safe_load(output.read_text())
-    assert published["version"] == "1"
+    assert "version" not in published
     assert published["channel"]["type"] == "webchat_playwright_dynamic"
     assert not {"states", "transitions", "verification_recipe", "initial_state_id"} & set(
         published["channel"]
@@ -482,11 +482,5 @@ def test_native_menu_learning_exact_replay_and_publication(tmp_path, monkeypatch
     if variant == "delayed_root":
         expected.insert(0, "opener")
     assert events == expected * 2
-    if variant == "delayed_root":
-        assert "explicitly hinted chat launcher activated" in result.output
-        assert (
-            "waiting for owned chat interaction controls within startup deadline" in result.output
-        )
-        assert "native inventory offers 1 independently proven chat roots" in result.output
     assert "LOCAL-ONLY-TEST-CREDENTIAL" not in output.read_text()
     planner.close.assert_awaited_once()

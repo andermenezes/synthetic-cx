@@ -34,6 +34,7 @@ from syntheticcx.adapters.channel.ownership import (
 from syntheticcx.adapters.channel.playwright import locate, normalize_echo
 from syntheticcx.adapters.channel.reader import ExchangeReaderEvidence
 from syntheticcx.adapters.channel.reading import READING_HELPERS
+from syntheticcx.adapters.channel.website import WebsiteNavigator
 from syntheticcx.config.models import (
     ChatOwnership,
     ChatState,
@@ -45,6 +46,7 @@ from syntheticcx.config.models import (
     StatefulChannelConfig,
 )
 from syntheticcx.discovery.hints import launcher_id
+from syntheticcx.discovery.policy import portability_flow, require_discovery_probe
 from syntheticcx.domain.models import CompletedResponse, Message, SelectionReceipt, SendReceipt
 from syntheticcx.errors import ChannelError
 
@@ -89,6 +91,7 @@ class NativeChatBroker:
         headed: bool = False,
         page: Page | None = None,
         chat_hint: str | None = None,
+        website_recipient: str | None = None,
     ) -> None:
         self.contract = contract
         self.url = str(contract.url) if contract else str(target_url or url or "")
@@ -169,6 +172,9 @@ class NativeChatBroker:
         self._bootstrap_before: list[ElementHandle] = []
         self._learning_source: ChatState | None = None
         self._learning_edges: list[tuple[str, str, str, str | None]] = []
+        self._website: WebsiteNavigator | None = None
+        self._website_recipient = website_recipient
+        self.discovery_only = False
 
     @property
     def current_state(self) -> ChatState | None:
@@ -255,6 +261,11 @@ class NativeChatBroker:
                     )
                 )
                 await self._activate_opener(opener, config.open_locator, explicit_id=explicit)
+            if config.navigation_steps:
+                navigator = self.website_navigator
+                await navigator.replay(config.navigation_steps)
+                self.page = navigator.page
+                await self._remember_website_opener()
             frame = self.page.main_frame
             if config.frame_locator is not None:
                 frame_node = await self._unique(self.page, config.frame_locator)
@@ -389,6 +400,96 @@ class NativeChatBroker:
             if not task.cancelled():
                 task.exception()
             raise
+
+    @property
+    def website_navigator(self) -> WebsiteNavigator:
+        if self._website is None:
+            if self.page is None:
+                raise ChannelError("channel.observe", "website page is unavailable")
+            self._website = WebsiteNavigator(
+                self.page, self.url, self.limits, recipient=self._website_recipient
+            )
+        self._website.discovery_only = self.discovery_only
+        return self._website
+
+    async def _remember_website_opener(self) -> None:
+        node = self.website_navigator.last_node
+        # Retain a separate handle: the website inventory owns its own references.
+        if self._open_node is not None:
+            await self._open_node.dispose()
+        self._open_node = None
+        if node is not None:
+            try:
+                if await node.evaluate("node => node.isConnected"):
+                    self._open_node = (await node.evaluate_handle("node => node")).as_element()
+            except PlaywrightError:
+                pass
+        self._startup_ready = False
+        self._startup_deadline = None
+
+    async def observe_website(self) -> dict[str, Any]:
+        navigator = self.website_navigator
+        # URL/recipient validation always precedes any account-wide DOM inspection.
+        if await navigator.terminal():
+            return {"terminal": "whatsapp"}
+        self.page = navigator.page
+        observed_channel = None
+        if origin(self.page.url) == origin(self.url):
+            if (
+                self._open_locator is not None
+                and not navigator.steps
+                and self._open_node is not None
+            ):
+                await self.wait_until_ready()
+            observation = await self._observe_once()
+            if self.owned is not None or any(
+                item["kind"] == "scope" for item in observation["catalog"]["candidates"]
+            ):
+                observed_channel = "webchat"
+                if self._website_recipient is None:
+                    return {"terminal": "webchat"}
+        initial_launcher_id = (
+            launcher_id(self.chat_hint)
+            if not navigator.steps and self._open_locator is None
+            else None
+        )
+        observation = await navigator.observe(
+            initial_launcher_id=initial_launcher_id, chat_hint=self.chat_hint
+        )
+        observation["observed_channel"] = observed_channel
+        self.page = navigator.page
+        return observation
+
+    async def act_website(self, revision: str, action: str, target_id: str | None = None) -> None:
+        async with self._lock:
+            if self._closed or self._pending or self._submission:
+                raise ChannelError("channel.open", "website phase is no longer available")
+            navigator = self.website_navigator
+            await navigator.act(revision, action, target_id)
+            self.page = navigator.page
+            # Website actions invalidate discovery proposals, even on the same URL:
+            # hover, modal dismissal and lazy content can replace their actual nodes.
+            await self._release_native_handles()
+            self._catalog_signature = None
+            self._revision = secrets.token_urlsafe(18)
+            self._startup_ready = False
+            self._startup_deadline = None
+            self._options = None
+            self._state = None
+            self._initial_state = None
+            self._states.clear()
+            self._initial_observed = False
+            self._initial_response = None
+            self._assistant = None
+            self._customer = None
+            self._frame_locator = None
+            self._root_locator = None
+            self._cursor = MessageCursor(self._identity)
+            if self._exchange is not None:
+                await self._exchange.close()
+                self._exchange = None
+            if origin(self.page.url) == origin(self.url):
+                await self._remember_website_opener()
 
     async def observe(self) -> dict[str, Any]:
         """Allow lazy widget startup before offering an empty inventory to the planner."""
@@ -1348,6 +1449,8 @@ class NativeChatBroker:
     ) -> SendReceipt:
         if text is not None:
             revision, message = message, text
+        if self.discovery_only:
+            require_discovery_probe(message)
         if target_id is not None:
             item = await self._proposal(target_id, "input", revision)
             if self._input is None or not await item.node.evaluate(
@@ -1383,6 +1486,12 @@ class NativeChatBroker:
             or self._learn_transition_allowed
         ):
             raise ChannelError("channel.send", "dispatch is unbound, pending, or uncertain")
+        if self.discovery_only and self._assistant is not None:
+            current = await self._snapshot("assistant")
+            if current and portability_flow(current[-1].content):
+                raise ChannelError(
+                    "channel.send", "number-portability flows are forbidden in discovery"
+                )
         await self._validate_current_controls()
 
     def _guard_transition(self, kind: str, label: str | None) -> None:
@@ -1910,6 +2019,7 @@ class NativeChatBroker:
             type="webchat_playwright_stateful",
             url=self.url,
             open_locator=self._open_locator,
+            navigation_steps=list(self._website.steps) if self._website else [],
             frame_locator=self._frame_locator,
             ownership=ChatOwnership(root_locator=root_config, proof=self.owned.proof),
             assistant_message_locator=self._assistant,
@@ -1966,6 +2076,7 @@ class NativeChatBroker:
             for resource, method in (
                 (self, "_release_native_handles"),
                 (self._exchange, "close"),
+                (self._website, "close"),
                 (self._context if not self._external_page else None, "close"),
                 (self._browser, "close"),
                 (self._playwright, "stop"),

@@ -82,7 +82,6 @@ def config(parameters: dict[str, object] | None = None) -> BehaviorConfig:
                 {
                     "id": "consumer",
                     "type": "custom_type",
-                    "version": "exact-3",
                     "parameters": parameters if parameters is not None else {"threshold": 2},
                 }
             ]
@@ -150,7 +149,7 @@ def test_registry_is_explicit_immutable_and_preflight_does_not_construct() -> No
 
 @pytest.mark.parametrize(
     "problem",
-    ["unknown", "version", "parameters", "schema", "ownership", "rules", "builtin_override"],
+    ["unknown", "parameters", "schema", "ownership", "rules", "builtin_override"],
 )
 def test_invalid_registration_configuration_precedes_credentials_and_factories(
     problem: str,
@@ -164,8 +163,6 @@ def test_invalid_registration_configuration_precedes_credentials_and_factories(
     rules = []
     if problem == "unknown":
         extensions = {}
-    elif problem == "version":
-        extensions["custom_type"] = replace(registered, version="different")
     elif problem == "parameters":
         selected = config({"threshold": "2", "private": "never leak"})
     elif problem == "schema":
@@ -178,7 +175,6 @@ def test_invalid_registration_configuration_precedes_credentials_and_factories(
                     {
                         "id": "another",
                         "type": "custom_type",
-                        "version": "exact-3",
                         "parameters": {"threshold": 2},
                     },
                 ]
@@ -316,7 +312,6 @@ def test_all_detectors_receive_detached_same_preboundary_state() -> None:
                 {
                     "id": "second-id",
                     "type": "second",
-                    "version": "exact-3",
                     "parameters": {"threshold": 2},
                 },
             ]

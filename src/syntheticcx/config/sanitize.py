@@ -8,7 +8,7 @@ from typing import Any, cast
 
 from pydantic import JsonValue, TypeAdapter, ValidationError
 
-from syntheticcx.config.models import InterfaceChannelGuide, PrivacyConfig, ProjectConfig
+from syntheticcx.config.models import AnyChannelGuide, PrivacyConfig, ProjectConfig
 from syntheticcx.errors import ConfigurationError
 from syntheticcx.privacy.redaction import Redactor
 
@@ -32,7 +32,7 @@ def _decoded_css_strings(value: Any) -> Any:
 
 
 def sanitized_channel_guide(
-    guide: InterfaceChannelGuide,
+    guide: AnyChannelGuide,
     privacy: PrivacyConfig,
     *,
     resolved_secrets: Sequence[str] = (),
@@ -44,9 +44,7 @@ def sanitized_channel_guide(
     contracts therefore fail publication with an owned, content-free diagnostic.
     """
     try:
-        validated = TypeAdapter(InterfaceChannelGuide).validate_python(
-            guide.model_dump(mode="json")
-        )
+        validated = TypeAdapter(AnyChannelGuide).validate_python(guide.model_dump(mode="json"))
     except ValidationError:
         raise ConfigurationError("publish discovery", "invalid channel guide contract") from None
     document = validated.model_dump(mode="json", exclude_none=True)

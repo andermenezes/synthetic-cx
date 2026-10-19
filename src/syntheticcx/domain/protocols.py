@@ -50,6 +50,13 @@ class InitialObservingChannel(Protocol):
     async def observe_initial(self) -> CompletedResponse | None: ...
 
 
+@runtime_checkable
+class PendingObservingChannel(Protocol):
+    """Fresh asynchronous replies, without dispatching another customer action."""
+
+    async def observe_pending(self) -> CompletedResponse | None: ...
+
+
 class ObservedControls(TypedDict):
     text_available: bool
     options: list[ReplyOption]

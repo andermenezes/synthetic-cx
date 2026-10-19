@@ -22,6 +22,7 @@ from syntheticcx.domain.events import (
 )
 from syntheticcx.domain.models import (
     BehavioralStateTransition,
+    CompletedResponse,
     ConversationCapabilities,
     ConversationObservation,
     CustomerScenarioContext,
@@ -38,6 +39,7 @@ from syntheticcx.domain.protocols import (
     ControlsObservingChannel,
     InitialObservingChannel,
     OptionSelectingChannel,
+    PendingObservingChannel,
     PersonaSimulator,
     WaitController,
 )
@@ -220,7 +222,13 @@ def build_graph(
                     )
                 )
         observation = BehavioralObservation(
-            kind="greeting" if state["turn_count"] == 0 else "customer_turn_completed",
+            kind=(
+                "assistant_update"
+                if state.get("response_is_update", False)
+                else "greeting"
+                if state["turn_count"] == 0
+                else "customer_turn_completed"
+            ),
             messages=tuple(response.messages) if response is not None else (),
             evidence_event_ids=tuple(boundary_event_ids) + tuple(fact.event_id for fact in facts),
             state=current.model_copy(deep=True),
@@ -296,6 +304,7 @@ def build_graph(
                 progress.persona_state = current
         return {
             "persona_state": current,
+            "response_is_update": False,
             "termination_reason": (
                 "abandonment"
                 if current.abandoned
@@ -305,7 +314,35 @@ def build_graph(
             ),
         }
 
+    async def observe_pending(
+        state: RuntimeState, *, combine_previous: bool = False
+    ) -> dict[str, object] | None:
+        if not isinstance(channel, PendingObservingChannel):
+            return None
+        try:
+            response = await wait.run(
+                channel.observe_pending(), min(limits.response_timeout_seconds, remaining())
+            )
+        except Exception as exc:
+            raise safe_channel_error(
+                exc, "channel.observe", "pending assistant observation failed"
+            ) from None
+        if response is None:
+            return None
+        update = await commit_response(response, update=True)
+        observation = cast(ConversationObservation, update["observation"])
+        previous = state["observation"]
+        if combine_previous and previous is not None:
+            update["observation"] = observation.model_copy(
+                update={"messages": [*previous.messages, *observation.messages]}
+            )
+        update.update(action=None, pending_message=None, termination_reason=None)
+        return update
+
     async def respond(state: RuntimeState) -> dict[str, object]:
+        update = await observe_pending(state, combine_previous=True)
+        if update is not None:
+            return update
         observation = state["observation"]
         assert observation is not None
         if isinstance(channel, ControlsObservingChannel):
@@ -362,6 +399,11 @@ def build_graph(
                 progress.persona_state = current
         if current != action.state:
             raise ModelError("persona.respond", "persona action lacks a state transition")
+        if not current.abandoned and action.signal != "abandon":
+            update = await observe_pending(state)
+            if update is not None:
+                update["persona_state"] = current
+                return update
         reason: str | None = None
         if current.abandoned or action.signal == "abandon":
             reason = "abandonment"
@@ -387,6 +429,9 @@ def build_graph(
         action = state["action"]
         if action is None or state["termination_reason"] is not None:
             raise ValueError("cannot send after termination or without an action")
+        update = await observe_pending(state)
+        if update is not None:
+            return update
         metadata: JsonObject = {}
         selection = action.selected_option_id is not None
         try:
@@ -480,13 +525,10 @@ def build_graph(
             "pending_message": None,
         }
 
-    async def receive(state: RuntimeState) -> dict[str, object]:
+    async def commit_response(
+        response: CompletedResponse, *, update: bool = False
+    ) -> dict[str, object]:
         nonlocal boundary_event_ids
-        try:
-            with span("conversation.turn", **{"turn.number": state["turn_count"]}):
-                response = await wait.run(channel.receive(), limits.response_timeout_seconds)
-        except Exception as exc:
-            raise safe_channel_error(exc, "channel.receive", "assistant receive failed") from None
         messages: list[Message] = []
         raw_messages: list[Message] = []
         boundary_event_ids = []
@@ -508,13 +550,27 @@ def build_graph(
         response = response.model_copy(update={"messages": messages})
         return {
             "response": raw_response,
+            "response_is_update": update,
             "observation": ConversationObservation(
                 kind="assistant_response", messages=response.messages
             ),
         }
 
-    def after_response(state: RuntimeState) -> Literal["send", "terminal"]:
+    async def receive(state: RuntimeState) -> dict[str, object]:
+        try:
+            with span("conversation.turn", **{"turn.number": state["turn_count"]}):
+                response = await wait.run(channel.receive(), limits.response_timeout_seconds)
+        except Exception as exc:
+            raise safe_channel_error(exc, "channel.receive", "assistant receive failed") from None
+        return await commit_response(response)
+
+    def after_response(state: RuntimeState) -> Literal["send", "terminal", "behavior"]:
+        if state.get("response_is_update", False):
+            return "behavior"
         return "terminal" if state["termination_reason"] is not None else "send"
+
+    def after_send(state: RuntimeState) -> Literal["receive", "behavior"]:
+        return "behavior" if state.get("response_is_update", False) else "receive"
 
     def after_behavior(state: RuntimeState) -> Literal["respond", "terminal"]:
         return "terminal" if state["termination_reason"] is not None else "respond"
@@ -530,8 +586,10 @@ def build_graph(
     graph.add_edge("initialize", "greeting")
     graph.add_edge("greeting", "behavior")
     graph.add_conditional_edges("behavior", after_behavior, {"respond": "respond", "terminal": END})
-    graph.add_conditional_edges("respond", after_response, {"send": "send", "terminal": END})
-    graph.add_edge("send", "receive")
+    graph.add_conditional_edges(
+        "respond", after_response, {"send": "send", "terminal": END, "behavior": "behavior"}
+    )
+    graph.add_conditional_edges("send", after_send, {"receive": "receive", "behavior": "behavior"})
     graph.add_edge("receive", "behavior")
     return cast(
         "CompiledStateGraph[RuntimeState, None, RuntimeState, RuntimeState]", graph.compile()

@@ -23,7 +23,6 @@ def example() -> dict[str, Any]:
 
 def guide(channel: dict[str, Any]) -> dict[str, Any]:
     return {
-        "version": "1",
         "channel": channel,
         "validation": {
             "status": "verified",
@@ -73,7 +72,6 @@ def test_referenced_guide_materializes_existing_run_config(tmp_path: Path) -> No
 @pytest.mark.parametrize(
     ("change", "error"),
     [
-        ({"version": "3"}, "version"),
         ({"unexpected": "value"}, "unexpected"),
         ({"validation": {"status": "draft"}}, "validation.status"),
         ({"validation": {"target_origin": "https://other.example"}}, "target_origin"),
