@@ -2,16 +2,27 @@ name: CI
 
 on:
   push:
+    branches: [main, development]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      legacy_mcp:
+        description: Also run the legacy Playwright MCP compatibility smoke tests
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  verify:
-    name: Python ${{ matrix.python-version }} / Chromium
+  checks:
+    name: Quality, unit tests and packaging / Python 3.13
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.13"]
+    timeout-minutes: 20
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -19,19 +30,11 @@ jobs:
       - name: Install uv and Python
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.13"
           enable-cache: true
 
-      - name: Install Node.js for discovery smoke tests
-        uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
-        with:
-          node-version: "22"
-
       - name: Install locked dependencies
-        run: uv sync --locked --group dev --extra discovery
-
-      - name: Install matching Playwright Chromium and Linux dependencies
-        run: uv run --no-sync playwright install --with-deps chromium
+        run: uv sync --locked --group dev
 
       - name: Lint
         run: uv run --no-sync ruff check .
@@ -42,33 +45,90 @@ jobs:
       - name: Type-check source and adapter contracts
         run: uv run --no-sync mypy src tests/contract tests/smoke/test_live_tinytroupe.py
 
-      - name: Check all generated schemas and canonical example
-        run: >-
-          uv run --no-sync pytest
-          tests/unit/config/test_phase2a.py::test_loads_the_canonical_example
-          tests/unit/config/test_validation.py::test_checked_in_schema_matches_generated_contract
-          tests/unit/domain/test_contracts.py::test_artifact_schemas_match_generated_output
+      # This includes schema parity and the canonical example; no duplicate pytest pass.
+      - name: Unit, contract and default smoke tests
+        run: uv run --no-sync pytest -q --ignore=tests/integration --durations=20
 
       - name: Verify direct dependency license inventory
         run: uv run --no-sync python scripts/license_inventory.py
 
-      - name: Test (including Chromium integration and offline CLI examples)
-        run: >-
-          uv run --no-sync pytest
-          --deselect=tests/unit/config/test_phase2a.py::test_loads_the_canonical_example
-          --deselect=tests/unit/config/test_validation.py::test_checked_in_schema_matches_generated_contract
-          --deselect=tests/unit/domain/test_contracts.py::test_artifact_schemas_match_generated_output
+      - name: Build distributions
+        run: uv build --out-dir "$RUNNER_TEMP/syntheticcx-dist"
+
+      - name: Inspect archives and clean-install wheel and sdist-derived wheel
+        run: uv run --no-sync python scripts/verify_distribution.py "$RUNNER_TEMP/syntheticcx-dist"
+
+      - name: Remove test-generated logs
+        if: always()
+        run: find . -maxdepth 1 -type f -name '*.log' -delete
+
+  integration:
+    name: Integration / Python 3.13 / ${{ matrix.suite }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Complementary selections cover the whole integration tree, including
+          # future files outside discovery. Keep each test's browser isolation intact.
+          - suite: runtime
+            pytest-args: tests/integration --ignore=tests/integration/discovery
+          - suite: discovery
+            pytest-args: tests/integration/discovery
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --locked --group dev
+
+      - name: Install matching Playwright Chromium and Linux dependencies
+        run: uv run --no-sync playwright install --with-deps chromium
+
+      - name: Run integration shard
+        run: uv run --no-sync pytest -q ${{ matrix.pytest-args }} --durations=20
+
+      - name: Remove test-generated logs
+        if: always()
+        run: find . -maxdepth 1 -type f -name '*.log' -delete
+
+  legacy-mcp:
+    name: Legacy MCP compatibility / Python 3.13
+    if: github.event_name == 'workflow_dispatch' && inputs.legacy_mcp
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Install Node.js for legacy MCP
+        uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
+        with:
+          node-version: "22"
+
+      - name: Install legacy discovery dependencies
+        run: uv sync --locked --group dev --extra discovery
+
+      - name: Install matching Playwright Chromium and Linux dependencies
+        run: uv run --no-sync playwright install --with-deps chromium
 
       - name: Smoke-test managed Playwright MCP discovery
         env:
           SYNTHETICCX_RUN_MCP_SMOKE: "1"
-        run: uv run --no-sync pytest -q tests/smoke/test_playwright_mcp.py
-
-      - name: Build distributions
-        run: uv build --clear --out-dir "$RUNNER_TEMP/syntheticcx-dist"
-
-      - name: Inspect archives and clean-install wheel and sdist-derived wheel
-        run: uv run --no-sync python scripts/verify_distribution.py "$RUNNER_TEMP/syntheticcx-dist"
+        run: uv run --no-sync pytest -q tests/smoke/test_playwright_mcp.py --durations=20
 
       - name: Remove test-generated logs
         if: always()
