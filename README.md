@@ -578,9 +578,10 @@ When reporting a problem, include the command with secrets removed, OS/Python ve
 
 ## Development
 
-From the installed checkout:
+From the installed checkout, install the optional Python adapter SDK before full-source type-checking (no Node.js or MCP server is needed for mypy):
 
 ```bash
+uv sync --locked --group dev --extra discovery
 uv run --no-sync pytest
 uv run --no-sync ruff check .
 uv run --no-sync ruff format --check .
