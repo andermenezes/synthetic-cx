@@ -1,0 +1,599 @@
+{
+  "$defs": {
+    "ArtifactRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Content Hash"
+        },
+        "media_type": {
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "status": {
+          "enum": [
+            "captured",
+            "omitted",
+            "failed"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "media_type",
+        "status"
+      ],
+      "title": "ArtifactRecord",
+      "type": "object"
+    },
+    "BehavioralDetectorMetadata": {
+      "additionalProperties": false,
+      "description": "Exact configured implementation identity, without executable factories.",
+      "properties": {
+        "detector_id": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+          "title": "Detector Id",
+          "type": "string"
+        },
+        "detector_type": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+          "title": "Detector Type",
+          "type": "string"
+        },
+        "detector_version": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Detector Version",
+          "type": "string"
+        },
+        "mode": {
+          "enum": [
+            "deterministic",
+            "model_backed"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "output_signals": {
+          "items": {
+            "maxLength": 80,
+            "minLength": 1,
+            "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+            "type": "string"
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "title": "Output Signals",
+          "type": "array"
+        },
+        "signal_schemas": {
+          "maxProperties": 32,
+          "minProperties": 1,
+          "patternProperties": {
+            "^[A-Za-z][A-Za-z0-9_.-]*$": {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            }
+          },
+          "propertyNames": {
+            "maxLength": 80,
+            "minLength": 1
+          },
+          "title": "Signal Schemas",
+          "type": "object"
+        }
+      },
+      "required": [
+        "detector_id",
+        "detector_type",
+        "detector_version",
+        "mode",
+        "output_signals",
+        "signal_schemas"
+      ],
+      "title": "BehavioralDetectorMetadata",
+      "type": "object"
+    },
+    "ErrorDetail": {
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "enum": [
+            "configuration",
+            "channel",
+            "model",
+            "behavior",
+            "evaluation",
+            "persistence",
+            "cancelled"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "causal_event_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Causal Event Id"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "operation": {
+          "minLength": 1,
+          "title": "Operation",
+          "type": "string"
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "enum": [
+                "channel.state",
+                "channel.reader",
+                "channel.reader_evidence",
+                "channel.ownership",
+                "channel.observe",
+                "channel.options",
+                "channel.select_option",
+                "channel.controls"
+              ],
+              "type": "string"
+            },
+            {
+              "enum": [
+                "provider_timeout",
+                "provider_connection",
+                "provider_http_4xx",
+                "provider_http_5xx",
+                "provider_error",
+                "invalid_structured_response",
+                "persona_timeout",
+                "persona_action_malformed",
+                "persona_action_unsupported",
+                "persona_action_missing",
+                "persona_action_ambiguous",
+                "persona_option_unavailable",
+                "persona_text_unavailable",
+                "persona_adapter_error",
+                "unknown_model_failure"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason Code"
+        },
+        "retryable": {
+          "default": false,
+          "title": "Retryable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "category",
+        "operation",
+        "message"
+      ],
+      "title": "ErrorDetail",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "ModelIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "model": {
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "model_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Version"
+        },
+        "provider": {
+          "minLength": 1,
+          "title": "Provider",
+          "type": "string"
+        },
+        "requested_seed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Requested Seed"
+        },
+        "sampling_parameters": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Sampling Parameters",
+          "type": "object"
+        }
+      },
+      "required": [
+        "provider",
+        "model"
+      ],
+      "title": "ModelIdentity",
+      "type": "object"
+    },
+    "ProviderCapabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "chat_completions": {
+          "title": "Chat Completions",
+          "type": "boolean"
+        },
+        "embeddings": {
+          "title": "Embeddings",
+          "type": "boolean"
+        },
+        "model_version": {
+          "title": "Model Version",
+          "type": "boolean"
+        },
+        "structured_output": {
+          "title": "Structured Output",
+          "type": "boolean"
+        },
+        "token_usage": {
+          "title": "Token Usage",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "chat_completions",
+        "structured_output",
+        "embeddings",
+        "token_usage",
+        "model_version"
+      ],
+      "title": "ProviderCapabilities",
+      "type": "object"
+    },
+    "RunMetadata": {
+      "additionalProperties": false,
+      "properties": {
+        "behavior_detectors": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/BehavioralDetectorMetadata"
+          },
+          "maxItems": 8,
+          "title": "Behavior Detectors",
+          "type": "array"
+        },
+        "capture_omissions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Capture Omissions",
+          "type": "array"
+        },
+        "configuration_version": {
+          "title": "Configuration Version",
+          "type": "string"
+        },
+        "dependency_lock_hash": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dependency Lock Hash"
+        },
+        "evaluation_model": {
+          "$ref": "#/$defs/ModelIdentity"
+        },
+        "framework_version": {
+          "title": "Framework Version",
+          "type": "string"
+        },
+        "owner": {
+          "$ref": "#/$defs/RunOwner"
+        },
+        "persona_model": {
+          "$ref": "#/$defs/ModelIdentity"
+        },
+        "provider_model_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider Model Version"
+        },
+        "runtime_platform": {
+          "minLength": 1,
+          "title": "Runtime Platform",
+          "type": "string"
+        },
+        "unavailable_capabilities": {
+          "additionalProperties": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": "Unavailable Capabilities",
+          "type": "object"
+        },
+        "usage": {
+          "$ref": "#/$defs/TokenUsage"
+        },
+        "verified_capabilities": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ProviderCapabilities"
+          },
+          "title": "Verified Capabilities",
+          "type": "object"
+        }
+      },
+      "required": [
+        "configuration_version",
+        "framework_version",
+        "persona_model",
+        "evaluation_model",
+        "usage",
+        "runtime_platform",
+        "owner"
+      ],
+      "title": "RunMetadata",
+      "type": "object"
+    },
+    "RunOwner": {
+      "additionalProperties": false,
+      "properties": {
+        "hostname": {
+          "minLength": 1,
+          "title": "Hostname",
+          "type": "string"
+        },
+        "owner_uuid": {
+          "minLength": 1,
+          "title": "Owner Uuid",
+          "type": "string"
+        },
+        "pid": {
+          "exclusiveMinimum": 0,
+          "title": "Pid",
+          "type": "integer"
+        },
+        "process_start_evidence": {
+          "minLength": 1,
+          "title": "Process Start Evidence",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner_uuid",
+        "hostname",
+        "pid",
+        "process_start_evidence"
+      ],
+      "title": "RunOwner",
+      "type": "object"
+    },
+    "TokenUsage": {
+      "additionalProperties": false,
+      "properties": {
+        "input_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Tokens"
+        },
+        "output_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Tokens"
+        },
+        "unavailable_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unavailable Reason"
+        }
+      },
+      "title": "TokenUsage",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "artifacts": {
+      "items": {
+        "$ref": "#/$defs/ArtifactRecord"
+      },
+      "title": "Artifacts",
+      "type": "array"
+    },
+    "ended_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Ended At"
+    },
+    "errors": {
+      "items": {
+        "$ref": "#/$defs/ErrorDetail"
+      },
+      "title": "Errors",
+      "type": "array"
+    },
+    "id": {
+      "minLength": 1,
+      "title": "Id",
+      "type": "string"
+    },
+    "lifecycle_status": {
+      "enum": [
+        "in_progress",
+        "finalized",
+        "incomplete"
+      ],
+      "title": "Lifecycle Status",
+      "type": "string"
+    },
+    "metadata": {
+      "$ref": "#/$defs/RunMetadata"
+    },
+    "outcome": {
+      "anyOf": [
+        {
+          "enum": [
+            "passed",
+            "failed",
+            "error",
+            "cancelled"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Outcome"
+    },
+    "persona_id": {
+      "minLength": 1,
+      "title": "Persona Id",
+      "type": "string"
+    },
+    "scenario_id": {
+      "minLength": 1,
+      "title": "Scenario Id",
+      "type": "string"
+    },
+    "started_at": {
+      "format": "date-time",
+      "title": "Started At",
+      "type": "string"
+    },
+    "termination_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Termination Reason"
+    }
+  },
+  "required": [
+    "id",
+    "scenario_id",
+    "persona_id",
+    "started_at",
+    "lifecycle_status",
+    "metadata"
+  ],
+  "title": "MetadataArtifact",
+  "type": "object"
+}

@@ -1,0 +1,2001 @@
+{
+  "$defs": {
+    "ArtifactRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Content Hash"
+        },
+        "media_type": {
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "status": {
+          "enum": [
+            "captured",
+            "omitted",
+            "failed"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "media_type",
+        "status"
+      ],
+      "title": "ArtifactRecord",
+      "type": "object"
+    },
+    "ArtifactRecordedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/ArtifactRecord"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "artifact_recorded",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "timestamp",
+        "type",
+        "data"
+      ],
+      "title": "ArtifactRecordedEvent",
+      "type": "object"
+    },
+    "BehavioralObservationRecorded": {
+      "additionalProperties": false,
+      "description": "Validated batch marker; signal_count makes interrupted commits observable.",
+      "properties": {
+        "detector_ids": {
+          "items": {
+            "maxLength": 80,
+            "minLength": 1,
+            "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+            "type": "string"
+          },
+          "maxItems": 8,
+          "title": "Detector Ids",
+          "type": "array"
+        },
+        "evidence_event_ids": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^\\S+$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Evidence Event Ids",
+          "type": "array"
+        },
+        "kind": {
+          "enum": [
+            "greeting",
+            "customer_turn_completed",
+            "assistant_update"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "message_ids": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^\\S+$",
+            "type": "string"
+          },
+          "title": "Message Ids",
+          "type": "array"
+        },
+        "observation_id": {
+          "format": "uuid4",
+          "title": "Observation Id",
+          "type": "string"
+        },
+        "signal_count": {
+          "maximum": 256,
+          "minimum": 0,
+          "title": "Signal Count",
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/PersonaState"
+        },
+        "turn_count": {
+          "minimum": 0,
+          "title": "Turn Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "observation_id",
+        "kind",
+        "evidence_event_ids",
+        "state",
+        "turn_count",
+        "signal_count"
+      ],
+      "title": "BehavioralObservationRecorded",
+      "type": "object"
+    },
+    "BehavioralObservationRecordedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/BehavioralObservationRecorded"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "behavior_observation_recorded",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "timestamp",
+        "type",
+        "data"
+      ],
+      "title": "BehavioralObservationRecordedEvent",
+      "type": "object"
+    },
+    "BehavioralSignal": {
+      "additionalProperties": false,
+      "description": "A detector classification, not an evaluator verdict or state mutation.\n\nReferences name acknowledged evidence; membership and backward ordering\nrequire observation/journal context and are not guessed by this model.\nPayload is finite JSON, at most 8 KiB in canonical UTF-8 and 16 containers\ndeep. Rule conditions cannot inspect arbitrary payload fields.",
+      "properties": {
+        "deduplication_key": {
+          "maxLength": 200,
+          "minLength": 1,
+          "pattern": "^\\S+$",
+          "title": "Deduplication Key",
+          "type": "string"
+        },
+        "detector_id": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+          "title": "Detector Id",
+          "type": "string"
+        },
+        "detector_type": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+          "title": "Detector Type",
+          "type": "string"
+        },
+        "detector_version": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Detector Version",
+          "type": "string"
+        },
+        "observation_id": {
+          "format": "uuid4",
+          "title": "Observation Id",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Payload",
+          "type": "object"
+        },
+        "signal": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+          "title": "Signal",
+          "type": "string"
+        },
+        "source_event_ids": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^\\S+$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Source Event Ids",
+          "type": "array"
+        },
+        "source_message_ids": {
+          "default": [],
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^\\S+$",
+            "type": "string"
+          },
+          "title": "Source Message Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "detector_id",
+        "detector_type",
+        "detector_version",
+        "signal",
+        "deduplication_key",
+        "observation_id",
+        "source_event_ids"
+      ],
+      "title": "BehavioralSignal",
+      "type": "object"
+    },
+    "BehavioralSignalRecorded": {
+      "additionalProperties": false,
+      "properties": {
+        "signal": {
+          "$ref": "#/$defs/BehavioralSignal"
+        }
+      },
+      "required": [
+        "signal"
+      ],
+      "title": "BehavioralSignalRecorded",
+      "type": "object"
+    },
+    "BehavioralSignalRecordedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/BehavioralSignalRecorded"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "behavioral_signal_recorded",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "timestamp",
+        "type",
+        "data"
+      ],
+      "title": "BehavioralSignalRecordedEvent",
+      "type": "object"
+    },
+    "BehavioralStateChangedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/BehavioralStateTransition"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "behavioral_state_changed",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "timestamp",
+        "type",
+        "data"
+      ],
+      "title": "BehavioralStateChangedEvent",
+      "type": "object"
+    },
+    "BehavioralStateTransition": {
+      "additionalProperties": false,
+      "description": "Acknowledged rule-engine effect, never an evaluator finding.",
+      "properties": {
+        "after": {
+          "$ref": "#/$defs/PersonaState"
+        },
+        "applied_rule_ids": {
+          "items": {
+            "maxLength": 80,
+            "minLength": 1,
+            "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+            "type": "string"
+          },
+          "maxItems": 32,
+          "title": "Applied Rule Ids",
+          "type": "array"
+        },
+        "before": {
+          "$ref": "#/$defs/PersonaState"
+        },
+        "observation_id": {
+          "format": "uuid4",
+          "title": "Observation Id",
+          "type": "string"
+        },
+        "occurrence": {
+          "exclusiveMinimum": 0,
+          "title": "Occurrence",
+          "type": "integer"
+        },
+        "signal": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+          "title": "Signal",
+          "type": "string"
+        },
+        "signal_event_id": {
+          "minLength": 1,
+          "title": "Signal Event Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "observation_id",
+        "signal_event_id",
+        "signal",
+        "occurrence",
+        "before",
+        "after"
+      ],
+      "title": "BehavioralStateTransition",
+      "type": "object"
+    },
+    "ConversationStarted": {
+      "additionalProperties": false,
+      "properties": {
+        "grace_seconds": {
+          "minimum": 0,
+          "title": "Grace Seconds",
+          "type": "number"
+        },
+        "greeting_message_ids": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Greeting Message Ids",
+          "type": "array"
+        },
+        "greeting_observed": {
+          "title": "Greeting Observed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "greeting_observed",
+        "grace_seconds"
+      ],
+      "title": "ConversationStarted",
+      "type": "object"
+    },
+    "ConversationStartedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/ConversationStarted"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "conversation_started",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "timestamp",
+        "type",
+        "data"
+      ],
+      "title": "ConversationStartedEvent",
+      "type": "object"
+    },
+    "Criterion": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "evaluator_type": {
+                "const": "turn_count"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {
+                  "max_turns": {
+                    "exclusiveMinimum": 0,
+                    "title": "Max Turns",
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "max_turns"
+                ],
+                "title": "TurnCountParameters",
+                "type": "object"
+              },
+              "result_kind": {
+                "const": "boolean"
+              }
+            },
+            "required": [
+              "parameters"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "evaluator_type": {
+                "const": "journey_timeout"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "parameters": {
+                "additionalProperties": false,
+                "description": "The observed termination reason supplies the timeout decision.",
+                "properties": {},
+                "title": "JourneyTimeoutParameters",
+                "type": "object"
+              },
+              "result_kind": {
+                "const": "boolean"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "evaluator_type": {
+                "const": "repeated_information"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {
+                  "max_repeats": {
+                    "default": 0,
+                    "minimum": 0,
+                    "title": "Max Repeats",
+                    "type": "integer"
+                  }
+                },
+                "title": "RepeatedInformationParameters",
+                "type": "object"
+              },
+              "result_kind": {
+                "const": "boolean"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "evaluator_type": {
+                "const": "semantic_goal_completion"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "parameters": {
+                "additionalProperties": false,
+                "properties": {
+                  "expected_facts": {
+                    "items": {
+                      "pattern": "\\S",
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "title": "Expected Facts",
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "expected_facts"
+                ],
+                "title": "SemanticGoalParameters",
+                "type": "object"
+              }
+            },
+            "required": [
+              "parameters"
+            ]
+          }
+        },
+        {
+          "else": {
+            "properties": {
+              "threshold": {
+                "type": "null"
+              }
+            }
+          },
+          "if": {
+            "properties": {
+              "result_kind": {
+                "const": "scored"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "threshold": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "threshold"
+            ]
+          }
+        }
+      ],
+      "properties": {
+        "evaluator_type": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+          "title": "Evaluator Type",
+          "type": "string"
+        },
+        "evidence_policy": {
+          "enum": [
+            "required",
+            "optional",
+            "none"
+          ],
+          "title": "Evidence Policy",
+          "type": "string"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "parameters": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Parameters",
+          "type": "object"
+        },
+        "required": {
+          "default": true,
+          "title": "Required",
+          "type": "boolean"
+        },
+        "result_kind": {
+          "enum": [
+            "scored",
+            "boolean"
+          ],
+          "title": "Result Kind",
+          "type": "string"
+        },
+        "threshold": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Threshold"
+        }
+      },
+      "required": [
+        "id",
+        "evaluator_type",
+        "result_kind",
+        "evidence_policy"
+      ],
+      "title": "Criterion",
+      "type": "object"
+    },
+    "ErrorDetail": {
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "enum": [
+            "configuration",
+            "channel",
+            "model",
+            "behavior",
+            "evaluation",
+            "persistence",
+            "cancelled"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "causal_event_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Causal Event Id"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "operation": {
+          "minLength": 1,
+          "title": "Operation",
+          "type": "string"
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "enum": [
+                "channel.state",
+                "channel.reader",
+                "channel.reader_evidence",
+                "channel.ownership",
+                "channel.observe",
+                "channel.options",
+                "channel.select_option",
+                "channel.controls"
+              ],
+              "type": "string"
+            },
+            {
+              "enum": [
+                "provider_timeout",
+                "provider_connection",
+                "provider_http_4xx",
+                "provider_http_5xx",
+                "provider_error",
+                "invalid_structured_response",
+                "persona_timeout",
+                "persona_action_malformed",
+                "persona_action_unsupported",
+                "persona_action_missing",
+                "persona_action_ambiguous",
+                "persona_option_unavailable",
+                "persona_text_unavailable",
+                "persona_adapter_error",
+                "unknown_model_failure"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason Code"
+        },
+        "retryable": {
+          "default": false,
+          "title": "Retryable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "category",
+        "operation",
+        "message"
+      ],
+      "title": "ErrorDetail",
+      "type": "object"
+    },
+    "EvaluationCompleted": {
+      "additionalProperties": false,
+      "properties": {
+        "criterion": {
+          "$ref": "#/$defs/Criterion"
+        },
+        "result": {
+          "$ref": "#/$defs/EvaluationResult"
+        }
+      },
+      "required": [
+        "result",
+        "criterion"
+      ],
+      "title": "EvaluationCompleted",
+      "type": "object"
+    },
+    "EvaluationCompletedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/EvaluationCompleted"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "evaluation_completed",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "timestamp",
+        "type",
+        "data"
+      ],
+      "title": "EvaluationCompletedEvent",
+      "type": "object"
+    },
+    "EvaluationResult": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confidence"
+        },
+        "criterion_id": {
+          "title": "Criterion Id",
+          "type": "string"
+        },
+        "evaluator_id": {
+          "title": "Evaluator Id",
+          "type": "string"
+        },
+        "evidence_event_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Event Ids",
+          "type": "array"
+        },
+        "evidence_message_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Message Ids",
+          "type": "array"
+        },
+        "explanation": {
+          "title": "Explanation",
+          "type": "string"
+        },
+        "metadata": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Metadata",
+          "type": "object"
+        },
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        },
+        "score": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Score"
+        },
+        "severity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Severity"
+        },
+        "status": {
+          "enum": [
+            "passed",
+            "failed",
+            "unavailable",
+            "error"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "evaluator_id",
+        "criterion_id",
+        "status",
+        "required",
+        "explanation"
+      ],
+      "title": "EvaluationResult",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "Message": {
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "enum": [
+            "customer",
+            "assistant",
+            "system"
+          ],
+          "title": "Actor",
+          "type": "string"
+        },
+        "content": {
+          "title": "Content",
+          "type": "string"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "metadata": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Metadata",
+          "type": "object"
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/ReplyOption"
+          },
+          "title": "Options",
+          "type": "array"
+        },
+        "sequence": {
+          "minimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "actor",
+        "content",
+        "observed_at"
+      ],
+      "title": "Message",
+      "type": "object"
+    },
+    "MessageObserved": {
+      "additionalProperties": false,
+      "properties": {
+        "identity_evidence": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Identity Evidence",
+          "type": "object"
+        },
+        "message": {
+          "$ref": "#/$defs/Message"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "title": "MessageObserved",
+      "type": "object"
+    },
+    "MessageObservedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/MessageObserved"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "message_observed",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "timestamp",
+        "type",
+        "data"
+      ],
+      "title": "MessageObservedEvent",
+      "type": "object"
+    },
+    "ModelIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "model": {
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "model_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Version"
+        },
+        "provider": {
+          "minLength": 1,
+          "title": "Provider",
+          "type": "string"
+        },
+        "requested_seed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Requested Seed"
+        },
+        "sampling_parameters": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Sampling Parameters",
+          "type": "object"
+        }
+      },
+      "required": [
+        "provider",
+        "model"
+      ],
+      "title": "ModelIdentity",
+      "type": "object"
+    },
+    "ModelInteraction": {
+      "additionalProperties": false,
+      "properties": {
+        "capture_omissions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Capture Omissions",
+          "type": "array"
+        },
+        "captured_prompt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Captured Prompt"
+        },
+        "ended_at": {
+          "format": "date-time",
+          "title": "Ended At",
+          "type": "string"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "identity": {
+          "$ref": "#/$defs/ModelIdentity"
+        },
+        "input_event_ids": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Input Event Ids",
+          "type": "array"
+        },
+        "output_event_ids": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Output Event Ids",
+          "type": "array"
+        },
+        "started_at": {
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/TokenUsage"
+        }
+      },
+      "required": [
+        "id",
+        "identity",
+        "started_at",
+        "ended_at",
+        "usage"
+      ],
+      "title": "ModelInteraction",
+      "type": "object"
+    },
+    "ModelInteractionCompletedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/ModelInteraction"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "model_interaction_completed",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "timestamp",
+        "type",
+        "data"
+      ],
+      "title": "ModelInteractionCompletedEvent",
+      "type": "object"
+    },
+    "ObservationTopic": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Description",
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "title": "Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "description"
+      ],
+      "title": "ObservationTopic",
+      "type": "object"
+    },
+    "OperationFailedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/OperationFailure"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "operation_failed",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "timestamp",
+        "type",
+        "data"
+      ],
+      "title": "OperationFailedEvent",
+      "type": "object"
+    },
+    "OperationFailure": {
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "$ref": "#/$defs/ErrorDetail"
+        },
+        "related_event_ids": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Related Event Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "error"
+      ],
+      "title": "OperationFailure",
+      "type": "object"
+    },
+    "PersonaFeedback": {
+      "additionalProperties": false,
+      "properties": {
+        "experience_truncated": {
+          "default": false,
+          "title": "Experience Truncated",
+          "type": "boolean"
+        },
+        "language": {
+          "enum": [
+            "en-US",
+            "pt-BR"
+          ],
+          "title": "Language",
+          "type": "string"
+        },
+        "partial_experience": {
+          "title": "Partial Experience",
+          "type": "boolean"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "cancelled",
+                "no_experience",
+                "unsupported",
+                "persona_unavailable",
+                "reflection_failed",
+                "reflection_timeout",
+                "invalid_feedback"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "response": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PersonaFeedbackResponse"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "status": {
+          "enum": [
+            "available",
+            "unavailable"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "topics": {
+          "items": {
+            "$ref": "#/$defs/ObservationTopic"
+          },
+          "maxItems": 10,
+          "minItems": 1,
+          "title": "Topics",
+          "type": "array"
+        }
+      },
+      "required": [
+        "status",
+        "language",
+        "topics",
+        "partial_experience"
+      ],
+      "title": "PersonaFeedback",
+      "type": "object"
+    },
+    "PersonaFeedbackRecordedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/PersonaFeedback"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "persona_feedback_recorded",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "timestamp",
+        "type",
+        "data"
+      ],
+      "title": "PersonaFeedbackRecordedEvent",
+      "type": "object"
+    },
+    "PersonaFeedbackResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "summary": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Summary",
+          "type": "string"
+        },
+        "topics": {
+          "items": {
+            "$ref": "#/$defs/TopicImpression"
+          },
+          "maxItems": 10,
+          "minItems": 1,
+          "title": "Topics",
+          "type": "array"
+        }
+      },
+      "required": [
+        "summary",
+        "topics"
+      ],
+      "title": "PersonaFeedbackResponse",
+      "type": "object"
+    },
+    "PersonaOutputAmbiguityEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/PersonaOutputAmbiguityObserved"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "persona_output_ambiguity_observed",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "timestamp",
+        "type",
+        "data"
+      ],
+      "title": "PersonaOutputAmbiguityEvent",
+      "type": "object"
+    },
+    "PersonaOutputAmbiguityObserved": {
+      "additionalProperties": false,
+      "description": "Audit competing persona actions and the deterministic resolution.",
+      "properties": {
+        "candidate_action_count": {
+          "minimum": 2,
+          "title": "Candidate Action Count",
+          "type": "integer"
+        },
+        "discarded_action_count": {
+          "minimum": 1,
+          "title": "Discarded Action Count",
+          "type": "integer"
+        },
+        "resolution": {
+          "const": "first_external_action_selected",
+          "default": "first_external_action_selected",
+          "title": "Resolution",
+          "type": "string"
+        },
+        "selected_action_order": {
+          "const": 1,
+          "default": 1,
+          "title": "Selected Action Order",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "candidate_action_count",
+        "discarded_action_count"
+      ],
+      "title": "PersonaOutputAmbiguityObserved",
+      "type": "object"
+    },
+    "PersonaState": {
+      "additionalProperties": false,
+      "description": "Owned state copied from configuration for each run.",
+      "properties": {
+        "abandoned": {
+          "default": false,
+          "title": "Abandoned",
+          "type": "boolean"
+        },
+        "frustration": {
+          "default": 0,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Frustration",
+          "type": "number"
+        },
+        "turn_number": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Turn Number",
+          "type": "integer"
+        },
+        "willingness_to_continue": {
+          "default": 1,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Willingness To Continue",
+          "type": "number"
+        }
+      },
+      "title": "PersonaState",
+      "type": "object"
+    },
+    "PersonaStateChangedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/PersonaStateTransition"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "persona_state_changed",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "timestamp",
+        "type",
+        "data"
+      ],
+      "title": "PersonaStateChangedEvent",
+      "type": "object"
+    },
+    "PersonaStateTransition": {
+      "additionalProperties": false,
+      "properties": {
+        "after": {
+          "$ref": "#/$defs/PersonaState"
+        },
+        "applied_rule_ids": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Applied Rule Ids",
+          "type": "array"
+        },
+        "before": {
+          "$ref": "#/$defs/PersonaState"
+        },
+        "trigger_ids": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Trigger Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "trigger_ids",
+        "before",
+        "after",
+        "applied_rule_ids"
+      ],
+      "title": "PersonaStateTransition",
+      "type": "object"
+    },
+    "RepeatedInformationEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/RepeatedInformationObserved"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "repeated_information",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "timestamp",
+        "type",
+        "data"
+      ],
+      "title": "RepeatedInformationEvent",
+      "type": "object"
+    },
+    "RepeatedInformationObserved": {
+      "additionalProperties": false,
+      "properties": {
+        "information_id": {
+          "minLength": 1,
+          "title": "Information Id",
+          "type": "string"
+        },
+        "original_message_id": {
+          "minLength": 1,
+          "title": "Original Message Id",
+          "type": "string"
+        },
+        "request_message_id": {
+          "minLength": 1,
+          "title": "Request Message Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "information_id",
+        "original_message_id",
+        "request_message_id"
+      ],
+      "title": "RepeatedInformationObserved",
+      "type": "object"
+    },
+    "ReplyOption": {
+      "additionalProperties": false,
+      "description": "An adapter-owned opaque choice; no executable browser target crosses this seam.",
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ],
+      "title": "ReplyOption",
+      "type": "object"
+    },
+    "RunLifecycleChange": {
+      "additionalProperties": false,
+      "properties": {
+        "conversation_duration_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Conversation Duration Seconds"
+        },
+        "current": {
+          "enum": [
+            "in_progress",
+            "finalized",
+            "incomplete"
+          ],
+          "title": "Current",
+          "type": "string"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "enum": [
+                "passed",
+                "failed",
+                "error",
+                "cancelled"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Outcome"
+        },
+        "previous": {
+          "anyOf": [
+            {
+              "enum": [
+                "in_progress",
+                "finalized",
+                "incomplete"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Previous"
+        },
+        "termination_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Termination Reason"
+        }
+      },
+      "required": [
+        "current"
+      ],
+      "title": "RunLifecycleChange",
+      "type": "object"
+    },
+    "RunLifecycleEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/RunLifecycleChange"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "sequence": {
+          "minimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "run_lifecycle_changed",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "timestamp",
+        "type",
+        "data"
+      ],
+      "title": "RunLifecycleEvent",
+      "type": "object"
+    },
+    "TokenUsage": {
+      "additionalProperties": false,
+      "properties": {
+        "input_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Tokens"
+        },
+        "output_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Tokens"
+        },
+        "unavailable_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unavailable Reason"
+        }
+      },
+      "title": "TokenUsage",
+      "type": "object"
+    },
+    "TopicImpression": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_message_ids": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 20,
+          "title": "Evidence Message Ids",
+          "type": "array"
+        },
+        "impression": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Impression",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "observed",
+            "not_observed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "topic_id": {
+          "minLength": 1,
+          "title": "Topic Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "topic_id",
+        "status",
+        "impression"
+      ],
+      "title": "TopicImpression",
+      "type": "object"
+    }
+  },
+  "discriminator": {
+    "mapping": {
+      "artifact_recorded": "#/$defs/ArtifactRecordedEvent",
+      "behavior_observation_recorded": "#/$defs/BehavioralObservationRecordedEvent",
+      "behavioral_signal_recorded": "#/$defs/BehavioralSignalRecordedEvent",
+      "behavioral_state_changed": "#/$defs/BehavioralStateChangedEvent",
+      "conversation_started": "#/$defs/ConversationStartedEvent",
+      "evaluation_completed": "#/$defs/EvaluationCompletedEvent",
+      "message_observed": "#/$defs/MessageObservedEvent",
+      "model_interaction_completed": "#/$defs/ModelInteractionCompletedEvent",
+      "operation_failed": "#/$defs/OperationFailedEvent",
+      "persona_feedback_recorded": "#/$defs/PersonaFeedbackRecordedEvent",
+      "persona_output_ambiguity_observed": "#/$defs/PersonaOutputAmbiguityEvent",
+      "persona_state_changed": "#/$defs/PersonaStateChangedEvent",
+      "repeated_information": "#/$defs/RepeatedInformationEvent",
+      "run_lifecycle_changed": "#/$defs/RunLifecycleEvent"
+    },
+    "propertyName": "type"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/RunLifecycleEvent"
+    },
+    {
+      "$ref": "#/$defs/ConversationStartedEvent"
+    },
+    {
+      "$ref": "#/$defs/MessageObservedEvent"
+    },
+    {
+      "$ref": "#/$defs/PersonaStateChangedEvent"
+    },
+    {
+      "$ref": "#/$defs/RepeatedInformationEvent"
+    },
+    {
+      "$ref": "#/$defs/BehavioralObservationRecordedEvent"
+    },
+    {
+      "$ref": "#/$defs/BehavioralSignalRecordedEvent"
+    },
+    {
+      "$ref": "#/$defs/BehavioralStateChangedEvent"
+    },
+    {
+      "$ref": "#/$defs/PersonaOutputAmbiguityEvent"
+    },
+    {
+      "$ref": "#/$defs/ModelInteractionCompletedEvent"
+    },
+    {
+      "$ref": "#/$defs/EvaluationCompletedEvent"
+    },
+    {
+      "$ref": "#/$defs/OperationFailedEvent"
+    },
+    {
+      "$ref": "#/$defs/ArtifactRecordedEvent"
+    },
+    {
+      "$ref": "#/$defs/PersonaFeedbackRecordedEvent"
+    }
+  ]
+}

@@ -1,0 +1,90 @@
+{
+  "$defs": {
+    "JsonValue": {},
+    "Message": {
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "enum": [
+            "customer",
+            "assistant",
+            "system"
+          ],
+          "title": "Actor",
+          "type": "string"
+        },
+        "content": {
+          "title": "Content",
+          "type": "string"
+        },
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "metadata": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Metadata",
+          "type": "object"
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/ReplyOption"
+          },
+          "title": "Options",
+          "type": "array"
+        },
+        "sequence": {
+          "minimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "sequence",
+        "actor",
+        "content",
+        "observed_at"
+      ],
+      "title": "Message",
+      "type": "object"
+    },
+    "ReplyOption": {
+      "additionalProperties": false,
+      "description": "An adapter-owned opaque choice; no executable browser target crosses this seam.",
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ],
+      "title": "ReplyOption",
+      "type": "object"
+    }
+  },
+  "description": "conversation.json is an ordered JSON array of messages.",
+  "items": {
+    "$ref": "#/$defs/Message"
+  },
+  "title": "ConversationArtifact",
+  "type": "array"
+}

@@ -1,0 +1,49 @@
+body {
+  margin: 2rem auto;
+  max-width: 42rem;
+  padding: 0 1rem;
+  font: 1rem/1.5 system-ui, sans-serif;
+  color: #152534;
+}
+
+button, input {
+  font: inherit;
+  padding: 0.4rem;
+}
+
+button:focus-visible, input:focus-visible {
+  outline: 3px solid #005bb5;
+  outline-offset: 2px;
+}
+
+.chat, iframe {
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 1rem;
+  padding: 1rem;
+  border: 1px solid #506579;
+  border-radius: 0.4rem;
+}
+
+iframe {
+  height: 24rem;
+}
+
+.messages {
+  max-height: 14rem;
+  overflow-y: auto;
+}
+
+.messages p {
+  padding: 0.4rem 0.6rem;
+  border-radius: 0.3rem;
+  background: #e7f0f8;
+}
+
+.messages [data-actor="customer"] {
+  background: #e8f3e4;
+}
+
+[hidden] {
+  display: none !important;
+}

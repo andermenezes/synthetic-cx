@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SyntheticCX telecom chat fixture</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="app.js" defer></script>
+  </head>
+  <body data-page="parent">
+    <main>
+      <h1>Telecom billing support</h1>
+      <p>Controlled synthetic chat for browser integration tests.</p>
+      <button type="button" data-testid="open-chat" disabled>Open chat</button>
+      <section class="chat" data-testid="chat-widget" aria-label="Billing chat" hidden>
+        <h2>Billing chat</h2>
+        <div class="messages" data-testid="chat-messages" role="log" aria-label="Chat messages" aria-live="polite">
+          <p role="article" aria-label="Customer message" data-testid="customer-message" data-message-id="history-customer" data-actor="customer">Previous customer question</p>
+          <p role="article" aria-label="Assistant message" data-testid="assistant-message" data-message-id="history-assistant" data-actor="assistant">Previous assistant answer</p>
+        </div>
+        <label for="chat-input">Message</label>
+        <input id="chat-input" data-testid="chat-input" type="text" placeholder="Type your message" autocomplete="off">
+        <button type="button" data-testid="send-message">Send message</button>
+        <div data-testid="response-status" aria-live="polite"></div>
+      </section>
+      <iframe title="Billing chat frame" data-testid="chat-frame" src="frame.html" hidden></iframe>
+    </main>
+  </body>
+</html>

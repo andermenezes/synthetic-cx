@@ -1,0 +1,143 @@
+name: CI
+
+on:
+  push:
+    branches: [main, development]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      legacy_mcp:
+        description: Also run the legacy Playwright MCP compatibility smoke tests
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  NO_COLOR: "1"
+  TTY_COMPATIBLE: "0"
+  UV_COLOR: never
+  PYTEST_ADDOPTS: --color=no
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Quality, unit tests and packaging / Python 3.13
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      # Full-source mypy checks include the retained optional MCP adapter.
+      # Install its Python SDK here without running Node.js or MCP smoke tests.
+      - name: Install locked dependencies and optional adapter SDK
+        run: uv sync --locked --group dev --extra discovery
+
+      - name: Lint
+        run: uv run --no-sync ruff check .
+
+      - name: Format
+        run: uv run --no-sync ruff format --check .
+
+      - name: Type-check source and adapter contracts
+        run: uv run --no-sync mypy src tests/contract tests/smoke/test_live_tinytroupe.py
+
+      # This includes schema parity and the canonical example; no duplicate pytest pass.
+      - name: Unit, contract and default smoke tests
+        run: uv run --no-sync pytest -q --ignore=tests/integration --durations=20
+
+      - name: Verify direct dependency license inventory
+        run: uv run --no-sync python scripts/license_inventory.py
+
+      - name: Build distributions
+        run: uv build --out-dir "$RUNNER_TEMP/syntheticcx-dist"
+
+      - name: Inspect archives and clean-install wheel and sdist-derived wheel
+        run: uv run --no-sync python scripts/verify_distribution.py "$RUNNER_TEMP/syntheticcx-dist"
+
+      - name: Remove test-generated logs
+        if: always()
+        run: find . -maxdepth 1 -type f -name '*.log' -delete
+
+  integration:
+    name: Integration / Python 3.13 / ${{ matrix.suite }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Complementary selections cover the whole integration tree, including
+          # future files outside discovery. Keep each test's browser isolation intact.
+          - suite: runtime
+            pytest-args: tests/integration --ignore=tests/integration/discovery
+          - suite: discovery
+            pytest-args: tests/integration/discovery
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --locked --group dev
+
+      - name: Install matching Playwright Chromium and Linux dependencies
+        run: uv run --no-sync playwright install --with-deps chromium
+
+      - name: Run integration shard
+        run: uv run --no-sync pytest -q ${{ matrix.pytest-args }} --durations=20
+
+      - name: Remove test-generated logs
+        if: always()
+        run: find . -maxdepth 1 -type f -name '*.log' -delete
+
+  legacy-mcp:
+    name: Legacy MCP compatibility / Python 3.13
+    if: github.event_name == 'workflow_dispatch' && inputs.legacy_mcp
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Install Node.js for legacy MCP
+        uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
+        with:
+          node-version: "22"
+
+      - name: Install legacy discovery dependencies
+        run: uv sync --locked --group dev --extra discovery
+
+      - name: Install matching Playwright Chromium and Linux dependencies
+        run: uv run --no-sync playwright install --with-deps chromium
+
+      - name: Smoke-test managed Playwright MCP discovery
+        env:
+          SYNTHETICCX_RUN_MCP_SMOKE: "1"
+        run: uv run --no-sync pytest -q tests/smoke/test_playwright_mcp.py --durations=20
+
+      - name: Remove test-generated logs
+        if: always()
+        run: find . -maxdepth 1 -type f -name '*.log' -delete

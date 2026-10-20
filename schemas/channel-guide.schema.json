@@ -1,0 +1,511 @@
+{
+  "$defs": {
+    "ChatOwnership": {
+      "additionalProperties": false,
+      "description": "Independently attested chat root; child locators are root-relative.",
+      "properties": {
+        "proof": {
+          "enum": [
+            "chat_dialog",
+            "chat_embed",
+            "opener_linked",
+            "chat_panel"
+          ],
+          "title": "Proof",
+          "type": "string"
+        },
+        "root_locator": {
+          "$ref": "#/$defs/LocatorConfig"
+        }
+      },
+      "required": [
+        "root_locator",
+        "proof"
+      ],
+      "title": "ChatOwnership",
+      "type": "object"
+    },
+    "InterfaceChannelConfig": {
+      "additionalProperties": false,
+      "description": "Fixed chat boundary and readers; interaction controls are discovered per turn.",
+      "properties": {
+        "assistant_message_locator": {
+          "$ref": "#/$defs/LocatorConfig"
+        },
+        "bootstrap_input_locator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocatorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "bootstrap_send_strategy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SendStrategyConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "customer_message_locator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocatorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "frame_locator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocatorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "message_identity": {
+          "$ref": "#/$defs/MessageIdentityConfig"
+        },
+        "navigation_steps": {
+          "items": {
+            "$ref": "#/$defs/WebsiteNavigationStep"
+          },
+          "maxItems": 128,
+          "title": "Navigation Steps",
+          "type": "array"
+        },
+        "open_locator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocatorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "ownership": {
+          "$ref": "#/$defs/ChatOwnership"
+        },
+        "reader_evidence": {
+          "default": "marked",
+          "enum": [
+            "marked",
+            "observed_exchange"
+          ],
+          "title": "Reader Evidence",
+          "type": "string"
+        },
+        "response_completion": {
+          "$ref": "#/$defs/ResponseCompletionConfig"
+        },
+        "type": {
+          "const": "webchat_playwright_dynamic",
+          "title": "Type",
+          "type": "string"
+        },
+        "url": {
+          "format": "uri",
+          "minLength": 1,
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "url",
+        "ownership",
+        "assistant_message_locator",
+        "message_identity",
+        "response_completion"
+      ],
+      "title": "InterfaceChannelConfig",
+      "type": "object"
+    },
+    "InterfaceChannelGuide": {
+      "additionalProperties": false,
+      "description": "Public dynamic interface contract.",
+      "properties": {
+        "channel": {
+          "$ref": "#/$defs/InterfaceChannelConfig"
+        },
+        "validation": {
+          "$ref": "#/$defs/InterfaceGuideValidation"
+        }
+      },
+      "required": [
+        "channel",
+        "validation"
+      ],
+      "title": "InterfaceChannelGuide",
+      "type": "object"
+    },
+    "InterfaceGuideValidation": {
+      "additionalProperties": false,
+      "description": "Content-free evidence from a complete fresh replay, without its private graph.",
+      "properties": {
+        "observed_behaviors": {
+          "items": {
+            "enum": [
+              "open",
+              "send",
+              "select_option",
+              "receive",
+              "completion"
+            ],
+            "type": "string"
+          },
+          "maxItems": 5,
+          "minItems": 4,
+          "title": "Observed Behaviors",
+          "type": "array"
+        },
+        "status": {
+          "const": "verified",
+          "title": "Status",
+          "type": "string"
+        },
+        "target_origin": {
+          "format": "uri",
+          "minLength": 1,
+          "title": "Target Origin",
+          "type": "string"
+        },
+        "verified_at": {
+          "format": "date-time",
+          "title": "Verified At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "verified_at",
+        "target_origin",
+        "observed_behaviors"
+      ],
+      "title": "InterfaceGuideValidation",
+      "type": "object"
+    },
+    "LocatorConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "exact": {
+          "default": true,
+          "title": "Exact",
+          "type": "boolean"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        },
+        "strategy": {
+          "enum": [
+            "role",
+            "label",
+            "placeholder",
+            "text",
+            "test_id",
+            "css"
+          ],
+          "title": "Strategy",
+          "type": "string"
+        },
+        "value": {
+          "minLength": 1,
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "strategy",
+        "value"
+      ],
+      "title": "LocatorConfig",
+      "type": "object"
+    },
+    "MessageIdentityConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "attribute_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Attribute Name"
+        },
+        "strategy": {
+          "enum": [
+            "attribute",
+            "dom_node",
+            "actor_sequence_content_hash"
+          ],
+          "title": "Strategy",
+          "type": "string"
+        }
+      },
+      "required": [
+        "strategy"
+      ],
+      "title": "MessageIdentityConfig",
+      "type": "object"
+    },
+    "ResponseCompletionConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "locator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocatorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "quiet_interval_seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quiet Interval Seconds"
+        },
+        "strategy": {
+          "enum": [
+            "quiet_interval",
+            "streaming_indicator_disappears",
+            "completion_locator"
+          ],
+          "title": "Strategy",
+          "type": "string"
+        }
+      },
+      "required": [
+        "strategy"
+      ],
+      "title": "ResponseCompletionConfig",
+      "type": "object"
+    },
+    "SendStrategyConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "locator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocatorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "type": {
+          "enum": [
+            "press_enter",
+            "click"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "SendStrategyConfig",
+      "type": "object"
+    },
+    "WebsiteNavigationStep": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "click",
+            "hover",
+            "follow_link",
+            "scroll_down",
+            "scroll_up",
+            "back",
+            "wait"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "locator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocatorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "title": "WebsiteNavigationStep",
+      "type": "object"
+    },
+    "WhatsAppChannelConfig": {
+      "additionalProperties": false,
+      "description": "Website entry and recipient binding; account credentials remain operational.",
+      "properties": {
+        "navigation_steps": {
+          "items": {
+            "$ref": "#/$defs/WebsiteNavigationStep"
+          },
+          "maxItems": 128,
+          "title": "Navigation Steps",
+          "type": "array"
+        },
+        "quiet_interval_seconds": {
+          "default": 1.0,
+          "exclusiveMinimum": 0,
+          "maximum": 10,
+          "title": "Quiet Interval Seconds",
+          "type": "number"
+        },
+        "recipient_environment_variable": {
+          "default": "SYNTHETICCX_WHATSAPP_RECIPIENT",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "title": "Recipient Environment Variable",
+          "type": "string"
+        },
+        "type": {
+          "const": "whatsapp_web_playwright",
+          "title": "Type",
+          "type": "string"
+        },
+        "url": {
+          "format": "uri",
+          "minLength": 1,
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "url"
+      ],
+      "title": "WhatsAppChannelConfig",
+      "type": "object"
+    },
+    "WhatsAppChannelGuide": {
+      "additionalProperties": false,
+      "description": "Verified website-to-WhatsApp handoff without account data or conversation history.",
+      "properties": {
+        "channel": {
+          "$ref": "#/$defs/WhatsAppChannelConfig"
+        },
+        "validation": {
+          "$ref": "#/$defs/WhatsAppGuideValidation"
+        }
+      },
+      "required": [
+        "channel",
+        "validation"
+      ],
+      "title": "WhatsAppChannelGuide",
+      "type": "object"
+    },
+    "WhatsAppGuideValidation": {
+      "additionalProperties": false,
+      "description": "Browser replay evidence; it never implies a reset business conversation.",
+      "properties": {
+        "observed_behaviors": {
+          "items": {
+            "enum": [
+              "open",
+              "send",
+              "receive",
+              "completion"
+            ],
+            "type": "string"
+          },
+          "title": "Observed Behaviors",
+          "type": "array"
+        },
+        "replay_verified": {
+          "const": true,
+          "title": "Replay Verified",
+          "type": "boolean"
+        },
+        "server_state_reset": {
+          "const": false,
+          "default": false,
+          "title": "Server State Reset",
+          "type": "boolean"
+        },
+        "status": {
+          "const": "verified",
+          "title": "Status",
+          "type": "string"
+        },
+        "target_origin": {
+          "format": "uri",
+          "minLength": 1,
+          "title": "Target Origin",
+          "type": "string"
+        },
+        "verified_at": {
+          "format": "date-time",
+          "title": "Verified At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "verified_at",
+        "target_origin",
+        "observed_behaviors",
+        "replay_verified"
+      ],
+      "title": "WhatsAppGuideValidation",
+      "type": "object"
+    }
+  },
+  "anyOf": [
+    {
+      "$ref": "#/$defs/InterfaceChannelGuide"
+    },
+    {
+      "$ref": "#/$defs/WhatsAppChannelGuide"
+    }
+  ]
+}

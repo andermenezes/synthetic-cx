@@ -1,0 +1,57 @@
+name: Live model smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly on the default branch; intentionally separate from PR verification.
+    - cron: "23 5 * * 2"
+
+permissions:
+  contents: read
+
+env:
+  NO_COLOR: "1"
+  TTY_COMPATIBLE: "0"
+  UV_COLOR: never
+  PYTEST_ADDOPTS: --color=no
+
+concurrency:
+  group: live-smoke-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  reference-persona:
+    name: OpenAI / pinned TinyTroupe
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Require selected credential
+        env:
+          HAS_OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY != '' }}
+        run: |
+          if [ "$HAS_OPENAI_API_KEY" != 'true' ]; then
+            echo '::error::Live smoke blocked: configure OPENAI_API_KEY for this workflow.'
+            exit 1
+          fi
+
+      - name: Install locked dependencies
+        run: uv sync --locked --group dev
+
+      - name: Probe and exercise the selected model/persona seam
+        env:
+          SYNTHETICCX_RUN_LIVE_SMOKE: "1"
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: uv run --no-sync pytest -q tests/smoke/test_live_tinytroupe.py
+
+      - name: Remove test-generated logs
+        if: always()
+        run: find . -maxdepth 1 -type f -name '*.log' -delete
