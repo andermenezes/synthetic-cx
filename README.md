@@ -2,7 +2,7 @@
 
 > **Simulate customers. Test journeys. Understand failures.**
 
-SyntheticCX is an open-source Python framework for testing conversational customer journeys through the **actual customer-facing interface**. Give a synthetic customer a goal and a personality, let it interact through a browser, and evaluate what happened—with conversation evidence, behavioral transitions, and explainable findings.
+SyntheticCX is an open-source Python framework for testing conversational customer journeys through the **actual customer-facing interface**. Give a synthetic customer a goal and a personality, let it interact through a channel, and evaluate what happened—with conversation evidence, behavioral transitions, and explainable findings.
 
 Instead of asserting an exact chatbot response, ask: **could this customer achieve their goal, and what prevented them if they could not?**
 
