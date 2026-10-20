@@ -153,12 +153,9 @@
       ],
       "properties": {
         "evaluator_type": {
-          "enum": [
-            "turn_count",
-            "journey_timeout",
-            "repeated_information",
-            "semantic_goal_completion"
-          ],
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
           "title": "Evaluator Type",
           "type": "string"
         },

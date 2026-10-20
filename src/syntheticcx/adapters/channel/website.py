@@ -21,6 +21,7 @@ from playwright.async_api import Error as PlaywrightError
 
 from syntheticcx.adapters.channel.playwright import locate
 from syntheticcx.config.models import ExecutionLimits, LocatorConfig, WebsiteNavigationStep
+from syntheticcx.discovery.observations import WebsiteObservation, website_observation
 from syntheticcx.discovery.policy import portability_flow
 from syntheticcx.errors import ChannelError
 
@@ -319,7 +320,7 @@ class WebsiteNavigator:
 
     async def observe(
         self, *, initial_launcher_id: str | None = None, chat_hint: str | None = None
-    ) -> dict[str, Any]:
+    ) -> WebsiteObservation:
         self._observations += 1
         if self._observations > self.limits.website_observation_limit:
             raise ChannelError("channel.observe", "website observation limit exceeded")
@@ -327,12 +328,14 @@ class WebsiteNavigator:
         self.revision = secrets.token_urlsafe(18)
         state = await self._state()
         if state is None:
-            return {
-                "revision": self.revision,
-                "terminal": "whatsapp",
-                "available_actions": ["observe", "stop"],
-                "catalog": {"candidates": [], "truncated": False},
-            }
+            return website_observation(
+                {
+                    "revision": self.revision,
+                    "terminal": "whatsapp",
+                    "available_actions": ["observe", "stop"],
+                    "catalog": {"candidates": [], "truncated": False},
+                }
+            )
         self._state_key = self._key(state)
         if initial_launcher_id is not None:
             if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_:-]{0,127}", initial_launcher_id):
@@ -421,48 +424,50 @@ class WebsiteNavigator:
         if self._uncertain or self._attempts >= self.limits.website_action_limit:
             self._available = ["observe", "stop"]
         context = "\n".join([*state["overlays"], state["viewport"], state["text"]])[:10000]
-        return {
-            "revision": self.revision,
-            "page_context": _public(context),
-            "page": {
-                "origin": origin(self.page.url),
-                "state": self._state_key,
-                "scroll_position": state["scroll"],
-                "back_depth": len(self._back),
-            },
-            "feedback": self.feedback,
-            "path_length": len(self.steps),
-            "terminal": None,
-            "available_actions": self._available,
-            "history": list(self._history[-128:]),
-            "catalog_page": start // 160,
-            "catalog": {
-                "truncated": len(entries) > 160,
-                "has_more": has_more,
-                "candidates": [
-                    {
-                        "id": key,
-                        "kind": "opener",
-                        "description": _public(item.label),
-                        "context": _public(item.context),
-                        "actions": item.actions,
-                        "blocked_by": _public(item.blocked_by),
-                        "tried_actions": [
-                            action
-                            for action in ("open", "hover", "follow_link")
-                            if (self._state_key, item.locator.model_dump_json(), action)
-                            in self._used
-                        ],
-                        "evidence": "recipient_handoff"
-                        if whatsapp_destination(item.href)
-                        else "same_origin_link"
-                        if item.href
-                        else "native_button",
-                    }
-                    for key, item in self._controls.items()
-                ],
-            },
-        }
+        return website_observation(
+            {
+                "revision": self.revision,
+                "page_context": _public(context),
+                "page": {
+                    "origin": origin(self.page.url),
+                    "state": self._state_key,
+                    "scroll_position": state["scroll"],
+                    "back_depth": len(self._back),
+                },
+                "feedback": self.feedback,
+                "path_length": len(self.steps),
+                "terminal": None,
+                "available_actions": self._available,
+                "history": list(self._history[-128:]),
+                "catalog_page": start // 160,
+                "catalog": {
+                    "truncated": len(entries) > 160,
+                    "has_more": has_more,
+                    "candidates": [
+                        {
+                            "id": key,
+                            "kind": "opener",
+                            "description": _public(item.label),
+                            "context": _public(item.context),
+                            "actions": item.actions,
+                            "blocked_by": _public(item.blocked_by),
+                            "tried_actions": [
+                                action
+                                for action in ("open", "hover", "follow_link")
+                                if (self._state_key, item.locator.model_dump_json(), action)
+                                in self._used
+                            ],
+                            "evidence": "recipient_handoff"
+                            if whatsapp_destination(item.href)
+                            else "same_origin_link"
+                            if item.href
+                            else "native_button",
+                        }
+                        for key, item in self._controls.items()
+                    ],
+                },
+            }
+        )
 
     async def act(self, revision: str, action: str, target_id: str | None = None) -> None:
         if revision != self.revision or not self.revision:

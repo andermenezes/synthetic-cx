@@ -581,6 +581,29 @@ def replay_behavior(run_directory: Path, *, rules: Path | None = None) -> Behavi
             fired.update(transition.applied_rule_ids)
     apply_external_until(cutoff)
     reasons = [reason for reason in (tail_reason, batch_reason) if reason]
+    terminal = [
+        event
+        for event in events
+        if event.type == "run_lifecycle_changed" and event.data.current == "finalized"
+    ]
+    if terminal:
+        final = terminal[0]
+        if (
+            len(terminal) != 1
+            or final is not events[-1]
+            or (
+                metadata.lifecycle_status == "finalized"
+                and (
+                    final.data.outcome != metadata.outcome
+                    or final.data.termination_reason != metadata.termination_reason
+                )
+            )
+        ):
+            raise BehaviorReplayError(
+                "invalid_source", "terminal trace evidence disagrees with source metadata"
+            )
+    else:
+        reasons.append("Terminal trace evidence is missing; only a committed prefix was replayed.")
     covered_messages = {
         message_id for batch in batches for message_id in batch.observation.data.message_ids
     }

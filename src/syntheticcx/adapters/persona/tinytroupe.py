@@ -242,7 +242,7 @@ class TinyTroupePersonaSimulator:
         self._completed_interactions: list[ModelInteraction] = []
 
     def _publish_interactions(self) -> None:
-        """Release metadata only after the enclosing persona operation succeeded."""
+        """Release completed-worker calls independently of decision acceptance."""
         self._completed_interactions.extend(self._client.interactions)
         self._client.interactions.clear()
 
@@ -261,6 +261,9 @@ class TinyTroupePersonaSimulator:
             try:
                 result = await run_blocking_bounded(run, timeout_seconds=self._timeout)
             except Exception as exc:
+                # The worker has finished: retain completed calls even when parsing
+                # or provider-side validation failed. Never drain an active worker.
+                self._publish_interactions()
                 self._abandoned.set()
                 await self._close_completed_session()
                 raise ModelError(
@@ -422,19 +425,17 @@ class TinyTroupePersonaSimulator:
             return records
 
         records = await self._work(generate, "persona.respond")
+        self._publish_interactions()
         try:
             action = _customer_action(records, observation, state)
         except Exception:
             self._abandoned.set()
             self._start_late_cleanup()
             raise
-        self._publish_interactions()
         return action
 
     def take_interactions(self) -> tuple[ModelInteraction, ...]:
         """Return only completed metadata, for the later journal handoff."""
-        if self._abandoned.is_set() or self._closed:
-            return ()
         interactions = tuple(self._completed_interactions)
         self._completed_interactions.clear()
         return interactions

@@ -210,8 +210,8 @@ class Criterion(StrictModel):
     model_config = ConfigDict(json_schema_extra=_criterion_parameter_schema)
 
     id: str = Field(min_length=1)
-    evaluator_type: Literal[
-        "turn_count", "journey_timeout", "repeated_information", "semantic_goal_completion"
+    evaluator_type: Annotated[
+        str, Field(min_length=1, max_length=80, pattern=r"^[A-Za-z][A-Za-z0-9_.-]*$")
     ]
     result_kind: Literal["scored", "boolean"]
     required: bool = True
@@ -224,14 +224,20 @@ class Criterion(StrictModel):
     def validate_parameters(cls, value: JsonObject, info: ValidationInfo) -> JsonObject:
         evaluator_type = info.data.get("evaluator_type")
         if evaluator_type not in _PARAMETER_MODELS:
-            # A preceding evaluator_type validation error leaves it out of info.data.
+            # Extension parameters are validated against the explicit trusted
+            # registration during preparation, before credentials or external work.
+            # A preceding identity validation error also leaves it out of info.data.
             return value
         validated = _PARAMETER_MODELS[evaluator_type].model_validate(value)
         return validated.model_dump(mode="json")  # type: ignore[no-any-return]
 
     @model_validator(mode="after")
     def validate_threshold(self) -> Criterion:
-        if self.evaluator_type != "semantic_goal_completion" and self.result_kind != "boolean":
+        if (
+            self.evaluator_type in _PARAMETER_MODELS
+            and self.evaluator_type != "semantic_goal_completion"
+            and self.result_kind != "boolean"
+        ):
             raise ValueError("deterministic evaluator result_kind must be boolean")
         if self.result_kind == "scored" and self.threshold is None:
             raise ValueError("scored criteria require threshold")
@@ -684,6 +690,7 @@ ResolvedChannelConfig = Annotated[
 
 
 class ExecutionLimits(StrictModel):
+    assistant_update_limit: int = Field(default=64, ge=0, le=1024, strict=True)
     max_turns: int = Field(gt=0)
     journey_timeout_seconds: PositiveSeconds
     greeting_grace_seconds: float = Field(ge=0)

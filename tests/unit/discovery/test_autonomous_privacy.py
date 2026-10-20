@@ -26,10 +26,17 @@ def test_learning_request_redacts_json_escaped_private_context(ensure_ascii: boo
     knowledge = 'CANARY-KNOWLEDGE-"私人\\account"'
     observation = {
         "revision": "r1",
-        "catalog": {"candidates": []},
+        "catalog": {
+            "candidates": [
+                {
+                    "id": "observed",
+                    "kind": "assistant",
+                    "description": json.dumps({"echo": persona}, ensure_ascii=ensure_ascii),
+                    "context": json.dumps({"echo": knowledge}, ensure_ascii=ensure_ascii),
+                }
+            ]
+        },
         "available_options": [],
-        "assistant_prose": json.dumps({"echo": persona}, ensure_ascii=ensure_ascii),
-        "observed_metadata": json.dumps({"echo": knowledge}, ensure_ascii=ensure_ascii),
     }
     browser = SimpleNamespace(observe=AsyncMock(return_value=observation), current_state=None)
     decision = {
@@ -64,11 +71,11 @@ def test_learning_request_redacts_json_escaped_private_context(ensure_ascii: boo
     assert "CANARY-KNOWLEDGE" not in payload
     assert "<redacted:field>" in payload
     assert json.loads(payload)["inventory"]["revision"] == "r1"
-    assert "CANARY-PERSONA" in observation["assistant_prose"]
-    assert "CANARY-KNOWLEDGE" in observation["observed_metadata"]
+    assert "CANARY-PERSONA" in observation["catalog"]["candidates"][0]["description"]
+    assert "CANARY-KNOWLEDGE" in observation["catalog"]["candidates"][0]["context"]
 
 
-def test_compiled_state_locators_stay_private_even_when_reversibly_escaped():
+def test_compiled_state_locators_are_rejected_before_model_planning():
     observation = {
         "revision": "r1",
         "catalog": {"candidates": []},
@@ -90,7 +97,7 @@ def test_compiled_state_locators_stay_private_even_when_reversibly_escaped():
     provider = SimpleNamespace(
         generate=AsyncMock(return_value=SimpleNamespace(content=json.dumps(decision)))
     )
-    with pytest.raises(ChannelError, match="learning stopped"):
+    with pytest.raises(ChannelError, match="native discovery observation is invalid"):
         asyncio.run(
             learn(
                 cast(LearningBroker, browser),
@@ -100,12 +107,5 @@ def test_compiled_state_locators_stay_private_even_when_reversibly_escaped():
                 probes={"first": "Hello"},
             )
         )
-    request = cast(LLMRequest, provider.generate.call_args.args[0])
-    payload = json.loads(request.messages[1].content)
-    assert payload["inventory"]["state"] == {
-        "id": "state-1",
-        "kind": "composer",
-        "option_labels": [],
-    }
-    assert "CANARY" not in request.messages[1].content
+    provider.generate.assert_not_awaited()
     assert "input_locator" in observation["state"]

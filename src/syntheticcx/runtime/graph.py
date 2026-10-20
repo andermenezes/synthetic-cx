@@ -43,7 +43,7 @@ from syntheticcx.domain.protocols import (
     PersonaSimulator,
     WaitController,
 )
-from syntheticcx.errors import BehaviorError, ModelError, safe_channel_error
+from syntheticcx.errors import BehaviorError, ChannelError, ModelError, safe_channel_error
 from syntheticcx.runtime.behavior import apply_behavior
 from syntheticcx.runtime.behavior_signals import BehaviorDetectors, prepare_behavior
 from syntheticcx.runtime.journal import RunJournal
@@ -85,6 +85,7 @@ def build_graph(
     fired_rule_ids: set[str] = set()
     boundary_event_ids: list[str] = []
     last_customer_message: Message | None = None
+    assistant_updates = 0
 
     async def commit_interactions(input_ids: list[str]) -> None:
         """Acknowledge model evidence before any action depending on its output."""
@@ -122,7 +123,9 @@ def build_graph(
                     simulator.initialize(persona, CustomerScenarioContext.from_scenario(scenario)),
                     limits.model_timeout_seconds,
                 )
-        except Exception:
+        except Exception as exc:
+            if not isinstance(exc, TimeoutError):
+                await commit_interactions([lifecycle.id])
             raise ModelError("persona.initialize", "persona initialization failed") from None
         await commit_interactions([lifecycle.id])
         if initialized != state["persona_state"]:
@@ -317,6 +320,7 @@ def build_graph(
     async def observe_pending(
         state: RuntimeState, *, combine_previous: bool = False
     ) -> dict[str, object] | None:
+        nonlocal assistant_updates
         if not isinstance(channel, PendingObservingChannel):
             return None
         try:
@@ -330,6 +334,9 @@ def build_graph(
         if response is None:
             return None
         update = await commit_response(response, update=True)
+        assistant_updates += 1
+        if assistant_updates > limits.assistant_update_limit:
+            raise ChannelError("channel.observe", "supplemental assistant update budget exhausted")
         observation = cast(ConversationObservation, update["observation"])
         previous = state["observation"]
         if combine_previous and previous is not None:
@@ -357,6 +364,13 @@ def build_graph(
                     exc, "channel.controls", "current controls observation failed"
                 ) from None
             observation = observation.model_copy(update={"capabilities": capabilities})
+        observation_ids = {message.id for message in observation.messages}
+        input_ids = [
+            event.id
+            for event in journal.committed_events
+            if (event.type == "message_observed" and event.data.message.id in observation_ids)
+            or (observation.kind == "conversation_started" and event.type == "conversation_started")
+        ]
         try:
             with span("persona.respond"), span("model.call", operation="persona.respond"):
                 action = await wait.run(
@@ -364,6 +378,8 @@ def build_graph(
                     limits.model_timeout_seconds,
                 )
         except Exception as exc:
+            if not isinstance(exc, TimeoutError):
+                await commit_interactions(input_ids)
             if isinstance(exc, ModelError):
                 raise
             raise ModelError(
@@ -381,13 +397,6 @@ def build_graph(
                     discarded_action_count=action.discarded_action_count,
                 )
             )
-        observation_ids = {message.id for message in observation.messages}
-        input_ids = [
-            event.id
-            for event in journal.committed_events
-            if (event.type == "message_observed" and event.data.message.id in observation_ids)
-            or (observation.kind == "conversation_started" and event.type == "conversation_started")
-        ]
         await commit_interactions(input_ids)
         current: PersonaState = state["persona_state"]
         for transition in action.transitions:

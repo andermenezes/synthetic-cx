@@ -52,3 +52,4 @@ class EvaluatedRunResult(DomainModel):
     cleanup_completed: bool = True
     committed_events: tuple[TypedTraceEvent, ...]
     errors: tuple[ErrorDetail, ...] = ()
+    shutdown_errors: tuple[ErrorDetail, ...] = ()

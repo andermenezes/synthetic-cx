@@ -14,12 +14,12 @@ import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from types import SimpleNamespace
 from typing import Any, Literal, TypeVar, cast
 
 from playwright.async_api import ElementHandle, Frame, Locator, Page, async_playwright
 from playwright.async_api import Error as PlaywrightError
 
+from syntheticcx.adapters.channel.bindings import NativeControlBinding, NativeOptionConfig
 from syntheticcx.adapters.channel.cursor import Bubble, MessageCursor
 from syntheticcx.adapters.channel.options import ReplyOptions, normalized_label
 from syntheticcx.adapters.channel.ownership import (
@@ -39,13 +39,23 @@ from syntheticcx.config.models import (
     ChatOwnership,
     ChatState,
     ExecutionLimits,
+    InterfaceChannelConfig,
     LocatorConfig,
     MessageIdentityConfig,
+    ReplyOptionsConfig,
     ResponseCompletionConfig,
     SendStrategyConfig,
     StatefulChannelConfig,
 )
 from syntheticcx.discovery.hints import launcher_id
+from syntheticcx.discovery.observations import (
+    LearningObservation,
+    ReaderBinding,
+    WebsiteObservation,
+    learning_observation,
+    reader_binding,
+    website_observation,
+)
 from syntheticcx.discovery.policy import portability_flow, require_discovery_probe
 from syntheticcx.domain.models import CompletedResponse, Message, SelectionReceipt, SendReceipt
 from syntheticcx.errors import ChannelError
@@ -87,7 +97,7 @@ class NativeChatBroker:
         limits: ExecutionLimits | None = None,
         *,
         target_url: str | None = None,
-        contract: StatefulChannelConfig | None = None,
+        contract: StatefulChannelConfig | InterfaceChannelConfig | None = None,
         headed: bool = False,
         page: Page | None = None,
         chat_hint: str | None = None,
@@ -147,6 +157,7 @@ class NativeChatBroker:
         self._cursor = MessageCursor(self._identity)
         self._options: ReplyOptions | None = None
         self._state: ChatState | None = None
+        self._binding: NativeControlBinding | None = None
         self._initial_state: ChatState | None = None
         self._states: dict[str, ChatState] = {}
         self._input: ElementHandle | None = None
@@ -305,7 +316,7 @@ class NativeChatBroker:
 
     async def _bootstrap_contract(self) -> None:
         """Replay startup policy, separate from shared browser/root/reader binding."""
-        assert self.contract is not None
+        assert isinstance(self.contract, StatefulChannelConfig)
         state = next(
             item for item in self.contract.states if item.id == self.contract.initial_state_id
         )
@@ -427,13 +438,13 @@ class NativeChatBroker:
         self._startup_ready = False
         self._startup_deadline = None
 
-    async def observe_website(self) -> dict[str, Any]:
+    async def observe_website(self) -> WebsiteObservation:
         navigator = self.website_navigator
         # URL/recipient validation always precedes any account-wide DOM inspection.
         if await navigator.terminal():
             return {"terminal": "whatsapp"}
         self.page = navigator.page
-        observed_channel = None
+        observed_channel: Literal["webchat", "whatsapp"] | None = None
         if origin(self.page.url) == origin(self.url):
             if (
                 self._open_locator is not None
@@ -453,12 +464,12 @@ class NativeChatBroker:
             if not navigator.steps and self._open_locator is None
             else None
         )
-        observation = await navigator.observe(
+        website = await navigator.observe(
             initial_launcher_id=initial_launcher_id, chat_hint=self.chat_hint
         )
-        observation["observed_channel"] = observed_channel
+        website["observed_channel"] = observed_channel
         self.page = navigator.page
-        return observation
+        return website_observation(website)
 
     async def act_website(self, revision: str, action: str, target_id: str | None = None) -> None:
         async with self._lock:
@@ -476,6 +487,7 @@ class NativeChatBroker:
             self._startup_deadline = None
             self._options = None
             self._state = None
+            self._binding = None
             self._initial_state = None
             self._states.clear()
             self._initial_observed = False
@@ -491,7 +503,7 @@ class NativeChatBroker:
             if origin(self.page.url) == origin(self.url):
                 await self._remember_website_opener()
 
-    async def observe(self) -> dict[str, Any]:
+    async def observe(self) -> LearningObservation:
         """Allow lazy widget startup before offering an empty inventory to the planner."""
         deadline = time.monotonic() + self.limits.browser_action_timeout_seconds * 0.9
         while True:
@@ -506,7 +518,7 @@ class NativeChatBroker:
                 return observation
             await asyncio.sleep(min(0.1, max(0, deadline - time.monotonic())))
 
-    async def _observe_once(self) -> dict[str, Any]:
+    async def _observe_once(self) -> LearningObservation:
         from syntheticcx.adapters.channel.readiness import interaction_ready
 
         await self._check_parent()
@@ -773,35 +785,37 @@ class NativeChatBroker:
             ):
                 composer_id = identifier
                 break
-        return {
-            "revision": self._revision,
-            "catalog": {
+        return learning_observation(
+            {
                 "revision": self._revision,
-                "truncated": candidate_count > 160,
-                "candidates": [
-                    {
-                        "id": identifier,
-                        "kind": item.kind,
-                        "description": item.description,
-                        "evidence": item.evidence,
-                    }
-                    for identifier, item in self._proposals.items()
-                ],
-            },
-            "ownership_bound": self.owned is not None,
-            "opener_opened": self._open_node is not None,
-            "reader_bound": self._assistant is not None,
-            "interaction_ready": self._startup_ready,
-            "state": {
-                "id": self._state.id,
-                "kind": self._state.kind,
-                "option_labels": list(self._state.option_labels),
+                "catalog": {
+                    "revision": self._revision,
+                    "truncated": candidate_count > 160,
+                    "candidates": [
+                        {
+                            "id": identifier,
+                            "kind": item.kind,
+                            "description": item.description,
+                            "evidence": item.evidence,
+                        }
+                        for identifier, item in self._proposals.items()
+                    ],
+                },
+                "ownership_bound": self.owned is not None,
+                "opener_opened": self._open_node is not None,
+                "reader_bound": self._assistant is not None,
+                "interaction_ready": self._startup_ready,
+                "state": {
+                    "id": self._state.id,
+                    "kind": self._state.kind,
+                    "option_labels": list(self._state.option_labels),
+                }
+                if self._state
+                else None,
+                "available_options": available,
+                "composer_id": composer_id,
             }
-            if self._state
-            else None,
-            "available_options": available,
-            "composer_id": composer_id,
-        }
+        )
 
     async def _attestable_scope(self, proposal: Proposal) -> bool:
         """Offer only currently proven roots; binding still rechecks their identity."""
@@ -966,7 +980,7 @@ class NativeChatBroker:
         *catalog_args: Any,
         revision: str | None = None,
         response_completion: ResponseCompletionConfig | dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+    ) -> ReaderBinding:
         if catalog_args:
             if customer_id is None:
                 raise ChannelError("channel.bind_reader", "assistant catalog ID is required")
@@ -1027,12 +1041,14 @@ class NativeChatBroker:
             self._cursor.observe("assistant", baseline, baseline=True)
             if self._customer is not None:
                 self._cursor.observe("customer", await self._snapshot("customer"), baseline=True)
-        return {
-            "assistant_message_locator": self._assistant.model_dump(mode="json"),
-            "customer_message_locator": self._customer.model_dump(mode="json")
-            if self._customer
-            else None,
-        }
+        return reader_binding(
+            {
+                "assistant_message_locator": self._assistant.model_dump(mode="json"),
+                "customer_message_locator": self._customer.model_dump(mode="json")
+                if self._customer
+                else None,
+            }
+        )
 
     async def _validate_readers(self, *, require_present: bool) -> None:
         if self.owned is None or self._assistant is None:
@@ -1174,36 +1190,32 @@ class NativeChatBroker:
             self._initial_response = await self.observe_initial()
         return state
 
-    def _option_config(self, state: ChatState) -> Any:
-        assert self.owned is not None
-        return SimpleNamespace(
+    def _option_config(self, binding: NativeControlBinding) -> NativeOptionConfig:
+        assert self.owned is not None and self._assistant is not None
+        assert binding.option_locator is not None
+        return NativeOptionConfig(
             url=self.url,
-            input_locator=state.input_locator,
+            input_locator=binding.input_locator,
             assistant_message_locator=self._assistant,
             customer_message_locator=self._customer
             or LocatorConfig(strategy="css", value=".__syntheticcx_absent_customer__"),
-            send_strategy=state.send_strategy or SendStrategyConfig(type="press_enter"),
-            reply_options=SimpleNamespace(
+            send_strategy=binding.send_strategy or SendStrategyConfig(type="press_enter"),
+            reply_options=ReplyOptionsConfig(
                 scope_locator=LocatorConfig(strategy="css", value=":scope"),
-                option_locator=state.option_locator,
+                option_locator=binding.option_locator,
             ),
         )
 
-    def _make_reply_options(self, state: ChatState) -> ReplyOptions:
+    def _make_reply_options(self, binding: NativeControlBinding) -> ReplyOptions:
         assert self.owned is not None
         return ReplyOptions(
-            self.owned.locator, self._option_config(state), locate, attested_scope=self.owned
+            self.owned.locator, self._option_config(binding), locate, attested_scope=self.owned
         )
 
     async def _eligible_menu_labels(self, option_locator: LocatorConfig) -> list[str]:
         """Ordered eligible guarded-option labels of the latest assistant reply."""
         assert self.owned is not None and self._assistant is not None
-        evidence = ChatState(
-            id="menu-evidence",
-            kind="menu",
-            option_locator=option_locator,
-            option_labels=["Information"],
-        )
+        evidence = NativeControlBinding(option_locator=option_locator)
         probe = ReplyOptions(
             self.owned.locator, self._option_config(evidence), locate, attested_scope=self.owned
         )
@@ -1275,7 +1287,10 @@ class NativeChatBroker:
         if state.option_locator:
             await self._validate_readers(require_present=True)
             options = ReplyOptions(
-                self.owned.locator, self._option_config(state), locate, attested_scope=self.owned
+                self.owned.locator,
+                self._option_config(NativeControlBinding.from_state(state)),
+                locate,
+                attested_scope=self.owned,
             )
             await options.bind()
             replies = await options.collect()
@@ -1308,6 +1323,7 @@ class NativeChatBroker:
             self._options.invalidate()
         self._options, self._input, self._send = options, input_node, send_node
         self._state = state
+        self._binding = NativeControlBinding.from_state(state)
         self._states[state.id] = state
         if self._initial_state is None:
             self._initial_state = state
@@ -1480,7 +1496,7 @@ class NativeChatBroker:
         await self._check_parent()
         if (
             self.owned is None
-            or self._state is None
+            or self._binding is None
             or self._uncertain
             or self._pending
             or self._learn_transition_allowed
@@ -1541,8 +1557,8 @@ class NativeChatBroker:
             if (
                 not message.strip()
                 or self._input is None
-                or self._state is None
-                or self._state.send_strategy is None
+                or self._binding is None
+                or self._binding.send_strategy is None
             ):
                 raise ChannelError(
                     "channel.send", "current verified state has no composer or message is empty"
@@ -1567,7 +1583,7 @@ class NativeChatBroker:
                     message, timeout=self.limits.browser_action_timeout_seconds * 1000
                 )
                 await self._validate_current_controls()
-                if self._state.send_strategy.type == "press_enter":
+                if self._binding.send_strategy.type == "press_enter":
                     await self._input.press(
                         "Enter", timeout=self.limits.browser_action_timeout_seconds * 1000
                     )
@@ -1596,22 +1612,25 @@ class NativeChatBroker:
             )
 
     async def _validate_current_controls(self) -> None:
-        assert self.owned is not None and self._state is not None
+        assert self.owned is not None and self._binding is not None
         await self.owned.check()
         inputs = await self.owned.locator.locator(
             "textarea,input:not([type]),input[type=text],[role=textbox],[contenteditable=true]"
         ).element_handles()
         try:
             visible_inputs = [node for node in inputs if await node.is_visible()]
-            if len(visible_inputs) != (1 if self._state.input_locator else 0):
+            if len(visible_inputs) != (1 if self._binding.input_locator else 0):
                 raise ChannelError(
                     "channel.state", "current composer inventory no longer matches verified state"
                 )
         finally:
             await self._dispose_handles(list(inputs))
         for config, retained in [
-            (self._state.input_locator, self._input),
-            (self._state.send_strategy.locator if self._state.send_strategy else None, self._send),
+            (self._binding.input_locator, self._input),
+            (
+                self._binding.send_strategy.locator if self._binding.send_strategy else None,
+                self._send,
+            ),
         ]:
             if config is None:
                 continue
@@ -1806,13 +1825,11 @@ class NativeChatBroker:
             assert self.owned is not None
             # Capture all native controls on the new owned assistant message;
             # this is evidence, not an inferred replay state or locator authority.
-            evidence_state = ChatState(
-                id="response-evidence",
-                kind="menu",
-                option_locator=LocatorConfig(strategy="css", value="button,[role=button]"),
-                option_labels=["Information"],
+            response_options = self._make_reply_options(
+                NativeControlBinding(
+                    option_locator=LocatorConfig(strategy="css", value="button,[role=button]")
+                )
             )
-            response_options = self._make_reply_options(evidence_state)
         try:
             if response_options is not None:
                 await self._finish_native_read(response_options.bind())
@@ -1961,6 +1978,9 @@ class NativeChatBroker:
         raise self._response_timeout()
 
     async def _resolve_transition(self) -> None:
+        if isinstance(self.contract, InterfaceChannelConfig):
+            # Runtime completion is evidence, never a sampled-state transition.
+            return
         assert self.contract is not None and self._state is not None and self._action is not None
         kind, label = self._action
         transitions = [

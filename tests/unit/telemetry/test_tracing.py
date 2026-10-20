@@ -3,6 +3,9 @@
 import asyncio
 import builtins
 import json
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,6 +14,40 @@ import pytest
 from syntheticcx.config.models import PrivacyConfig, TelemetryConfig
 from syntheticcx.privacy import Redactor
 from syntheticcx.telemetry.run import RunTelemetry, span
+
+
+def test_stalled_shutdown_does_not_hold_process_executor_open() -> None:
+    script = textwrap.dedent("""
+        import asyncio
+        import threading
+        from pathlib import Path
+        from syntheticcx.config.models import PrivacyConfig, TelemetryConfig
+        from syntheticcx.privacy import Redactor
+        from syntheticcx.telemetry.run import RunTelemetry
+
+        async def main():
+            telemetry = RunTelemetry(TelemetryConfig(), "run", Path("unused"),
+                Redactor(PrivacyConfig()), remote_timeout=1)
+            calls = []
+            def stalled():
+                calls.append(True)
+                threading.Event().wait(60)
+            telemetry._provider.shutdown = stalled
+            try:
+                await telemetry.close(created=False, timeout=0.02)
+            except TimeoutError:
+                pass
+            else:
+                raise AssertionError("shutdown did not time out")
+            await telemetry.close(created=False, timeout=0.02)
+            assert len(calls) == 1
+        asyncio.run(main())
+        print("bounded shutdown")
+    """)
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=5, check=True
+    )
+    assert "bounded shutdown" in result.stdout
 
 
 def test_disabled_run_does_not_create_span_artifacts(tmp_path: Path) -> None:

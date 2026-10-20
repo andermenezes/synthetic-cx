@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 from playwright.async_api import ElementHandle, FrameLocator, Locator, Page
 from playwright.async_api import Error as PlaywrightError
 
+from syntheticcx.adapters.channel.bindings import NativeOptionConfig
 from syntheticcx.adapters.channel.reading import READING_HELPERS
 from syntheticcx.config.models import ChannelConfig, LocatorConfig
 from syntheticcx.discovery.policy import portability_flow
@@ -313,7 +314,7 @@ class ReplyOptions:
     def __init__(
         self,
         scope: Page | FrameLocator,
-        config: ChannelConfig,
+        config: ChannelConfig | NativeOptionConfig,
         locate: Callable[..., Locator],
         *,
         attested_scope: Any | None = None,
@@ -410,6 +411,7 @@ class ReplyOptions:
             await self.collect()
             return
         self.root = await self._unique(config.scope_locator)
+        assert self.config.input_locator is not None
         self.composer = await self._unique(self.config.input_locator)
         initial_valid = await self.root.evaluate(
             "(root, composer) => {"

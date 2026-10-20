@@ -327,6 +327,12 @@ def run(
             "persistence_error": "storage failure; final report unavailable",
         }.get(result.partial_reason or "", "final report unavailable")
         typer.echo(render_partial(result.run_id, result.artifact_location, reason))
+    for shutdown_error in result.shutdown_errors:
+        typer.echo(
+            f"Infrastructure shutdown failure ({shutdown_error.operation}); "
+            "any committed report describes the journey before this failure.",
+            err=True,
+        )
     raise typer.Exit(result.exit_code)
 
 

@@ -7,6 +7,7 @@ import pytest
 from playwright.async_api import ElementHandle, Locator, async_playwright
 from playwright.async_api import Error as PlaywrightError
 
+from syntheticcx.adapters.channel.bindings import NativeControlBinding
 from syntheticcx.adapters.channel.dynamic import DynamicChatBroker
 from syntheticcx.config.models import ExecutionLimits, InterfaceChannelConfig
 from syntheticcx.errors import ChannelError
@@ -167,6 +168,8 @@ def test_unsampled_branch_new_menu_and_replacements_exceed_learning_budget():
         assert await page.locator("#decoy").input_value() == ""
         assert broker._learning_edges == []
         assert broker._states == {}
+        assert broker.current_state is None
+        assert isinstance(broker._binding, NativeControlBinding)
         assert broker._learning_source is None
         assert not broker._learn_transition_allowed
 

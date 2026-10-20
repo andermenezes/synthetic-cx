@@ -64,7 +64,7 @@ def browser():
         },
         "ownership_bound": True,
         "reader_bound": True,
-        "state": state().model_dump(),
+        "state": state().model_dump(include={"id", "kind", "option_labels"}),
         "available_options": [],
         "composer_id": "input1",
     }
@@ -170,7 +170,10 @@ async def test_delayed_root_waits_without_reopening_or_model_decisions(monkeypat
     }
     available = {
         **missing,
-        "catalog": {"revision": "r1", "candidates": [{"id": "root1", "kind": "scope"}]},
+        "catalog": {
+            "revision": "r1",
+            "candidates": [{"id": "root1", "kind": "scope", "description": "root"}],
+        },
     }
     broker.observe.side_effect = [missing, missing, available, bound, bound, bound]
     broker.bind_scope = AsyncMock()
@@ -484,14 +487,28 @@ async def test_absence_stop_with_scoped_input_recovers_to_reader_learning(reason
         "state": None,
         "composer_id": None,
     }
-    after = {**before, "state": state().model_dump(), "composer_id": "input1"}
+    after = {
+        **before,
+        "state": state().model_dump(include={"id", "kind", "option_labels"}),
+        "composer_id": "input1",
+    }
     witness = {
         **after,
         "catalog": {
             "candidates": after["catalog"]["candidates"]
             + [
-                {"id": "reply1", "kind": "assistant", "evidence": "observed_exchange"},
-                {"id": "echo1", "kind": "customer", "evidence": "observed_exchange"},
+                {
+                    "id": "reply1",
+                    "kind": "assistant",
+                    "description": "reply",
+                    "evidence": "observed_exchange",
+                },
+                {
+                    "id": "echo1",
+                    "kind": "customer",
+                    "description": "echo",
+                    "evidence": "observed_exchange",
+                },
             ]
         },
     }
@@ -555,7 +572,7 @@ async def test_repeated_absence_stop_exhausts_corrections_without_forced_submiss
 async def test_bound_controls_are_not_reoffered_until_poststate_binding():
     broker = browser()
     broker.observe.return_value["catalog"]["candidates"].append(
-        {"id": "reader1", "kind": "assistant"}
+        {"id": "reader1", "kind": "assistant", "description": "reader"}
     )
     model = provider(
         decision("submit_probe", target_id="input1", probe_id="first"),
@@ -664,8 +681,18 @@ def reader_learning_browser():
         "catalog": {
             "candidates": before["catalog"]["candidates"]
             + [
-                {"id": "reply1", "kind": "assistant", "evidence": "observed_exchange"},
-                {"id": "echo1", "kind": "customer", "evidence": "observed_exchange"},
+                {
+                    "id": "reply1",
+                    "kind": "assistant",
+                    "description": "reply",
+                    "evidence": "observed_exchange",
+                },
+                {
+                    "id": "echo1",
+                    "kind": "customer",
+                    "description": "echo",
+                    "evidence": "observed_exchange",
+                },
             ]
         },
     }

@@ -116,6 +116,7 @@ async def run_evaluated(
     outcome = None
     exit_code = 3
     reason = conversation.termination_reason
+    shutdown_errors: list[ErrorDetail] = []
     try:
         if reason == "persistence_error":
             detail = conversation.error or ErrorDetail(
@@ -262,6 +263,15 @@ async def run_evaluated(
                         await _finish(wait.run(resource.close(), limits.close_timeout_seconds))
                 except (Exception, asyncio.CancelledError):
                     cleanup_completed = False
+                    shutdown_errors.append(
+                        ErrorDetail(
+                            category="persistence",
+                            operation="storage.close",
+                            message="storage shutdown failed after evidence processing",
+                        )
+                    )
+                    if exit_code != 130:
+                        exit_code = 3
 
     return EvaluatedRunResult(
         conversation=conversation,
@@ -272,4 +282,5 @@ async def run_evaluated(
         cleanup_completed=cleanup_completed,
         committed_events=journal.committed_events,
         errors=tuple(committed_errors(journal.committed_events)),
+        shutdown_errors=tuple(shutdown_errors),
     )

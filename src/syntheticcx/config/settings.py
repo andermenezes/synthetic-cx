@@ -18,6 +18,7 @@ from syntheticcx.config.models import (
 from syntheticcx.errors import ConfigurationError
 
 if TYPE_CHECKING:
+    from syntheticcx.evaluation.registry import EvaluatorRegistration
     from syntheticcx.runtime.behavior_signals import DetectorRegistration, PreparedBehavior
 
 
@@ -67,9 +68,13 @@ def prepare_settings(
     environment: Mapping[str, str] | None = None,
     *,
     behavior_registry: Mapping[str, DetectorRegistration] | None = None,
+    evaluator_registry: Mapping[str, EvaluatorRegistration] | None = None,
 ) -> PreparedSettings:
     """Validate local prerequisites without importing adapters or probing endpoints."""
     validate_behavior(config.behavior, config.persona.behavioral_rules, behavior_registry)
+    from syntheticcx.evaluation.registry import prepare_evaluators
+
+    prepare_evaluators(config.scenario.success_criteria, evaluator_registry)
     semantic = requires_semantic_evaluation(config)
     for role, model in [
         ("model", config.model),

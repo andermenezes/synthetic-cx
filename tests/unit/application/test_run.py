@@ -123,6 +123,115 @@ def scenario_file(tmp_path: Path, *, report: bool = True) -> Path:
     return path
 
 
+def offline_adapters(monkeypatch):
+    async def preflight(*_args):
+        return CapabilityPreflight()
+
+    monkeypatch.setenv("OPENAI_API_KEY", "offline-credential")
+    monkeypatch.setattr(application, "preflight_models", preflight)
+    monkeypatch.setattr(channel_module, "DynamicPlaywrightChannel", FakeChannel)
+    monkeypatch.setattr(application, "TinyTroupePersonaSimulator", FakePersona)
+
+
+@pytest.mark.parametrize("kind", ["boolean", "scored"])
+def test_registered_evaluator_runs_with_its_own_identity(tmp_path, monkeypatch, kind):
+    from pydantic import BaseModel, Field
+
+    from syntheticcx.config.models import StrictModel
+    from syntheticcx.evaluation.registry import EvaluatorRegistration
+
+    class Parameters(StrictModel):
+        minimum: int = Field(default=1, ge=1, strict=True)
+
+    constructed = []
+
+    class CustomEvaluator:
+        def __init__(self, parameters: BaseModel):
+            constructed.append(parameters)
+
+        async def evaluate(self, context):
+            assert context.criterion.parameters == {"minimum": 1}
+            assistant = next(
+                event
+                for event in context.sanitized_trace
+                if event.type == "message_observed" and event.data.message.actor == "assistant"
+            )
+            return EvaluationResult(
+                evaluator_id="answer_policy",
+                criterion_id=context.criterion.id,
+                required=context.criterion.required,
+                status="passed",
+                score=0.9 if kind == "scored" else None,
+                explanation="Current answer satisfies the registered policy.",
+                evidence_event_ids=[assistant.id],
+                evidence_message_ids=[assistant.data.message.id],
+            )
+
+    offline_adapters(monkeypatch)
+    path = scenario_file(tmp_path)
+    data = yaml.safe_load(path.read_text())
+    data["scenario"]["success_criteria"] = [
+        {
+            "id": "answer-policy",
+            "evaluator_type": "answer_policy",
+            "result_kind": kind,
+            "evidence_policy": "required",
+            **({"threshold": 0.8} if kind == "scored" else {}),
+        }
+    ]
+    path.write_text(yaml.safe_dump(data))
+    registration = EvaluatorRegistration(
+        "answer_policy",
+        Parameters,
+        lambda parameters, dependencies: CustomEvaluator(parameters),
+        ("boolean", "scored"),
+    )
+    result = asyncio.run(
+        application.execute_run(path, evaluator_registry={"answer_policy": registration})
+    )
+    assert result.exit_code == 0 and result.report.outcome == "passed"
+    assert len(constructed) == 1
+    directory = Path(result.artifact_location)
+    evaluation = json.loads((directory / "evaluation.json").read_text())
+    assert "answer_policy" in json.dumps(evaluation)
+    config = yaml.safe_load((directory / "config.yaml").read_text())
+    assert config["effective_config"]["scenario"]["success_criteria"][0]["parameters"] == {
+        "minimum": 1
+    }
+
+
+def test_storage_shutdown_failure_is_visible_without_rewriting_report(tmp_path, monkeypatch):
+    offline_adapters(monkeypatch)
+    path = scenario_file(tmp_path)
+    data = yaml.safe_load(path.read_text())
+    data["scenario"]["success_criteria"] = [
+        {
+            "id": "turns",
+            "evaluator_type": "turn_count",
+            "result_kind": "boolean",
+            "evidence_policy": "required",
+            "parameters": {"max_turns": 5},
+        }
+    ]
+    path.write_text(yaml.safe_dump(data))
+    original = application.FilesystemStorage
+
+    class FailingClose(original):
+        async def close(self):
+            await super().close()
+            raise OSError("private-shutdown-value")
+
+    monkeypatch.setattr(application, "FilesystemStorage", FailingClose)
+    result = CliRunner().invoke(app, ["run", str(path)])
+    assert result.exit_code == 3
+    assert "Infrastructure shutdown failure (storage.close)" in result.output
+    assert "before this failure" in result.output
+    assert "private-shutdown-value" not in result.output
+    directory = next((tmp_path / "runs").iterdir())
+    assert json.loads((directory / "report.json").read_text())["outcome"] == "passed"
+    assert json.loads((directory / "metadata.json").read_text())["lifecycle_status"] == "finalized"
+
+
 @pytest.mark.parametrize("markdown_failure", [False, True])
 def test_cli_redacts_scenario_fact_recalled_only_in_feedback(
     tmp_path, monkeypatch, markdown_failure

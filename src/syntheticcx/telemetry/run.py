@@ -24,6 +24,7 @@ from opentelemetry.sdk.trace.export import (
     SpanExportResult,
 )
 
+from syntheticcx._compat.blocking import run_blocking_bounded
 from syntheticcx.config.models import TelemetryConfig
 from syntheticcx.privacy import Redactor
 
@@ -197,6 +198,10 @@ class RunTelemetry:
             return
         provider = self._provider
         local = self._local
+        # Ownership transfers to one daemon worker, even after timeout/cancellation.
+        # A second close must not start another exporter shutdown.
+        self._provider = None
+        self._local = None
         if self._logger is not None and self._handler is not None:
             self._logger.removeHandler(self._handler)
             self._handler.close()
@@ -222,7 +227,11 @@ class RunTelemetry:
                 # The optional remote processor can block; local spans are already safe.
                 provider.shutdown()
 
-        await asyncio.wait_for(asyncio.to_thread(finish), timeout)
+        result = await run_blocking_bounded(finish, timeout_seconds=timeout)
+        if result.cancelled:
+            raise asyncio.CancelledError
+        if result.timed_out:
+            raise TimeoutError("telemetry shutdown exceeded its deadline")
 
 
 @contextmanager

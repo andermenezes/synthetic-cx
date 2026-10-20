@@ -299,7 +299,11 @@ async def run_conversation(
             completed = await wait.run(
                 graph.ainvoke(
                     initial_state(persona),
-                    config={"recursion_limit": 4 * limits.max_turns + 10},
+                    config={
+                        "recursion_limit": 4 * limits.max_turns
+                        + 3 * limits.assistant_update_limit
+                        + 10
+                    },
                 ),
                 remaining,
             )

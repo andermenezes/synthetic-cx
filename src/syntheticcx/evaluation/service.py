@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Protocol, runtime_checkable
 
+from syntheticcx.config.models import Criterion
 from syntheticcx.domain.artifacts import EvaluationContext
 from syntheticcx.domain.events import (
     EvaluationCompleted,
@@ -16,20 +17,18 @@ from syntheticcx.domain.events import (
 from syntheticcx.domain.models import EvaluationResult, ModelInteraction, Scenario
 from syntheticcx.domain.protocols import Evaluator, LLMProvider, WaitController
 from syntheticcx.errors import ConfigurationError, EvaluationError, ModelError, PersistenceError
-from syntheticcx.evaluation.deterministic import (
-    JourneyTimeoutEvaluator,
-    RepeatedInformationEvaluator,
-    TurnCountEvaluator,
+from syntheticcx.evaluation.registry import (
+    BUILTIN_EVALUATORS,
+    EvaluationDependencies,
+    EvaluatorRegistration,
+    prepare_evaluators,
 )
-from syntheticcx.evaluation.semantic import SemanticGoalEvaluator
 from syntheticcx.evaluation.validation import validate_result
 from syntheticcx.privacy import Redactor
 from syntheticcx.runtime.journal import RunJournal
 from syntheticcx.telemetry.run import span
 
-_KINDS = frozenset(
-    {"turn_count", "journey_timeout", "repeated_information", "semantic_goal_completion"}
-)
+_KINDS = frozenset(BUILTIN_EVALUATORS)
 
 
 @runtime_checkable
@@ -53,21 +52,24 @@ class EvaluationService:
         redactor: Redactor,
         provider: LLMProvider | None = None,
         evaluators: Mapping[str, Evaluator] | None = None,
+        evaluator_registry: Mapping[str, EvaluatorRegistration] | None = None,
+        criteria: Sequence[Criterion] = (),
     ) -> None:
         if not math.isfinite(evaluator_timeout_seconds) or evaluator_timeout_seconds <= 0:
             raise ValueError("evaluator timeout must be finite and positive")
-        registry: dict[str, Evaluator] = {
-            "turn_count": TurnCountEvaluator(),
-            "journey_timeout": JourneyTimeoutEvaluator(),
-            "repeated_information": RepeatedInformationEvaluator(),
+        self._registrations = dict(evaluator_registry or {})
+        dependencies = EvaluationDependencies(provider, redactor)
+        self._dependencies = dependencies
+        overrides = dict(evaluators or {})
+        if set(overrides) - _KINDS:
+            raise ConfigurationError("compose evaluation", "unsupported evaluator type")
+        self._overrides = overrides
+        self._criterion_evaluators = {
+            prepared.criterion.id: overrides[prepared.criterion.evaluator_type]
+            if prepared.criterion.evaluator_type in overrides
+            else prepared.instantiate(dependencies)
+            for prepared in prepare_evaluators(criteria, evaluator_registry)
         }
-        if provider is not None:
-            registry["semantic_goal_completion"] = SemanticGoalEvaluator(provider, redactor)
-        if evaluators is not None:
-            if set(evaluators) - _KINDS:
-                raise ConfigurationError("compose evaluation", "unsupported evaluator type")
-            registry.update(evaluators)
-        self._evaluators = registry
         self._journal = journal
         self._wait = wait
         self._timeout = evaluator_timeout_seconds
@@ -75,7 +77,8 @@ class EvaluationService:
 
     async def evaluate(self, scenario: Scenario) -> tuple[EvaluationResult, ...]:
         """Process each configured criterion once, using only acknowledged trace events."""
-        criteria = scenario.success_criteria
+        prepared = prepare_evaluators(scenario.success_criteria, self._registrations)
+        criteria = [item.criterion for item in prepared]
         configured = {item.id for item in criteria}
         if any(
             isinstance(event, EvaluationCompletedEvent)
@@ -83,8 +86,13 @@ class EvaluationService:
             for event in self._journal.committed_events
         ):
             raise EvaluationError("evaluate run", "evaluation already started")
-        if any(item.evaluator_type not in self._evaluators for item in criteria):
-            raise ConfigurationError("evaluate run", "evaluation model is required")
+        for item in prepared:
+            if item.criterion.id not in self._criterion_evaluators:
+                self._criterion_evaluators[item.criterion.id] = (
+                    self._overrides[item.criterion.evaluator_type]
+                    if item.criterion.evaluator_type in self._overrides
+                    else item.instantiate(self._dependencies)
+                )
 
         results: list[EvaluationResult] = []
         supplemental_ids = {
@@ -93,7 +101,7 @@ class EvaluationService:
             if event.type == "persona_feedback_recorded"
         }
         for criterion in criteria:
-            evaluator = self._evaluators[criterion.evaluator_type]
+            evaluator = self._criterion_evaluators[criterion.id]
             attempts = 0
             while True:
                 attempts += 1

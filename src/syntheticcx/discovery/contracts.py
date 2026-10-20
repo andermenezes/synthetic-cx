@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol
+from typing import Literal, Protocol
 
 from syntheticcx.config.models import (
     ChatOwnership,
@@ -12,6 +12,11 @@ from syntheticcx.config.models import (
     RecipeStep,
     StatefulChannelConfig,
     StrictModel,
+)
+from syntheticcx.discovery.observations import (
+    LearningObservation,
+    ReaderBinding,
+    WebsiteObservation,
 )
 from syntheticcx.domain.models import CompletedResponse, SendReceipt
 
@@ -61,7 +66,7 @@ class WebsiteBroker(Protocol):
 
     chat_hint: str | None
 
-    async def observe_website(self) -> dict[str, Any]: ...
+    async def observe_website(self) -> WebsiteObservation: ...
     async def act_website(
         self, revision: str, action: str, target_id: str | None = None
     ) -> None: ...
@@ -73,14 +78,14 @@ class LearningBroker(Protocol):
 
     async def start(self) -> None: ...
     async def close(self) -> None: ...
-    async def observe(self) -> dict[str, Any]: ...
+    async def observe(self) -> LearningObservation: ...
     async def wait_until_ready(self) -> None: ...
     async def wait_for_reader_candidates(self) -> None: ...
     async def open(self, revision: str, target_id: str, /) -> None: ...
     async def bind_scope(self, revision: str, target_id: str, /) -> ChatOwnership: ...
     async def bind_reader(
         self, *, revision: str, assistant_id: str, customer_id: str | None
-    ) -> dict[str, Any]: ...
+    ) -> ReaderBinding: ...
     async def bind_state(
         self,
         *,

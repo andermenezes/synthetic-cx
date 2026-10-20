@@ -5,21 +5,19 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
-from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
 from playwright.async_api import ElementHandle, Page
 
+from syntheticcx.adapters.channel.bindings import NativeControlBinding
 from syntheticcx.adapters.channel.broker import NativeChatBroker
 from syntheticcx.adapters.channel.options import ReplyOptions
 from syntheticcx.adapters.channel.playwright import locate
 from syntheticcx.config.models import (
-    ChatState,
     ExecutionLimits,
     InterfaceChannelConfig,
     LocatorConfig,
     SendStrategyConfig,
-    StatefulChannelConfig,
 )
 from syntheticcx.domain.models import CompletedResponse, ReplyOption, SelectionReceipt, SendReceipt
 from syntheticcx.errors import ChannelError
@@ -41,11 +39,7 @@ class DynamicChatBroker(NativeChatBroker):
         action_authorizations: list[dict[str, Any]] | None = None,
     ) -> None:
         self._action_authorizations = action_authorizations or []
-        # Shared initialization/startup only reads the interface portion of the
-        # contract. Replay-specific policies are overridden below.
-        super().__init__(
-            contract=cast(StatefulChannelConfig, config), limits=limits, headed=headed, page=page
-        )
+        super().__init__(contract=config, limits=limits, headed=headed, page=page)
 
     async def _bootstrap_contract(self) -> None:
         await self._refresh_controls(wait=True)
@@ -121,11 +115,11 @@ class DynamicChatBroker(NativeChatBroker):
                 raise ChannelError("channel.controls", "no safe current controls before deadline")
             await asyncio.sleep(0.025)
 
-    def _make_reply_options(self, state: ChatState) -> ReplyOptions:
+    def _make_reply_options(self, binding: NativeControlBinding) -> ReplyOptions:
         assert self.owned is not None
         return ReplyOptions(
             self.owned.locator,
-            self._option_config(state),
+            self._option_config(binding),
             locate,
             attested_scope=self.owned,
             dynamic_runtime=True,
@@ -139,12 +133,12 @@ class DynamicChatBroker(NativeChatBroker):
         # Options deliberately do not pin a composer: they are independently
         # pinned to their actual latest assistant owner and the immutable root.
         if self._options is None:
-            evidence = SimpleNamespace(
+            evidence = NativeControlBinding(
                 input_locator=None,
                 send_strategy=None,
                 option_locator=LocatorConfig(strategy="css", value=BUTTONS),
             )
-            self._options = self._make_reply_options(cast(ChatState, evidence))
+            self._options = self._make_reply_options(evidence)
             await self._options.bind()
         replies = await self._options.collect()
         latest_options = bool(
@@ -157,20 +151,17 @@ class DynamicChatBroker(NativeChatBroker):
                 [node for node in superseded if node is not self._input and node is not self._send]
             )
             # This ephemeral binding is not a discovery state or label graph.
-            self._state = cast(
-                ChatState,
-                SimpleNamespace(
-                    input_locator=LocatorConfig(strategy="css", value=COMPOSERS)
-                    if input_node is not None
-                    else None,
-                    send_strategy=SendStrategyConfig(
-                        type="click", locator=LocatorConfig(strategy="css", value=BUTTONS)
-                    )
-                    if send_node is not None
-                    else SendStrategyConfig(type="press_enter")
-                    if input_node is not None
-                    else None,
-                ),
+            self._binding = NativeControlBinding(
+                input_locator=LocatorConfig(strategy="css", value=COMPOSERS)
+                if input_node is not None
+                else None,
+                send_strategy=SendStrategyConfig(
+                    type="click", locator=LocatorConfig(strategy="css", value=BUTTONS)
+                )
+                if send_node is not None
+                else SendStrategyConfig(type="press_enter")
+                if input_node is not None
+                else None,
             )
             # Reuse all shared safety checks, but resolve the pinned send by
             # actual identity rather than a selector encompassing menu buttons.
@@ -224,23 +215,6 @@ class DynamicChatBroker(NativeChatBroker):
         if kind == "probe" and self._input is None:
             raise ChannelError("channel.send", "current controls have no safe composer")
         # Option authority is exclusively ReplyOptions.validate, never sample labels.
-
-    async def _resolve_transition(self) -> None:
-        # Completed replies must reach the journal even when the next controls
-        # are missing. observe_controls gates the next persona decision instead.
-        pass
-
-    async def send(
-        self, message: str, *, on_progress: Callable[[str], None] | None = None
-    ) -> SendReceipt:
-        result = await super().send(message, on_progress=on_progress)
-        self._learning_source = None
-        return result
-
-    async def select_option(self, identifier: str) -> SelectionReceipt:
-        result = await super().select_option(identifier)
-        self._learning_source = None
-        return result
 
     async def observe_controls(self) -> dict[str, Any]:
         async with self._lock:

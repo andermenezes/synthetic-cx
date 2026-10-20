@@ -26,6 +26,7 @@ from syntheticcx.config.settings import prepare_settings, requires_semantic_eval
 from syntheticcx.domain.artifacts import ConfigArtifact, MetadataArtifact, Run
 from syntheticcx.domain.models import (
     BehavioralDetectorMetadata,
+    ErrorDetail,
     ModelIdentity,
     PersonaDefinition,
     Report,
@@ -36,6 +37,7 @@ from syntheticcx.domain.models import (
 )
 from syntheticcx.domain.protocols import ChannelAdapter
 from syntheticcx.errors import ConfigurationError, PersistenceError
+from syntheticcx.evaluation.registry import EvaluatorRegistration, prepare_evaluators
 from syntheticcx.evaluation.service import EvaluationService
 from syntheticcx.language import Language, require_language
 from syntheticcx.privacy import Redactor
@@ -60,6 +62,7 @@ class RunExecution:
     artifact_location: str | None
     report_omitted: bool = False
     partial_reason: str | None = None
+    shutdown_errors: tuple[ErrorDetail, ...] = ()
 
 
 class _LocalProcessProbe:
@@ -145,6 +148,7 @@ async def execute_run(
     headed: bool = False,
     language: Language | None = None,
     behavior_registry: Mapping[str, DetectorRegistration] | None = None,
+    evaluator_registry: Mapping[str, EvaluatorRegistration] | None = None,
     browser_profile: Path | None = None,
     recipient: str | None = None,
 ) -> RunExecution:
@@ -190,7 +194,17 @@ async def execute_run(
     prepared_behavior = prepare_behavior(
         config.behavior, config.persona.behavioral_rules, behavior_registry
     )
-    settings = prepare_settings(config, behavior_registry=behavior_registry)
+    prepared_evaluation = prepare_evaluators(config.scenario.success_criteria, evaluator_registry)
+    config = config.model_copy(
+        update={
+            "scenario": config.scenario.model_copy(
+                update={"success_criteria": [item.criterion for item in prepared_evaluation]}
+            )
+        }
+    )
+    settings = prepare_settings(
+        config, behavior_registry=behavior_registry, evaluator_registry=evaluator_registry
+    )
     secrets: tuple[str, ...] = (
         settings.persona.credential.get_secret_value(),
         settings.evaluation.credential.get_secret_value(),
@@ -327,6 +341,8 @@ async def execute_run(
             evaluator_timeout_seconds=config.execution.evaluator_timeout_seconds,
             redactor=redactor,
             provider=provider,
+            evaluator_registry=evaluator_registry,
+            criteria=config.scenario.success_criteria,
         )
         if config.channel.type == "whatsapp_web_playwright":
             from syntheticcx.adapters.channel.whatsapp import WhatsAppWebChannel
@@ -417,6 +433,7 @@ async def execute_run(
             run_id if acknowledged else None,
             str(directory) if acknowledged else None,
             partial_reason=result.conversation.termination_reason,
+            shutdown_errors=result.shutdown_errors,
         )
     try:
         metadata = MetadataArtifact.model_validate_json((directory / "metadata.json").read_bytes())
@@ -444,5 +461,10 @@ async def execute_run(
     except (OSError, ValueError, PersistenceError):
         return RunExecution(3, None, run_id, str(directory))
     return RunExecution(
-        result.exit_code, report, run_id, str(directory), not config.storage.materialize_report
+        result.exit_code,
+        report,
+        run_id,
+        str(directory),
+        not config.storage.materialize_report,
+        shutdown_errors=result.shutdown_errors,
     )

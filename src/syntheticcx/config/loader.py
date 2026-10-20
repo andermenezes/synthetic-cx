@@ -135,4 +135,8 @@ def load_config_text(source: str) -> ProjectConfig:
 def load_discovery_draft(path: Path) -> DiscoveryDraft:
     """Validate discovery input without requiring a channel or reading credentials."""
     text, _ = _read_text(path, "read discovery draft")
-    return _validate(_parse_mapping(text), DiscoveryDraft)
+    draft = _validate(_parse_mapping(text), DiscoveryDraft)
+    from syntheticcx.evaluation.registry import prepare_evaluators
+
+    prepare_evaluators(draft.scenario.success_criteria)
+    return draft

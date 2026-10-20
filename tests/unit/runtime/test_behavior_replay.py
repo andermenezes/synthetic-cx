@@ -229,6 +229,15 @@ def source(
                 },
             )
             state = changed
+    append(
+        "run_lifecycle_changed",
+        {
+            "previous": "in_progress",
+            "current": "finalized",
+            "outcome": "passed",
+            "termination_reason": "fixture",
+        },
+    )
     publish(directory, events, config, run_metadata)
     return directory, events, config, run_metadata
 
@@ -253,6 +262,25 @@ def test_verification_exact_hashes_determinism_and_read_only(tmp_path):
     write_behavior_replay(first, tmp_path / "result-a.json")
     write_behavior_replay(second, tmp_path / "result-b.json")
     assert (tmp_path / "result-a.json").read_bytes() == (tmp_path / "result-b.json").read_bytes()
+
+
+def test_cleanly_truncated_finalized_trace_is_only_a_prefix(tmp_path):
+    directory, events, config, metadata = source(tmp_path)
+    first = next(i for i, event in enumerate(events) if event["type"] == "behavioral_state_changed")
+    publish(directory, events[: first + 1], config, metadata)
+    result = replay_behavior(directory)
+    assert result.completeness == "prefix"
+    assert "Terminal trace" in result.prefix_reason
+    assert not result.comparison_findings
+
+
+@pytest.mark.parametrize("field,value", [("outcome", "failed"), ("termination_reason", "other")])
+def test_terminal_trace_must_agree_with_metadata(tmp_path, field, value):
+    directory, events, config, metadata = source(tmp_path)
+    events[-1]["data"][field] = value
+    publish(directory, events, config, metadata)
+    with pytest.raises(BehaviorReplayError, match="terminal trace"):
+        replay_behavior(directory)
 
 
 @pytest.mark.parametrize(
@@ -343,9 +371,9 @@ def test_changed_effect_is_valid_replay_mismatch(tmp_path):
 def test_only_complete_batches_are_returned_as_verified_prefix(tmp_path, tail):
     directory, events, config, metadata = source(tmp_path)
     if tail == "missing_transition":
-        events.pop()
-    elif tail == "missing_signal":
         events = events[:-2]
+    elif tail == "missing_signal":
+        events = events[:-3]
     elif tail == "incomplete_run":
         metadata.update(
             lifecycle_status="incomplete", outcome=None, ended_at=None, termination_reason=None
@@ -531,6 +559,7 @@ def test_recorded_persona_changed_fields_preserve_counterfactual_other_values(tm
 
 def test_terminal_recorded_persona_abandonment_is_explicit_external_evidence(tmp_path):
     directory, events, config, metadata = source(tmp_path, turns=1)
+    terminal = events.pop()
     before = events[-1]["data"]["after"]
     after = {**before, "abandoned": True, "willingness_to_continue": 0}
     events.append(
@@ -547,6 +576,8 @@ def test_terminal_recorded_persona_abandonment_is_explicit_external_evidence(tmp
             },
         }
     )
+    terminal["sequence"] = len(events)
+    events.append(terminal)
     publish(directory, events, config, metadata)
     result = replay_behavior(directory)
     assert not result.comparison_findings
@@ -610,6 +641,7 @@ def test_disabled_detectors_preserve_explicit_no_signal_boundaries(tmp_path):
 
 def test_remaining_signals_in_abandonment_batch_are_terminal_frozen(tmp_path):
     directory, events, config, metadata = source(tmp_path, turns=1, rules=[rule(abandon=True)])
+    terminal = events.pop()
     boundary = next(
         event
         for event in events
@@ -638,6 +670,7 @@ def test_remaining_signals_in_abandonment_batch_are_terminal_frozen(tmp_path):
             },
         }
     )
+    events.append(terminal)
     for index, event in enumerate(events):
         event["sequence"] = index
     publish(directory, events, config, metadata)
@@ -651,7 +684,7 @@ def test_remaining_signals_in_abandonment_batch_are_terminal_frozen(tmp_path):
     assert len(replay_behavior(directory, rules=override).calculated_transitions) == 2
     # A transition from an otherwise acknowledged final batch is not a complete
     # batch: dropping the second transition excludes both signals.
-    publish(directory, events[:-1], config, metadata)
+    publish(directory, events[:-2], config, metadata)
     prefix = replay_behavior(directory)
     assert prefix.completeness == "prefix" and not prefix.calculated_transitions
 

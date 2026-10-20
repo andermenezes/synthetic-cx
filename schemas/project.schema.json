@@ -577,12 +577,9 @@
       ],
       "properties": {
         "evaluator_type": {
-          "enum": [
-            "turn_count",
-            "journey_timeout",
-            "repeated_information",
-            "semantic_goal_completion"
-          ],
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
           "title": "Evaluator Type",
           "type": "string"
         },
@@ -647,6 +644,13 @@
     "ExecutionLimits": {
       "additionalProperties": false,
       "properties": {
+        "assistant_update_limit": {
+          "default": 64,
+          "maximum": 1024,
+          "minimum": 0,
+          "title": "Assistant Update Limit",
+          "type": "integer"
+        },
         "browser_action_timeout_seconds": {
           "exclusiveMinimum": 0,
           "title": "Browser Action Timeout Seconds",

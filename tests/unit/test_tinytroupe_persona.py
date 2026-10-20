@@ -96,6 +96,33 @@ def simulator(monkeypatch: pytest.MonkeyPatch) -> tuple[TinyTroupePersonaSimulat
     )
 
 
+def test_invalid_completed_action_retains_call_usage(monkeypatch):
+    compatibility.import_tinytroupe()
+    adapter, client = simulator(monkeypatch)
+    definition, context = definitions()
+    client.actions = [[action("TALK", "")]]
+    now = datetime.now(UTC)
+    interaction = ModelInteraction(
+        id="invalid-action-call",
+        identity=ModelIdentity(provider="fake", model="offline"),
+        started_at=now,
+        ended_at=now,
+        usage=TokenUsage(input_tokens=100, output_tokens=20),
+    )
+
+    async def exercise():
+        state = await adapter.initialize(definition, context)
+        client.interactions.append(interaction)
+        with pytest.raises(ModelError):
+            await adapter.respond(observation(), state)
+        assert adapter.take_interactions() == (interaction,)
+        assert adapter.take_interactions() == ()
+        assert not adapter.reflection_available
+        await adapter.close()
+
+    asyncio.run(exercise())
+
+
 def observation(text: str = "Here is your billing explanation.") -> ConversationObservation:
     return ConversationObservation(
         kind="assistant_response",
@@ -533,7 +560,7 @@ def test_timeout_poisons_adapter_and_discards_late_result(
     assert adapter.take_interactions() == ()
 
 
-def test_only_successful_persona_operations_publish_interactions(
+def test_completed_persona_operations_publish_interactions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     adapter, client = simulator(monkeypatch)

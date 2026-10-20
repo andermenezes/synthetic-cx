@@ -255,7 +255,7 @@ def test_cancellation_during_acknowledged_finalization_keeps_committed_outcome()
         (None, True, {}, "error", True, 3),
         (None, False, {"fail_evaluation": True}, None, False, 3),
         (None, False, {"fail_finalize": True}, None, False, 3),
-        (None, False, {"fail_close": True}, "passed", True, 0),
+        (None, False, {"fail_close": True}, "passed", True, 3),
     ],
 )
 def test_owner_preserves_partial_evidence_on_failure(
@@ -301,6 +301,9 @@ def test_owner_preserves_partial_evidence_on_failure(
         assert result.exit_code == expected_exit
         assert storage.closed == 1
         assert result.cleanup_completed is (not storage.fail_close and not close_failure)
+        if storage.fail_close:
+            assert result.shutdown_errors[0].operation == "storage.close"
+            assert "sensitive" not in result.shutdown_errors[0].message
         assert storage.events == list(result.committed_events)
         if expected_finalized:
             assert result.evaluations[0].status == ("unavailable" if channel_failure else "passed")
@@ -1027,6 +1030,7 @@ async def exercise(
     definition: PersonaDefinition | None = None,
     project_config: ProjectConfig | None = None,
     redactor: Redactor | None = None,
+    assistant_update_limit: int = 64,
 ) -> RuntimeResult:
     config = load_config(Path("examples/telecom/scenario.yaml"))
     logical_clock = clock or ManualClock(NOW)
@@ -1047,6 +1051,7 @@ async def exercise(
                 "greeting_grace_seconds": greeting_grace,
                 "max_turns": max_turns,
                 "journey_timeout_seconds": timeout,
+                "assistant_update_limit": assistant_update_limit,
             }
         ),
         project_config=project_config or config,
@@ -1055,6 +1060,88 @@ async def exercise(
     assert storage.closed == 1
     assert storage.events == list(result.committed_events)
     return result
+
+
+@pytest.mark.parametrize(
+    "update_limit,reason", [(6, "goal_believed_complete"), (5, "channel_error")]
+)
+def test_supplemental_updates_have_their_own_budget(update_limit, reason):
+    class UpdatingChannel(Channel):
+        updates = 0
+
+        async def observe_pending(self):
+            if not self.sent or self.updates >= 6:
+                return None
+            self.updates += 1
+            response = reply(f"Settled update {self.updates}")
+            return response.model_copy(
+                update={
+                    "messages": [
+                        message.model_copy(update={"id": f"update-{self.updates}"})
+                        for message in response.messages
+                    ]
+                }
+            )
+
+    channel = UpdatingChannel()
+    result = asyncio.run(
+        exercise(channel, Persona(), Storage(), max_turns=2, assistant_update_limit=update_limit)
+    )
+    assert result.termination_reason == reason
+    assert result.turn_count == 1 and len(channel.sent) == 1
+    completed = [
+        event
+        for event in result.committed_events
+        if event.type == "behavioral_signal_recorded"
+        and event.data.signal.signal == "customer_turn_completed"
+    ]
+    assert len(completed) == 1
+    updates = [
+        event
+        for event in result.committed_events
+        if event.type == "message_observed" and event.data.message.id.startswith("update-")
+    ]
+    assert len(updates) == 6  # Even the over-budget observation remains evidence.
+    if reason == "channel_error":
+        assert result.error.operation == "channel.observe"
+
+
+def test_invalid_persona_output_still_journals_completed_call():
+    class InvalidPersona(Persona):
+        def __init__(self):
+            super().__init__()
+            self.pending = []
+
+        async def respond(self, observation, state):
+            self.pending.append(
+                ModelInteraction(
+                    id="completed-invalid",
+                    identity=ModelIdentity(provider="fake", model="fake"),
+                    started_at=NOW,
+                    ended_at=NOW,
+                    usage=TokenUsage(input_tokens=100, output_tokens=20),
+                )
+            )
+            from syntheticcx.errors import ModelError
+
+            raise ModelError("persona.respond", "invalid customer action")
+
+        def take_interactions(self):
+            interactions, self.pending = tuple(self.pending), []
+            return interactions
+
+    channel = Channel()
+    result = asyncio.run(exercise(channel, InvalidPersona(), Storage()))
+    assert result.termination_reason == "model_error" and not channel.sent
+    interactions = [
+        event.data
+        for event in result.committed_events
+        if event.type == "model_interaction_completed"
+    ]
+    assert len(interactions) == 1
+    assert interactions[0].usage.input_tokens == 100
+    assert interactions[0].usage.output_tokens == 20
+    assert interactions[0].input_event_ids
 
 
 def test_success_returns_detached_evidence_without_finalizing() -> None:

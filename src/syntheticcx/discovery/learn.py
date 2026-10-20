@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from time import monotonic
 from typing import Any, Literal, TypeVar
@@ -20,6 +20,7 @@ from syntheticcx.discovery.contracts import (
     LearnResult,
     WebsiteBroker,
 )
+from syntheticcx.discovery.observations import learning_observation, website_observation
 from syntheticcx.discovery.policy import portability_flow, require_discovery_probe
 from syntheticcx.discovery.replay import normalized_label
 from syntheticcx.domain.models import (
@@ -74,7 +75,7 @@ class PendingAction:
 
 
 def _validate(
-    decision: DiscoveryDecision, observation: dict[str, Any], probes: dict[str, str]
+    decision: DiscoveryDecision, observation: Mapping[str, Any], probes: dict[str, str]
 ) -> None:
     if decision.revision != observation["revision"]:
         raise ValueError("stale revision")
@@ -160,7 +161,7 @@ def _validate(
 
 
 def _available_actions(
-    observation: dict[str, Any],
+    observation: Mapping[str, Any],
     state: ChatState | None,
     budget: DiscoveryBudget,
     *,
@@ -210,7 +211,7 @@ def _available_actions(
 
 
 def _action_choices(
-    observation: dict[str, Any],
+    observation: Mapping[str, Any],
     actions: list[str],
     probes: dict[str, str],
 ) -> list[dict[str, Any]]:
@@ -307,7 +308,7 @@ def _action_choices(
 
 
 def _premature_absence_stop(
-    decision: DiscoveryDecision, observation: dict[str, Any], actions: list[str]
+    decision: DiscoveryDecision, observation: Mapping[str, Any], actions: list[str]
 ) -> bool:
     if decision.action != "stop":
         return False
@@ -351,7 +352,9 @@ async def explore_website(
     recent_views: list[dict[str, Any]] = []
     for _ in range(website_observation_limit):
         budget.check()
-        observation = await budget.run(browser.observe_website(), browser_action_timeout_seconds)
+        observation = website_observation(
+            await budget.run(browser.observe_website(), browser_action_timeout_seconds)
+        )
         if observation.get("terminal") == target:
             return
         actions = observation["available_actions"]
@@ -622,7 +625,9 @@ async def learn(
 
     while True:
         budget.consume("observations")
-        observation = await run_operation(browser.observe(), browser_action_timeout_seconds)
+        observation = learning_observation(
+            await run_operation(browser.observe(), browser_action_timeout_seconds)
+        )
         if (
             budget.actions == 0
             and observation.get("interaction_ready") is False
