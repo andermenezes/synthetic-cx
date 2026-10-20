@@ -3,11 +3,35 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from click import unstyle
 from typer.testing import CliRunner
 
 from syntheticcx import __version__, cli
 from syntheticcx.cli import app
 from syntheticcx.errors import ChannelError
+
+
+@pytest.fixture(params=[False, True], ids=["plain", "forced-color"])
+def help_color_mode(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> bool:
+    """Exercise CI's forced-color mode without depending on the terminal layout."""
+    monkeypatch.setenv("COLUMNS", "160")
+    monkeypatch.setenv("TTY_COMPATIBLE", "1" if request.param else "0")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    if request.param:
+        monkeypatch.setenv("FORCE_COLOR", "1")
+    else:
+        monkeypatch.delenv("FORCE_COLOR", raising=False)
+    return bool(request.param)
+
+
+def help_text(arguments: list[str], *, color: bool) -> str:
+    result = CliRunner().invoke(app, arguments, color=color)
+    assert result.exit_code == 0
+    if color:
+        assert "\x1b[" in result.stdout  # Ensure the regression really exercises ANSI output.
+    # Rich can insert styles between an option's two hyphens. Strip them before
+    # inspecting content, then normalize wrapping without changing the CLI itself.
+    return " ".join(unstyle(result.stdout).split())
 
 
 def test_create_profile_rejects_unsupported_channel_without_creating_directory(
@@ -37,12 +61,10 @@ def test_version_is_available() -> None:
     assert result.stdout.strip() == __version__
 
 
-def test_help_advertises_run_command() -> None:
-    result = CliRunner().invoke(app, ["--help"])
-
-    assert result.exit_code == 0
-    assert "SyntheticCX" in result.stdout
-    assert "run" in result.stdout.lower()
+def test_help_advertises_run_command(help_color_mode: bool) -> None:
+    text = help_text(["--help"], color=help_color_mode)
+    assert "SyntheticCX" in text
+    assert "run" in text.lower()
 
 
 def test_discover_credential_url_fails_before_model_browser_or_publication(
@@ -68,24 +90,20 @@ def test_discover_credential_url_fails_before_model_browser_or_publication(
     assert "CANARY" not in result.output
 
 
-def test_discover_help_advertises_headed_mode() -> None:
-    result = CliRunner().invoke(app, ["discover", "--help"])
-
-    assert result.exit_code == 0
-    help_text = " ".join(result.stdout.split())
-    assert "--headed" in help_text
-    assert "--chat-hint" in help_text
-    assert "--max-discovery-atte" in help_text
-    assert "--verbose" in help_text
-    assert "--language" in help_text
-    assert "never retries" in help_text
+def test_discover_help_advertises_headed_mode(help_color_mode: bool) -> None:
+    text = help_text(["discover", "--help"], color=help_color_mode)
+    assert "--headed" in text
+    assert "--chat-hint" in text
+    assert "--max-discovery-attempts" in text
+    assert "--verbose" in text
+    assert "--language" in text
+    assert "never retries" in text
 
 
-def test_run_help_advertises_headed_mode() -> None:
-    result = CliRunner().invoke(app, ["run", "--help"])
-    assert result.exit_code == 0
-    assert "--headed" in result.stdout
-    assert "--language" in result.stdout
+def test_run_help_advertises_headed_mode(help_color_mode: bool) -> None:
+    text = help_text(["run", "--help"], color=help_color_mode)
+    assert "--headed" in text
+    assert "--language" in text
 
 
 def test_run_invalid_language_fails_before_loading_scenario() -> None:

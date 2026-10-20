@@ -14,6 +14,12 @@ on:
 permissions:
   contents: read
 
+env:
+  NO_COLOR: "1"
+  TTY_COMPATIBLE: "0"
+  UV_COLOR: never
+  PYTEST_ADDOPTS: --color=no
+
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
